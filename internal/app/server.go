@@ -555,6 +555,14 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 	rid := "resp_" + randHex(16)
 	mid := "msg_" + randHex(12)
 
+	// Responses 流式协议要求先 response.output_item.added 声明 item，才能对它发
+	// output_text.delta；漏了 Codex 这类严格客户端会报 "OutputTextDelta without active
+	// item"。msgIndex/nextIdx 给每个 output item 分配序号，ensureMsg 惰性声明 message
+	// item（首个 delta 时才发，纯工具调用轮不发空 message）。
+	msgIndex := -1
+	nextIdx := 0
+	var ensureMsg func()
+
 	// 流式要先把头和 response.created 发出去，才能边收边推 delta。
 	// 代价是一旦开了流 HTTP 状态码就改不了了，上游失败只能用 response.failed
 	// 事件告知 —— 跟 /v1/chat/completions 那条路的取舍一致。
@@ -585,10 +593,32 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 				"output": []interface{}{},
 			},
 		})
+		ensureMsg = func() {
+			if msgIndex >= 0 {
+				return
+			}
+			msgIndex = nextIdx
+			nextIdx++
+			writeEvent("response.output_item.added", map[string]interface{}{
+				"type":         "response.output_item.added",
+				"output_index": msgIndex,
+				"item": map[string]interface{}{
+					"id": mid, "type": "message", "role": "assistant",
+					"status": "in_progress", "content": []interface{}{},
+				},
+			})
+			writeEvent("response.content_part.added", map[string]interface{}{
+				"type": "response.content_part.added", "item_id": mid,
+				"output_index": msgIndex, "content_index": 0,
+				"part": map[string]interface{}{"type": "output_text", "text": "", "annotations": []interface{}{}},
+			})
+		}
 		emitDelta = func(d string) {
+			ensureMsg()
 			writeEvent("response.output_text.delta", map[string]interface{}{
 				"type":          "response.output_text.delta",
 				"item_id":       mid,
+				"output_index":  msgIndex,
 				"content_index": 0,
 				"delta":         d,
 			})
@@ -681,6 +711,12 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 		for _, item := range output {
 			switch item["type"] {
 			case "function_call":
+				// 工具调用 item 也要 added → done 包起来，Codex 才认。
+				idx := nextIdx
+				nextIdx++
+				writeEvent("response.output_item.added", map[string]interface{}{
+					"type": "response.output_item.added", "output_index": idx, "item": item,
+				})
 				writeEvent("response.function_call_arguments.done", map[string]interface{}{
 					"type":      "response.function_call_arguments.done",
 					"item_id":   item["id"],
@@ -688,17 +724,30 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 					"name":      item["name"],
 					"arguments": item["arguments"],
 				})
+				writeEvent("response.output_item.done", map[string]interface{}{
+					"type": "response.output_item.done", "output_index": idx, "item": item,
+				})
 			case "message":
+				ensureMsg() // 没有 delta 但有正文时，这里补声明 message item
 				if cps, ok := item["content"].([]map[string]interface{}); ok {
 					for ci, cp := range cps {
 						writeEvent("response.output_text.done", map[string]interface{}{
 							"type":          "response.output_text.done",
 							"item_id":       item["id"],
+							"output_index":  msgIndex,
 							"content_index": ci,
 							"text":          cp["text"],
 						})
+						writeEvent("response.content_part.done", map[string]interface{}{
+							"type": "response.content_part.done", "item_id": item["id"],
+							"output_index": msgIndex, "content_index": ci,
+							"part": map[string]interface{}{"type": "output_text", "text": cp["text"], "annotations": []interface{}{}},
+						})
 					}
 				}
+				writeEvent("response.output_item.done", map[string]interface{}{
+					"type": "response.output_item.done", "output_index": msgIndex, "item": item,
+				})
 			}
 		}
 		respObj := map[string]interface{}{
