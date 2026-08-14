@@ -279,7 +279,15 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	text, toolCalls, res, err := callGemini(prompt, latest, modelCfg, tools, images, onDelta, onReasoning)
+	var text string
+	var toolCalls []ToolCall
+	var res *StreamResult
+	if rtCfg().MultiTurn && len(tools) == 0 && len(images) == 0 {
+		// 多轮：按历史前缀识别续接，命中就只发新消息、历史留服务端。
+		text, res, err = callGeminiConv(messages, modelCfg, onDelta, onReasoning)
+	} else {
+		text, toolCalls, res, err = callGemini(prompt, latest, modelCfg, tools, images, onDelta, onReasoning)
+	}
 	if err != nil {
 		recordRequest("chat.completions", modelName, prompt, "", res, 502, err.Error(), stream)
 		if sse != nil && sse.Started() {
@@ -596,7 +604,14 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 
 	// onReasoning 传 nil：Responses API 有自己的 reasoning 事件形状，跟 chat 的
 	// reasoning_content 不通用，这条路目前不暴露思考链。
-	text, toolCalls, res, err := callGemini(prompt, latest, modelCfg, tools, images, onDelta, nil)
+	var text string
+	var toolCalls []ToolCall
+	var res *StreamResult
+	if rtCfg().MultiTurn && len(tools) == 0 && len(images) == 0 {
+		text, res, err = callGeminiConv(messages, modelCfg, onDelta, nil)
+	} else {
+		text, toolCalls, res, err = callGemini(prompt, latest, modelCfg, tools, images, onDelta, nil)
+	}
 	if err != nil {
 		recordRequest("responses", modelName, prompt, "", res, 502, err.Error(), stream)
 		if stream {

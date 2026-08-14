@@ -40,6 +40,11 @@ type RuntimeConfig struct {
 	// 单位是字节不是 token：实测上游的墙按字节走，跟语言无关，见 messages.go。
 	// 0 = 关掉检查（原样发出，由上游从尾部静默截断）。
 	MaxPromptBytes int `json:"max_prompt_bytes"`
+	// MultiTurn 开启后走 Gemini 原生 conversation_id 服务端多轮：按历史前缀识别续接，
+	// 命中就只发最新一句、历史留服务端，绕开单请求字节墙。匿名/登录都行，见 conversation.go。
+	// 默认 false（保持现有"每轮拼全量 prompt"行为）。实测多轮不放大上下文窗口，只让长
+	// 对话不撞单请求墙——对 Codex 这类长会话有用，对"喂长文档"没用。
+	MultiTurn bool `json:"multi_turn"`
 }
 
 const runtimeConfigKey = "runtime_config"
@@ -70,6 +75,7 @@ func initRuntimeConfig() {
 		FallbackAnon:     cfg.FallbackAnon,
 		GeminiBLAuto:     cfg.GeminiBLAuto,
 		MaxPromptBytes:   cfg.MaxPromptBytes,
+		MultiTurn:        cfg.MultiTurn,
 	}
 	if raw := kvGet(runtimeConfigKey); raw != "" {
 		saved := base
