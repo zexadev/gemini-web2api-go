@@ -134,19 +134,6 @@ func convChildKey(messages []map[string]interface{}, responseText string) string
 	return hashStr(canonicalMessages(full))
 }
 
-// lastUserText 取最后一条 user 消息的纯文本（续接时只发这一句）。
-func lastUserText(messages []map[string]interface{}) string {
-	for i := len(messages) - 1; i >= 0; i-- {
-		if getStr(messages[i], "role") == "user" {
-			return contentToString(messages[i]["content"])
-		}
-	}
-	if len(messages) > 0 {
-		return contentToString(messages[len(messages)-1]["content"])
-	}
-	return ""
-}
-
 var rcidRe = regexp.MustCompile(`"(rc_[A-Za-z0-9_-]{6,})"`)
 
 // parseConvIDs 从 StreamGenerate 响应里取续接要用的四样：cid=[1][0]、rid=[1][1]、
@@ -436,12 +423,13 @@ func streamGenerateConv(prompt string, mc ModelConfig, conv *convState,
 }
 
 // callGeminiConv 是多轮开启时的入口：按历史前缀识别续接。
-//   - 命中已知会话 → 只发最后一句新消息，历史留服务端（绕开单请求字节墙）。
-//   - 没命中 → 新建会话，首轮发全量拼接的历史（把当前所有上下文交给服务端建会话）。
+//   - 命中已知会话 → 只发最后一条新消息（user 或 tool 结果），历史留服务端（绕开字节墙）。
+//   - 没命中 → 新建会话，首轮发全量拼接的历史（含 tools 指令，把当前上下文交给服务端）。
 //
-// 只处理无 tools / 无图片的纯文本对话；带 tools / 图片的走原单轮路径（callGemini）。
+// 支持 tools（续接里也解析 ```tool_call``` 围栏）；图片走原单轮路径（callGemini）。
 func callGeminiConv(messages []map[string]interface{}, mc ModelConfig,
-	onDelta, onReasoning func(string)) (string, *StreamResult, error) {
+	tools []map[string]interface{}, toolChoice interface{},
+	onDelta, onReasoning func(string)) (string, []ToolCall, *StreamResult, error) {
 	parentKey := convParentKey(messages)
 	conv := convGet(parentKey)
 	fresh := conv == nil
@@ -457,12 +445,14 @@ func callGeminiConv(messages []map[string]interface{}, mc ModelConfig,
 			conv.accountID = a.ID
 			conv.proxyID = a.ProxyID
 		}
-		prompt, _ = messagesToPrompt(messages, nil, nil)
+		// 首轮带上 tools 指令：模型要靠它知道怎么吐 tool_call 围栏，续接轮不再重发
+		//（指令已在服务端首轮历史里）。
+		prompt, _ = messagesToPrompt(messages, tools, toolChoice)
 	} else {
-		prompt = lastUserText(messages)
+		prompt = formatNewTurn(messages[len(messages)-1])
 	}
 	if fresh {
-		logf("[conv] 新会话，首轮发 %d 字节", len(prompt))
+		logf("[conv] 新会话，首轮发 %d 字节（tools=%d）", len(prompt), len(tools))
 	} else {
 		logf("[conv] 续接命中 turn=%d，只发 %d 字节（历史留服务端）", conv.turn, len(prompt))
 	}
@@ -473,16 +463,31 @@ func callGeminiConv(messages []map[string]interface{}, mc ModelConfig,
 			// 续接失败：这路会话作废，客户端重试时会当新会话全量重发。
 			convDelete(parentKey)
 		}
-		return "", res, err
+		return "", nil, res, err
 	}
 	text := extractResponseText(res.Raw)
-	if text == "" {
+	var toolCalls []ToolCall
+	if len(tools) > 0 {
+		text, toolCalls = parseToolCalls(text)
+	}
+	if text == "" && len(toolCalls) == 0 {
 		if !fresh {
 			convDelete(parentKey)
 		}
-		return "", res, fmt.Errorf("upstream returned no content frame (raw %d bytes)", len(res.Raw))
+		return "", nil, res, fmt.Errorf("upstream returned no content frame (raw %d bytes)", len(res.Raw))
 	}
 	// 存续接状态：客户端下一轮把这段回复原样带回来时，parentKey 会命中这里。
+	// 存的是解析掉围栏后的正文 —— 客户端把 assistant 消息带回来时 content 也是这段。
 	convPut(convChildKey(messages, text), conv)
-	return text, res, nil
+	return text, toolCalls, res, nil
+}
+
+// formatNewTurn 把续接要发的那条新消息格式化，跟 messagesToPrompt 里各角色的写法对齐，
+// 好让服务端历史里的模型认得出这是工具结果还是用户新话。
+func formatNewTurn(msg map[string]interface{}) string {
+	content := contentToString(msg["content"])
+	if getStr(msg, "role") == "tool" {
+		return fmt.Sprintf("[Tool result for %s]: %s", getStr(msg, "name"), content)
+	}
+	return content
 }

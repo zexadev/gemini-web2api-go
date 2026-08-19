@@ -282,9 +282,9 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	var text string
 	var toolCalls []ToolCall
 	var res *StreamResult
-	if rtCfg().MultiTurn && len(tools) == 0 && len(images) == 0 {
-		// 多轮：按历史前缀识别续接，命中就只发新消息、历史留服务端。
-		text, res, err = callGeminiConv(messages, modelCfg, onDelta, onReasoning)
+	if rtCfg().MultiTurn && len(images) == 0 {
+		// 多轮：按历史前缀识别续接，命中就只发新消息、历史留服务端。带 tools 也走这条。
+		text, toolCalls, res, err = callGeminiConv(messages, modelCfg, tools, req["tool_choice"], onDelta, onReasoning)
 	} else {
 		text, toolCalls, res, err = callGemini(prompt, latest, modelCfg, tools, images, onDelta, onReasoning)
 	}
@@ -637,8 +637,8 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 	var text string
 	var toolCalls []ToolCall
 	var res *StreamResult
-	if rtCfg().MultiTurn && len(tools) == 0 && len(images) == 0 {
-		text, res, err = callGeminiConv(messages, modelCfg, onDelta, nil)
+	if rtCfg().MultiTurn && len(images) == 0 {
+		text, toolCalls, res, err = callGeminiConv(messages, modelCfg, tools, req["tool_choice"], onDelta, nil)
 	} else {
 		text, toolCalls, res, err = callGemini(prompt, latest, modelCfg, tools, images, onDelta, nil)
 	}
