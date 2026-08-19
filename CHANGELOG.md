@@ -2,6 +2,29 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 4.5.0
+
+### 修复
+
+- **`/v1/responses` 流式补全 item 生命周期事件**。以前只发 `response.created` 就直接推
+  `output_text.delta`，漏了先用 `response.output_item.added` + `content_part.added` 声明
+  item。严格的 Responses 客户端（Codex、zcode 等）收到不合规的事件序列会中途报错
+  （"OutputTextDelta without active item" / "Turn execution failed"），而 HTTP 请求本身
+  返回 200、chat 模式不受影响，所以面板看着正常、很难定位。现在补齐了 message 和
+  function_call 两种 item 的 added → content_part → done 完整生命周期。
+
+### 新增
+
+- **可选多轮（`multi_turn`，默认关）**。开启后走 Gemini 原生 conversation_id 服务端续接：
+  客户端每轮重发全历史，服务端按"除最后一条外的历史"做指纹识别续接，命中就只发最后一句
+  新消息、历史留 Google 服务端，绕开单请求约 13 万字节的墙。登录 / 匿名都可用（匿名首轮
+  就地 GET /app 拿 session cookie 当会话载体，不需要账号）。带 tools 的 agentic 客户端
+  也走这条。
+
+  实测：两轮各 110KB、全量重发会撞字节墙报 400 的场景，续接只发新消息 → 200，长会话
+  不再撞墙。注意多轮**不放大模型的上下文窗口**——超出窗口的早期内容仍会被挤出（滑动窗口
+  留最近），它解决的是"长对话不撞单请求墙 + 保住最近上下文"，不是"喂超长文档"。
+
 ## 4.4.0
 
 ### 新增
