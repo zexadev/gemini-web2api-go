@@ -84,7 +84,21 @@ func (s *sseWriter) SendContent(delta string) {
 
 func (s *sseWriter) SendToolCalls(tcs []ToolCall) {
 	s.start()
-	s.chunk(map[string]interface{}{"tool_calls": tcs}, nil, nil)
+	// 流式 delta 里每个 tool_call 必须带 index，客户端靠它把分片的 tool_call 拼起来
+	// （OpenAI 流式规范要求）。ToolCall 结构本身没有 index，这里按顺序补上。
+	out := make([]map[string]interface{}, len(tcs))
+	for i, tc := range tcs {
+		out[i] = map[string]interface{}{
+			"index": i,
+			"id":    tc.ID,
+			"type":  tc.Type,
+			"function": map[string]interface{}{
+				"name":      tc.Function.Name,
+				"arguments": tc.Function.Arguments,
+			},
+		}
+	}
+	s.chunk(map[string]interface{}{"tool_calls": out}, nil, nil)
 }
 
 // Finish 收尾：空 delta + finish_reason，可选 usage chunk，最后 [DONE]。
