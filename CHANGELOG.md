@@ -2,6 +2,15 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 4.6.0
+
+### 新增
+
+- **支持 `gemini-3.7-flash`（及 `-thinking` 版）**。从 `otAQ7b` 权威清单拿到 3.7 Flash
+  的 hex id `797f3d0293f288ad`（3.6 Flash 为 `fbb127bbb056c959`），加入 `Models`。
+  `Mode=1` 与 3.6 Flash 同类（全方位）。3.7 Flash 按账号灰度放出，匿名/登录态、是否
+  在 `/v1/models` 暴露取决于账号是否被灰度到。
+
 ## 4.5.0
 
 ### 修复

@@ -35,9 +35,9 @@ This is not a wrapper around Google's official API ([generativelanguage.googleap
   into `completion_tokens`
 
 **Models**
-- `gemini-3.6-flash` and `gemini-3.5-flash-lite` work anonymously, web search included
+- `gemini-3.7-flash`, `gemini-3.6-flash` and `gemini-3.5-flash-lite` work anonymously, web search included
 - `gemini-3.1-pro` needs a cookie; every reply carries a reasoning chain
-- Each of the three models has a `-thinking` variant (extended thinking), available with a cookie
+- Each of the four models has a `-thinking` variant (extended thinking), available with a cookie
   (`reasoning_content`)
 - Every response records which model the backend **actually** used, so silent
   downgrades are visible
@@ -222,24 +222,26 @@ The frontend is a single HTML file and Chart.js is embedded in the binary, **not
 
 ## Models
 
-Gemini's backend only recognises three models (the list comes from `batchexecute?rpcids=otAQ7b`):
+Gemini's backend currently recognises four models (the list comes from `batchexecute?rpcids=otAQ7b`):
 
 | Model | Description |
 |---|---|
+| `gemini-3.7-flash` | Latest all-round model (successor to 3.6 Flash) |
 | `gemini-3.6-flash` | All-round, default |
 | `gemini-3.5-flash-lite` | Fast and lightweight |
 | `gemini-3.1-pro` | Most capable, **needs a cookie**; every reply carries a reasoning chain |
+| `gemini-3.7-flash-thinking` | 3.7 Flash with extended thinking; **needs a cookie** |
 | `gemini-3.6-flash-thinking` | 3.6 Flash with extended thinking; **needs a cookie** |
 | `gemini-3.5-flash-lite-thinking` | 3.5 Flash-Lite with extended thinking; **needs a cookie** |
 | `gemini-3.1-pro-thinking` | 3.1 Pro with extended thinking; **needs a cookie** |
 | `gemini-image` | Image generation (Nano Banana); base64 output; **needs a cookie** |
 | `gemini-music` | Music (Lyria, ~30s); base64 output; **needs a cookie** |
 
-Without a cookie, `/v1/models` returns only the first two, and asking for `gemini-3.1-pro` fails with an explanation. An anonymous request for it is always silently downgraded to 3.5 Flash-Lite — better to fail at model selection than to hand back a reply that "succeeded" but isn't Pro.
+Without a cookie, `/v1/models` returns only the first three, and asking for `gemini-3.1-pro` fails with an explanation. An anonymous request for it is always silently downgraded to 3.5 Flash-Lite — better to fail at model selection than to hand back a reply that "succeeded" but isn't Pro.
 
 With a valid cookie it really is Pro: six consecutive calls all had the backend report `3.1 Pro` itself.
 
-Only those three are exposed. The old names `gemini-3.5-flash`, `gemini-3.5-flash-thinking`, `gemini-3.5-flash-thinking-lite`, `gemini-auto` and `gemini-flash-lite` were **removed** (they now return 400): the backend has no entries for them, and keeping them only suggested there were five distinct models to choose from.
+Only those four are exposed. The old names `gemini-3.5-flash`, `gemini-3.5-flash-thinking`, `gemini-3.5-flash-thinking-lite`, `gemini-auto` and `gemini-flash-lite` were **removed** (they now return 400): the backend has no entries for them, and keeping them only suggested there were five distinct models to choose from.
 
 > **`@think=N` is deprecated.** The suffix was written into `inner[17]` and long treated as "thinking depth", but captures show it is the **turn index within a conversation** (first turn `[[0]]`, the follow-up carrying a conversation id `[[1]]`, incrementing from there) — nothing to do with reasoning depth. We open a fresh conversation for every request, so the value is always 0 and the parameter never did anything. The suffix is still accepted and ignored, so existing client configs don't break.
 

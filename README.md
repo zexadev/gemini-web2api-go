@@ -219,31 +219,33 @@ Claude Code / Cursor 这类 MCP 客户端能「用 Gemini 去搜网」，返回*
 
 ## 模型
 
-Gemini 网页端服务端只认三个模型（清单来自 `batchexecute?rpcids=otAQ7b`）：
+Gemini 网页端服务端目前认四个模型（清单来自 `batchexecute?rpcids=otAQ7b`）：
 
 | 模型 | 描述 |
 |---|---|
+| `gemini-3.7-flash` | 最新全方位模型（3.6 的继任） |
 | `gemini-3.6-flash` | 全方位，默认 |
 | `gemini-3.5-flash-lite` | 极速、轻量 |
 | `gemini-3.1-pro` | 最强，**要配 cookie**；每次回答都带思考链 |
+| `gemini-3.7-flash-thinking` | 3.7 Flash 开扩展思考，**要配 cookie** |
 | `gemini-3.6-flash-thinking` | 3.6 Flash 开扩展思考，**要配 cookie** |
 | `gemini-3.5-flash-lite-thinking` | 3.5 Flash-Lite 开扩展思考，**要配 cookie** |
 | `gemini-3.1-pro-thinking` | 3.1 Pro 开扩展思考，**要配 cookie** |
 | `gemini-image` | 生图（Nano Banana），产物 base64，**要配 cookie** |
 | `gemini-music` | 音乐（Lyria，约 30 秒），产物 base64，**要配 cookie** |
 
-没配 cookie 时 `/v1/models` 只返回前两个，选 `gemini-3.1-pro` 会直接报错并说明
+没配 cookie 时 `/v1/models` 只返回前三个，选 `gemini-3.1-pro` 会直接报错并说明
 原因。因为匿名请求它必然被静默降级成 3.5 Flash-Lite——与其让客户端拿到一个
 "成功但其实不是 Pro"的回复，不如在选型时就失败。
 
 配了有效 cookie 时它是**真的 Pro**：连打 6 次服务端回报的都是 `3.1 Pro` 本身。
 
-三个 `-thinking` 是网页 UI 上「扩展思考」的开关，跟模型正交——三个模型都能开，
-不是三个额外的模型。服务端回报的名字会带 `Extended`（如 `3.6 Flash Extended`），
+四个 `-thinking` 是网页 UI 上「扩展思考」的开关，跟模型正交——四个模型都能开，
+不是四个额外的模型。服务端回报的名字会带 `Extended`（如 `3.6 Flash Extended`），
 思考链明显变长（实测 2467 / 1059 / 583 字符，对应普通版 0 / 0 / 268）。
 **只在登录态生效**：匿名请求带上这个开关会被服务端静默忽略，所以没 cookie 时不暴露。
 
-只暴露这三个基础模型。旧的 `gemini-3.5-flash`、`gemini-3.5-flash-thinking`、
+只暴露这四个基础模型。旧的 `gemini-3.5-flash`、`gemini-3.5-flash-thinking`、
 `gemini-3.5-flash-thinking-lite`、`gemini-auto`、`gemini-flash-lite` **已移除**
 （传了会返回 400）——它们在服务端没有对应条目，留着只会让人以为有五种不同
 的模型可选。

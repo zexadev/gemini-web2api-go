@@ -10,6 +10,7 @@ func TestModelHeader(t *testing.T) {
 	withPoolCookie(t) // 让 3.1 Pro 可选，见 TestProHiddenWithoutCookie
 
 	cases := []struct{ name, wantHex string }{
+		{"gemini-3.7-flash", hexFlash37},
 		{"gemini-3.6-flash", hexFlash36},
 		{"gemini-3.5-flash-lite", hexFlashLite},
 		{"gemini-3.1-pro", hexPro31},
@@ -48,16 +49,16 @@ func TestModelHeader(t *testing.T) {
 		}
 	}
 	// 守的是「不许冒出假模型」：thinking 版复用同样的 hex，所以看**去重后的 hex 数**，
-	// 不是条目数。服务端清单（otAQ7b）里就 3 个。
+	// 不是条目数。服务端清单（otAQ7b）里就 4 个真模型：3.7 Flash / 3.6 Flash / Flash-Lite / 3.1 Pro。
 	hexes := map[string]bool{}
 	for _, m := range Models {
 		hexes[m.HexID] = true
 	}
-	if len(hexes) != 3 {
-		t.Errorf("只应存在 3 个真模型 hex, got %d", len(hexes))
+	if len(hexes) != 4 {
+		t.Errorf("只应存在 4 个真模型 hex, got %d", len(hexes))
 	}
 	// 反过来：每个真 hex 都应该有一个 thinking 版
-	for _, base := range []string{hexFlash36, hexFlashLite, hexPro31} {
+	for _, base := range []string{hexFlash37, hexFlash36, hexFlashLite, hexPro31} {
 		found := false
 		for _, m := range Models {
 			if m.HexID == base && m.Thinking {
@@ -259,8 +260,8 @@ func TestProHiddenWithoutCookie(t *testing.T) {
 			t.Errorf("无 cookie 时不该暴露 thinking 版: %s", name)
 		}
 	}
-	if len(availableModels()) != 2 {
-		t.Errorf("无 cookie 时应只剩 2 个模型, got %d", len(availableModels()))
+	if len(availableModels()) != 3 {
+		t.Errorf("无 cookie 时应只剩 3 个模型(3.7/3.6 Flash + Flash-Lite), got %d", len(availableModels()))
 	}
 	_, _, err := resolveModel("gemini-3.1-pro")
 	if err == nil {
