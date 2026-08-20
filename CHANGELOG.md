@@ -2,6 +2,14 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 4.6.0
+
+### 修复
+
+- **流式 `tool_calls` 补 `index` 字段**（issue #10）。流式 delta 里的每个 tool_call 少了
+  `index`，OpenAI 流式规范要求客户端靠它把分片的 tool_call 拼起来；漏了导致部分客户端
+  拼不起来。现在按顺序给每个补上。
+
 ## 4.5.0
 
 ### 修复
