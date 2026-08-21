@@ -1692,6 +1692,7 @@ function renderShell() {
       <div class="topbar">
         <h1 class="page-title" id="pageTitle">概览</h1>
         <div class="topbar-right">
+          <button class="btn" id="langBtn" onclick="toggleLang()" style="padding:5px 10px;font-size:12px" title="切换语言 / Switch language">EN</button>
           <span class="dot" id="healthDot"></span>
           <span class="muted" id="healthText">运行中</span>
         </div>
@@ -1752,11 +1753,319 @@ async function doLogin() {
   else document.getElementById('loginErr').textContent = 'Token 错误';
 }
 
+// ── i18n（中 ⇄ 英）───────────────────────────────────────────────────────
+// 机制：一个 MutationObserver 盯 #app，内容一变就按整段文本节点/属性精确匹配
+// I18N_EN 词典替换成英文；切回中文时从 ZH_ORIG 里恢复原文。渲染逻辑一行不用改，
+// 只在最外面套一层翻译。插值文案（带数字/名字的）不精确匹配、保持中文，属可接受。
+const I18N_EN = {
+  'gemini-web2api 管理面板': 'gemini-web2api Admin Panel',
+  '概览': 'Overview',
+  '请求记录': 'Requests',
+  '代理池': 'Proxy Pool',
+  'Cookie 池': 'Cookie Pool',
+  '设置': 'Settings',
+  '运行中': 'Running',
+  '无法连接': 'Disconnected',
+  '收起 / 展开': 'Collapse / Expand',
+  '收起或展开侧边栏': 'Collapse or expand sidebar',
+  '退出登录': 'Log out',
+  '版本': 'Version',
+  '模型': 'Model',
+  '匿名': 'Anonymous',
+  '直连': 'Direct',
+  '管理员 Token': 'Admin Token',
+  '登录': 'Log in',
+  'Token 错误': 'Wrong token',
+  '24 小时请求': '24h Requests',
+  '成功率': 'Success rate',
+  '平均延迟': 'Avg latency',
+  '输入 Token': 'Input Tokens',
+  '输出 Token': 'Output Tokens',
+  '请求量与延迟': 'Requests & latency',
+  '最近 24 小时': 'Last 24 hours',
+  '最近 7 天': 'Last 7 days',
+  '最近 30 天': 'Last 30 days',
+  '距离封禁红线': 'Distance to ban threshold',
+  '刷新': 'Refresh',
+  '还没有任何请求经过': 'No requests have passed through yet',
+  '这条线是怎么来的': 'Where this line comes from',
+  '连通性诊断': 'Connectivity test',
+  '测试一次': 'Test once',
+  '自动选择（按调度规则）': 'Auto-select (by scheduling rules)',
+  '直连主机 IP': 'Direct (host IP)',
+  '打一次真实请求看是否通。不消耗限流配额、不写入请求记录。返回 302/429 就是出口进了黑名单，该换 IP。':
+    'Fire one real request to see if it goes through. Consumes no rate-limit quota and writes no request record. A 302/429 means the egress is blacklisted — time to switch IP.',
+  '正在测试…（最多等 30 秒）': 'Testing... (up to 30s)',
+  '结果': 'Result',
+  '被风控（302）': 'Blocked (302)',
+  '被限流（429）': 'Rate-limited (429)',
+  '上游错误': 'Upstream error',
+  '网络层错误': 'Network-layer error',
+  '使用的 IP slot': 'IP slot used',
+  '指纹': 'Fingerprint',
+  '回复内容': 'Response',
+  '诊断说明': 'Diagnostic',
+  '上游响应片段': 'Upstream response snippet',
+  '按模型分组': 'By model',
+  '按出口分组': 'By egress',
+  '请求': 'Requests',
+  '成功': 'Success',
+  '平均': 'Avg',
+  '出口': 'Egress',
+  '暂无数据': 'No data',
+  '类型': 'Type',
+  '次数': 'Count',
+  '含义 / 该怎么办': 'Meaning / What to do',
+  '窗口内没有失败': 'No failures in this window',
+  '上游返回 200 但没有内容帧。实测是瞬时拒绝，隔几分钟自愈，跟频率/并发/累积次数都无关 —— 重试即可，不用调限流。':
+    'Upstream returned 200 but no content frames. Measured as a transient rejection that self-heals in a few minutes, unrelated to rate / concurrency / cumulative count — just retry, no need to adjust rate limits.',
+  '本地限流挡下的（slot 满）。要更高产能就在「代理池」加代理。':
+    'Blocked by local rate limiting (slots full). For more throughput, add proxies on the Proxy Pool page.',
+  '被 Google 重定向到 sorry/index，该出口 IP 进了黑名单。换代理，6-24 小时才恢复。':
+    'Redirected by Google to sorry/index; this egress IP is blacklisted. Switch proxies — recovery takes 6-24 hours.',
+  '上游直接 429。同样是出口 IP 嫌疑，换代理。':
+    'Upstream returned 429 directly. Again an egress-IP suspicion — switch proxies.',
+  '上游返回非 200 的其它状态码，可能是协议变更或临时故障。':
+    'Upstream returned a non-200 status code, possibly a protocol change or a temporary fault.',
+  '连不上代理 / DNS / TLS 握手失败。检查代理可用性 —— 实测代理服务商出口质量参差，劣质出口会连续失败。':
+    'Could not reach the proxy / DNS / TLS handshake failed. Check proxy availability — proxy provider egress quality varies, and bad egresses fail repeatedly.',
+  '客户端请求本身有问题（模型名不存在、传了不支持的字段）。':
+    'The client request itself is malformed (nonexistent model name, or an unsupported field was passed).',
+  '全部': 'All',
+  '失败': 'Failed',
+  '全部模型': 'All models',
+  '每页 25': '25 / page',
+  '每页 50': '50 / page',
+  '每页 100': '100 / page',
+  '每页 200': '200 / page',
+  '时间': 'Time',
+  '实际模型': 'Actual model',
+  '账号': 'Account',
+  '状态': 'Status',
+  '首字': 'TTFB',
+  '总用时': 'Total',
+  '输入': 'Input',
+  '输出': 'Output',
+  '接口': 'Endpoint',
+  '加载中...': 'Loading...',
+  '加载中…': 'Loading...',
+  '还没有请求记录': 'No request records yet',
+  '错误：': 'Error: ',
+  '最前': 'First',
+  '上一页': 'Previous',
+  '下一页': 'Next',
+  '最后': 'Last',
+  '服务端实际使用的模型与请求的不一致': 'The model actually used by the server differs from the one requested',
+  '+ 添加代理': '+ Add proxy',
+  '每个代理是一个独立 IP slot': 'Each proxy is an independent IP slot',
+  '名称': 'Name',
+  '代理 URL': 'Proxy URL',
+  '最近错误': 'Last error',
+  '操作': 'Actions',
+  '已启用': 'Enabled',
+  '已禁用': 'Disabled',
+  '禁用': 'Disable',
+  '启用': 'Enable',
+  '重置': 'Reset',
+  '删除': 'Delete',
+  '还没有代理。点「+ 添加代理」加一个。': 'No proxies yet. Click "+ Add proxy" to add one.',
+  '+ 导入 Cookie': '+ Import Cookie',
+  '每行一个 Google 登录态账号': 'One logged-in Google account per row',
+  '标签': 'Label',
+  '关键 Cookie': 'Key Cookies',
+  '最近成功': 'Last success',
+  '未命名': 'Unnamed',
+  '缺 TS': 'Missing TS',
+  '缺 __Secure-1PSIDTS，无法长期续命': 'Missing __Secure-1PSIDTS; cannot be kept alive long-term',
+  '检测': 'Check',
+  '保活': 'Keep-alive',
+  '编辑': 'Edit',
+  'Cookie 池是空的。点「+ 导入 Cookie」加一个登录态账号。': 'The Cookie pool is empty. Click "+ Import Cookie" to add a logged-in account.',
+  '检测中…': 'Checking...',
+  '运行时配置': 'Runtime config',
+  '保存并生效': 'Save & apply',
+  '放弃修改': 'Discard changes',
+  '保存中…': 'Saving...',
+  '已保存并生效': 'Saved & applied',
+  '流量控制 · 每个 IP slot 独立计数': 'Rate limiting · counted per IP slot',
+  '重试与超时': 'Retry & timeout',
+  '请求行为': 'Request behavior',
+  '代理与 cookie 的降级行为': 'Proxy & cookie fallback behavior',
+  '数据与日志': 'Data & logs',
+  '并发': 'Concurrency',
+  '重试次数': 'Retry attempts',
+  '重试间隔（秒）': 'Retry interval (s)',
+  '上游超时（秒）': 'Upstream timeout (s)',
+  '默认模型': 'Default model',
+  'Prompt 字节上限': 'Prompt byte limit',
+  'TLS 指纹': 'TLS fingerprint',
+  'Gemini bl 版本': 'Gemini bl version',
+  '自动跟随 bl 版本': 'Auto-follow bl version',
+  '熔断冷却（分钟）': 'Circuit-breaker cooldown (min)',
+  '无可用代理时退回直连': 'Fall back to direct when no proxy is available',
+  'cookie 失效时降级匿名': 'Downgrade to anonymous when cookie fails',
+  '明细保留（天）': 'Detail retention (days)',
+  '打印请求日志': 'Log requests',
+  '同一时刻最多几个请求在飞，0=不限': 'Max requests in flight at once. 0 = unlimited',
+  '滚动 60 秒窗口上限，0=不限': 'Rolling 60-second window cap. 0 = unlimited',
+  '滚动 1 小时上限。实测单出口 80-180 次被拦，默认取下沿 80。按低速率跑可以调高很多——10 次/分钟连打 800 次没被拦过':
+    'Rolling 1-hour cap. A single egress was measured to get blocked at 80-180 requests, so the default takes the lower bound of 80. Running at a low rate can go much higher — 800 requests at 10/minute never got blocked.',
+  '含首次；流式已吐字后不再重试': 'Includes the first attempt; no retry once streaming has begun emitting',
+  '客户端没传 model 时用哪个': 'Which model to use when the client sends no model',
+  '超了直接返回 400 context_length_exceeded。上游的墙实测在约 13 万 UTF-8 字节，按字节算跟语言无关（同字节数下中英文表现一致，而 token 数差 1.9 倍）。不拦的话上游从尾部静默截断，被吃掉的正是刚问的那句。0=不限':
+    'Over the limit returns 400 context_length_exceeded directly. The upstream wall is measured at about 130,000 UTF-8 bytes; counted by bytes it is language-independent (Chinese and English behave identically at equal byte counts, though token counts differ by 1.9x). Without this cap the upstream silently truncates from the tail, and what gets eaten is exactly the message just asked. 0 = unlimited',
+  '上游前端版本号。请求大面积失败时先看这里是不是过期了': 'Upstream frontend version number. When requests fail en masse, check here first for staleness',
+  '每 6 小时从 /app 页面抓一次最新版本号，抓到就用抓到的。抓不到或格式不对就继续用上面钉的值':
+    'Fetches the latest version number from the /app page every 6 hours and uses it if found. If nothing is fetched or the format is wrong, keeps using the pinned value above',
+  '代理连续失败 5 次后歇多久再放回池子。实测被拦的出口 106-121 分钟自恢复，默认 120；0=不恢复，要去代理池页面手动重置':
+    'How long a proxy rests before returning to the pool after 5 consecutive failures. Blocked egresses were measured to self-recover in 106-121 minutes, so the default is 120. 0 = no auto-recovery, reset manually on the Proxy Pool page',
+  '关：直接返回 429，本机 IP 不会暴露给上游（默认）。开：可用性优先，但上游会看到本机真实出口':
+    'Off: return 429 directly, the host IP is never exposed to upstream (default). On: availability first, but upstream sees the host real egress',
+  '关：直接报错，能立刻发现该换号了（默认）。开：继续跑，但 3.1 Pro 会被静默降级成 3.5 Flash-Lite、思考链消失，客户端看不出来':
+    'Off: error out directly so you immediately notice it is time to swap accounts (default). On: keep running, but 3.1 Pro gets silently downgraded to 3.5 Flash-Lite and the thinking chain vanishes, invisible to the client',
+  '过期只删明细，聚合数据永久保留': 'Expiry deletes only detail rows; aggregate data is kept forever',
+  '显示': 'Show',
+  '隐藏': 'Hide',
+  '复制': 'Copy',
+  '生成随机 Key': 'Generate random key',
+  '自定义': 'Custom',
+  '调用示例': 'Example request',
+  '部署配置': 'Deployment config',
+  '监听': 'Listen',
+  '数据库': 'Database',
+  'Cookie 播种文件': 'Cookie seed file',
+  '面板鉴权': 'Panel auth',
+  '未配置': 'Not configured',
+  '已开启': 'On',
+  '未设 token': 'No token set',
+  '部署锁定': 'Deploy-locked',
+  '面板可轮换': 'Panel-rotatable',
+  'compose 的 ports + --port': 'compose ports + --port',
+  'compose 的 volumes + --db': 'compose volumes + --db',
+  '启动时把文件内容导入 Cookie 池；之后从「Cookie 池」页面管理': 'Imports the file contents into the Cookie pool at startup; managed afterward from the "Cookie Pool" page',
+  'compose 的 ADMIN_TOKEN': 'compose ADMIN_TOKEN',
+  'compose 的 API_KEY': 'compose API_KEY',
+  'gemini-web2api-go · 单二进制 · SQLite · Chrome 146 指纹 · tiktoken cl100k_base 计费':
+    'gemini-web2api-go · single binary · SQLite · Chrome 146 fingerprint · tiktoken cl100k_base billing',
+  '取消': 'Cancel',
+  '确定': 'OK',
+  '提交': 'Submit',
+  '添加代理': 'Add proxy',
+  '一个代理 = 一个独立 IP slot，享有独立的并发/RPM/RPH 配额。': 'One proxy = one independent IP slot with its own concurrency / RPM / RPH quota.',
+  '随便起，admin 面板里用来区分': 'Any name, just to tell them apart in the admin panel',
+  '支持 http:// / https:// / socks5:// 协议': 'Supports http:// / https:// / socks5:// protocols',
+  '删除代理': 'Delete proxy',
+  '导入 Cookie': 'Import Cookie',
+  '仅用于面板里区分账号，不参与请求。': 'Only used to tell accounts apart in the panel; not sent with requests.',
+  '整串粘贴（推荐）': 'Paste full string (recommended)',
+  '逐项填写': 'Fill in individually',
+  '整行粘贴，分号分隔。至少要含 SAPISID。DevTools 里全选复制即可，多余的项会一并保留 —— 发得越全越像真实浏览器。':
+    'Paste the whole line, semicolon-separated. Must contain at least SAPISID. Select-all and copy in DevTools; extra items are kept too — the more complete, the more it looks like a real browser.',
+  '备注': 'Note',
+  'Cookie 不能为空': 'Cookie cannot be empty',
+  'cookie 里没有 SAPISID，多半没复制全': 'No SAPISID in the cookie — you probably did not copy it all',
+  '导入': 'Import',
+  '只改标签和备注，不动 cookie 本身。要换 cookie 请删掉重新导入。': 'Edits only the label and note, not the cookie itself. To replace the cookie, delete and re-import.',
+  '账号邮箱': 'Account email',
+  '可留空': 'Optional',
+  '例如账号邮箱，可留空': 'e.g. account email, optional',
+  '删除 Cookie': 'Delete Cookie',
+  '退出后需要重新输入管理员 token 才能进来。服务本身不受影响，API 照常提供。': 'After logging out you must re-enter the admin token to get back in. The service itself is unaffected and the API keeps serving.',
+  '退出': 'Log out',
+  '生成新 Key': 'Generate new key',
+  '现有客户端在重新配置前将无法访问。确定继续？': 'Existing clients will be unable to access until reconfigured. Continue?',
+  '设置自定义 API Key': 'Set custom API Key',
+  '至少 20 字符。设置后所有客户端要更换为新 Key。': 'At least 20 characters. All clients must switch to the new key once set.',
+  '新 Key': 'New key',
+  '不能为空': 'Cannot be empty',
+  '代理已添加': 'Proxy added',
+  '已删除': 'Deleted',
+  '已重置失败计数': 'Failure count reset',
+  '已保存': 'Saved',
+  '已复制到剪贴板': 'Copied to clipboard',
+  '已复制（兼容模式）': 'Copied (fallback mode)',
+  '已生成新 Key': 'New key generated',
+  'Key 至少 20 字符': 'Key must be at least 20 characters',
+  'Key 已更新': 'Key updated',
+};
+let LANG = (() => { try { return localStorage.getItem('lang') === 'en' ? 'en' : 'zh'; } catch (e) { return 'zh'; } })();
+const ZH_ORIG = new WeakMap();
+const I18N_ATTRS = ['title', 'placeholder', 'aria-label'];
+
+function translateTree(root, toEN) {
+  // 规整：trim + 把内部换行/缩进折成单空格，好跟词典 key 精确对上（源码里跨行的句子
+  // 在 DOM 里是一个含换行+缩进的文本节点）。命中就整段换成英文、原文存起来供切回。
+  const norm = s => s.trim().replace(/\s+/g, ' ');
+  const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let n;
+  while ((n = w.nextNode())) {
+    const key = norm(n.nodeValue);
+    if (!key) continue;
+    if (toEN) {
+      const en = I18N_EN[key];
+      if (en) {
+        if (!ZH_ORIG.has(n)) ZH_ORIG.set(n, n.nodeValue);
+        n.nodeValue = en;
+      }
+    } else if (ZH_ORIG.has(n)) {
+      n.nodeValue = ZH_ORIG.get(n);
+      ZH_ORIG.delete(n);
+    }
+  }
+  const scope = root.querySelectorAll ? root.querySelectorAll('[title],[placeholder],[aria-label]') : [];
+  scope.forEach(el => {
+    I18N_ATTRS.forEach(attr => {
+      if (!el.hasAttribute(attr)) return;
+      const dz = 'data-zh-' + attr;
+      if (toEN) {
+        const en = I18N_EN[norm(el.getAttribute(attr))];
+        if (en && !el.hasAttribute(dz)) { el.setAttribute(dz, el.getAttribute(attr)); el.setAttribute(attr, en); }
+      } else if (el.hasAttribute(dz)) {
+        el.setAttribute(attr, el.getAttribute(dz)); el.removeAttribute(dz);
+      }
+    });
+  });
+}
+
+let i18nObserver = null;
+let i18nPending = false;
+function i18nApply() {
+  const app = document.getElementById('app');
+  if (!app) return;
+  if (i18nObserver) i18nObserver.disconnect();
+  translateTree(app, LANG === 'en');
+  if (i18nObserver) i18nObserver.observe(app, { childList: true, subtree: true, characterData: true });
+}
+function i18nSchedule() {
+  if (i18nPending || LANG !== 'en') return;
+  i18nPending = true;
+  requestAnimationFrame(() => { i18nPending = false; i18nApply(); });
+}
+function i18nInit() {
+  const app = document.getElementById('app');
+  if (!app) return;
+  i18nObserver = new MutationObserver(() => i18nSchedule());
+  i18nObserver.observe(app, { childList: true, subtree: true, characterData: true });
+  updateLangBtn();
+  if (LANG === 'en') i18nApply();
+}
+function updateLangBtn() {
+  const b = document.getElementById('langBtn');
+  if (b) b.textContent = LANG === 'en' ? '中' : 'EN';
+}
+function toggleLang() {
+  LANG = LANG === 'en' ? 'zh' : 'en';
+  try { localStorage.setItem('lang', LANG); } catch (e) {}
+  i18nApply();
+  updateLangBtn();
+}
+
 // boot — try fetching stats; if 401, login page
 (async () => {
   const r = await fetch('api/stats?hours=1', { credentials: 'include' });
   if (r.ok) renderShell();
   else renderLogin();
+  i18nInit();
 })();
 </script>
 </body>
