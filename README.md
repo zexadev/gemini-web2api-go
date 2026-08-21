@@ -226,9 +226,11 @@ Gemini 网页端服务端只认三个模型（清单来自 `batchexecute?rpcids=
 | `gemini-3.6-flash` | 全方位，默认 |
 | `gemini-3.5-flash-lite` | 极速、轻量 |
 | `gemini-3.1-pro` | 最强，**要配 cookie**；每次回答都带思考链 |
+| `gemini-3.7-flash` | 新款 Flash，**要配 cookie 且账号已灰度到 3.7**（否则降级成 3.5 Flash-Lite）|
 | `gemini-3.6-flash-thinking` | 3.6 Flash 开扩展思考，**要配 cookie** |
 | `gemini-3.5-flash-lite-thinking` | 3.5 Flash-Lite 开扩展思考，**要配 cookie** |
 | `gemini-3.1-pro-thinking` | 3.1 Pro 开扩展思考，**要配 cookie** |
+| `gemini-3.7-flash-thinking` | 3.7 Flash 开扩展思考，**要配 cookie 且账号已灰度** |
 | `gemini-image` | 生图（Nano Banana），产物 base64，**要配 cookie** |
 | `gemini-music` | 音乐（Lyria，约 30 秒），产物 base64，**要配 cookie** |
 
