@@ -101,7 +101,7 @@ func fetchImageArtifacts(raw, cid, cookie, sapisid, xsrf, proxyURL, defaultMime 
 	}
 	var arts []MediaArtifact
 	for _, u := range urls {
-		mime, data, err := downloadBytes(u, cookie, proxyURL, defaultMime)
+		mime, data, err := downloadBytes(imageFullResURL(u), cookie, proxyURL, defaultMime)
 		if err != nil {
 			return arts, err
 		}
@@ -112,6 +112,25 @@ func fetchImageArtifacts(raw, cid, cookie, sapisid, xsrf, proxyURL, defaultMime 
 		}
 	}
 	return arts, nil
+}
+
+// imageFullResURL 给图片 CDN 链加尺寸参数取原图。plain gg-dl 默认下来是 ~500px 的缩略图
+// （issue #14：控制台里是 1365×768，链尾 =s1024-rj 改 =s2048-rj 更大）。googleusercontent
+// 惯例是在链尾加 =sN 指定最大边、=s0 取原始尺寸。这里用 =s0 取全分辨率、且不改格式
+// （-rj 会强制 jpeg，我们要保持 PNG）。
+//
+// 选项在最后一个路径段里、以 = 分隔；gg-dl token 是 base64url 不含 =，所以按最后一个
+// 路径段里的 = 切，去掉已有选项再加 =s0。
+func imageFullResURL(u string) string {
+	i := strings.LastIndexByte(u, '/')
+	if i < 0 {
+		return u + "=s0"
+	}
+	seg := u[i+1:]
+	if j := strings.IndexByte(seg, '='); j >= 0 {
+		u = u[:i+1] + seg[:j]
+	}
+	return u + "=s0"
 }
 
 // fetchDownloadArtifacts 取回音乐/视频：轮询 hNvQHb 等到 response_data 下载链，再下。
