@@ -233,6 +233,7 @@ Gemini 网页端服务端只认三个模型（清单来自 `batchexecute?rpcids=
 | `gemini-3.7-flash-thinking` | 3.7 Flash 开扩展思考，**要配 cookie 且账号已灰度** |
 | `gemini-image` | 生图（Nano Banana），产物 base64，**要配 cookie** |
 | `gemini-music` | 音乐（Lyria，约 30 秒），产物 base64，**要配 cookie** |
+| `gemini-canvas` | 画布，生成交互 HTML 文档（内联返回 ```html 块），**要配 cookie** |
 
 没配 cookie 时 `/v1/models` 只返回前两个，选 `gemini-3.1-pro` 会直接报错并说明
 原因。因为匿名请求它必然被静默降级成 3.5 Flash-Lite——与其让客户端拿到一个
@@ -577,7 +578,7 @@ docker-compose.yml         单容器，默认拉 ghcr 镜像，sqlite 挂 volume
 ## 限制
 
 - **单 IP 上限**：突发地打，实测 **80-180 次请求**后被重定向到 sorry 页（连接复用能多打约 60%：并发 10 时复用 172/177、每次新建 106/109）。但**平缓打几乎打不满**——静态 IP 上 10 次/分钟连打 800 次没被拦。默认 `per_ip_rph=80` 取的是区间下沿 → 要放大产能配代理池，或按低速率跑并调高限额
-- **登录态功能**：生图（`gemini-image`）、音乐（`gemini-music`）已实现；视频、深度研究、画布没实现（视频免费号被拒，深度研究是多步异步流程）
+- **登录态功能**：生图（`gemini-image`）、音乐（`gemini-music`）、画布（`gemini-canvas`）已实现；视频、深度研究没实现（视频免费号被 Google 收走，深度研究是多步异步流程）
 - **Function calling**：prompt 级实现，模型不一定每次都按格式返回（OpenAI 真协议层我们做不到）
 - **多模态**：读图要挂 cookie；生图/音乐挂 cookie 可用（`gemini-image` / `gemini-music`），视频生成尚未实现
 - **长上下文有两堵墙**：请求体约 13 万字节、附件约 16 万字节（后者是模型能看到的内容**总量**，切成多份附件不涨额度）。挂 cookie 只能把可用长度从 13 万提到约 16 万，真正的长对话仍需客户端自己压缩

@@ -236,6 +236,7 @@ Gemini's backend only recognises three models (the list comes from `batchexecute
 | `gemini-3.7-flash-thinking` | 3.7 Flash with extended thinking; **needs a cookie on a 3.7-enabled account** |
 | `gemini-image` | Image generation (Nano Banana); base64 output; **needs a cookie** |
 | `gemini-music` | Music (Lyria, ~30s); base64 output; **needs a cookie** |
+| `gemini-canvas` | Canvas: generates an interactive HTML document (returned inline as a ```html block); **needs a cookie** |
 
 Without a cookie, `/v1/models` returns only the first two, and asking for `gemini-3.1-pro` fails with an explanation. An anonymous request for it is always silently downgraded to 3.5 Flash-Lite — better to fail at model selection than to hand back a reply that "succeeded" but isn't Pro.
 
@@ -366,7 +367,7 @@ Attaching a Google account cookie makes requests run as a signed-in session. Wha
 
 > Signed-in requests must carry an extra XSRF token. The project fetches it from the Gemini page automatically, caches it per cookie and re-fetches on expiry — nothing to configure. (Missing it makes **every** request fail with 400 while anonymous traffic keeps working — an earlier version hit exactly that.)
 
-A signed-in session unlocks `gemini-3.1-pro` + reasoning chain, image input, and **image generation (`gemini-image`) / music (`gemini-music`)** (see "Image & music" above). Video, deep research and canvas also need a signed-in session but **are not implemented here yet**.
+A signed-in session unlocks `gemini-3.1-pro` + reasoning chain, image input, **image generation (`gemini-image`) / music (`gemini-music`)** (see "Image & music" above), and **canvas (`gemini-canvas`)** — an interactive HTML document returned inline. Video and deep research also need a signed-in session but **are not implemented here yet**.
 
 1. Sign in to [gemini.google.com](https://gemini.google.com)
 2. DevTools (F12) → Application → Cookies → `https://gemini.google.com`
@@ -510,7 +511,7 @@ docker-compose.yml         single container, pulls the ghcr image by default, sq
 ## Limitations
 
 - **Per-IP ceiling**: when sending in bursts, measured at **80-180 requests** before the sorry-page redirect (connection reuse buys about 60%: at concurrency 10, a reused pool reached 172/177 versus 106/109 for a fresh connection per request). But **a steady pace barely reaches the ceiling at all** — 10 requests/minute on a static IP ran 800 requests without a block. `per_ip_rph=80` sits at the bottom of the burst range → use the proxy pool to scale, or pace yourself and raise the limit
-- **Signed-in features**: image generation (`gemini-image`) and music (`gemini-music`) are implemented; video, deep research and canvas are not (video is refused for free accounts, deep research is a multi-step async flow)
+- **Signed-in features**: image generation (`gemini-image`), music (`gemini-music`) and canvas (`gemini-canvas`) are implemented; video and deep research are not (video was pulled from free accounts by Google, deep research is a multi-step async flow)
 - **Function calling**: prompt-level, the model doesn't always answer in the expected format (a real protocol layer isn't available to us)
 - **Multimodal**: image input needs a cookie. Image and music generation work with a cookie (`gemini-image` / `gemini-music`); video generation is not implemented
 - **Long context hits two walls**: ~130,000 bytes for the request body and ~160,000 bytes for attachments (the latter is the **total** amount of content the model can see — splitting it across several attachments does not raise the budget). A cookie only takes the usable length from 130K to ~160K; genuinely long conversations still have to be compacted by the client
