@@ -17,9 +17,61 @@ import (
 
 // inner[49] 媒体工具开关：填了服务端就换后端模型生成产物。
 const (
-	toolImage = 14 // 生图 → Nano Banana
-	toolMusic = 21 // 音乐 → Lyria（约 30 秒）
+	toolImage  = 14 // 生图 → Nano Banana
+	toolMusic  = 21 // 音乐 → Lyria（约 30 秒）
+	toolCanvas = 2  // 画布 → immersive HTML 文档（内联在响应里，不用另下载）
 )
+
+// extractCanvasDoc 从 canvas（inner[49]=2）响应里抠出生成的 HTML 文档。
+//
+// 跟图/乐不同：文档不用另外下载，直接内联在帧里——immersive 结构
+// （inner[4][0][30]… 那条）里有个形如 "```html\n<!DOCTYPE html>…```" 的字符串。
+// 流式时同一份文档在多帧里累积重发，取所有帧里含 DOCTYPE 的**最长**字符串 = 最终完整版。
+func extractCanvasDoc(raw string) string {
+	best := ""
+	var walk func(interface{})
+	walk = func(o interface{}) {
+		switch v := o.(type) {
+		case string:
+			if len(v) > len(best) && strings.Contains(v, "DOCTYPE") {
+				best = v
+			}
+		case []interface{}:
+			for _, x := range v {
+				walk(x)
+			}
+		case map[string]interface{}:
+			for _, x := range v {
+				walk(x)
+			}
+		}
+	}
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "[[") {
+			continue
+		}
+		var arr []interface{}
+		if json.Unmarshal([]byte(line), &arr) != nil {
+			continue
+		}
+		for _, it := range arr {
+			row, ok := it.([]interface{})
+			if !ok || len(row) < 3 {
+				continue
+			}
+			payload, ok := row[2].(string)
+			if !ok {
+				continue
+			}
+			var inner interface{}
+			if json.Unmarshal([]byte(payload), &inner) == nil {
+				walk(inner)
+			}
+		}
+	}
+	return best
+}
 
 // downloadOPI 是产物下载 URL（contribution 那条）必带的 opi 参数。取自 /app 页面，
 // 实测两个独立账号都是这个值，当全局常量用。图片走 lh3 CDN 那条不需要它。

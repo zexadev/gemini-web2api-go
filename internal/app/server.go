@@ -130,6 +130,19 @@ func callGemini(prompt, latest string, mc ModelConfig, tools []map[string]interf
 		return "", nil, res, err
 	}
 	text := extractResponseText(res.Raw)
+	// 画布：HTML 文档内联在响应里（不像图/乐要下载），从 immersive 结构里抠出来。
+	// 标准文本提取只拿到 preamble（"I will generate…"），文档在 inner[4][0][30]…，
+	// 用 extractCanvasDoc 单独取。
+	if mc.Tool == toolCanvas {
+		doc := extractCanvasDoc(res.Raw)
+		if doc == "" {
+			return "", nil, res, fmt.Errorf("canvas generation failed: no HTML document in response (raw %d bytes)", len(res.Raw))
+		}
+		if text != "" && !strings.Contains(doc, text) {
+			return text + "\n\n" + doc, nil, res, nil // preamble + 文档
+		}
+		return doc, nil, res, nil
+	}
 	// 媒体模型（生图/音乐）：生成 200 了但产物字节没取回来，直接报错而不是返回一个
 	// 只有文字没有图的半成品 —— 客户端要的就是那张图/那段乐。
 	if mc.Tool == toolImage || mc.Tool == toolMusic {
