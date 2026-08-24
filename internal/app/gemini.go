@@ -947,13 +947,24 @@ func extractResponseText(raw string) string {
 	}
 	for i := len(texts) - 1; i >= 0; i-- {
 		if strings.TrimSpace(texts[i]) != "" {
-			return cleanGeminiText(texts[i])
+			cleaned := cleanGeminiText(texts[i])
+			if cleaned == "" {
+				// 整条回复都是代码执行产物（问数学/算式时模型直接跑代码），清洗后被剥空。
+				// 别返回空——那样 callGemini 会当"无内容帧"报 502，用户看到的是调用失败。
+				// 回退：只把 ?code_reference/stdout 标记去掉、保留代码和结果，当普通代码块给。
+				cleaned = strings.TrimSpace(codeMarkerRe.ReplaceAllString(texts[i], "```$1"))
+			}
+			return cleaned
 		}
 	}
 	return ""
 }
 
 var codeArtifactRe = regexp.MustCompile("(?s)```(?:python|javascript|text)\\?code_(?:reference|stdout)&code_event_index=\\d+\\n.*?```\\n?")
+
+// codeMarkerRe 只匹配代码产物的**开围栏标记**（```python?code_reference&code_event_index=N），
+// 用于清洗后为空时的回退：把标记降级成普通 ```python，保留代码/结果不整条清空。
+var codeMarkerRe = regexp.MustCompile("```(python|javascript|text)\\?code_(?:reference|stdout)&code_event_index=\\d+")
 
 func cleanGeminiText(text string) string {
 	return strings.TrimSpace(codeArtifactRe.ReplaceAllString(text, ""))
