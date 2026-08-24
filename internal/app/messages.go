@@ -67,6 +67,7 @@ func buildPrompt(messages []map[string]interface{}, tools []map[string]interface
 	toolChoice interface{}) string {
 	var parts []string
 
+	toolsInjected := false
 	mode, forced := parseToolChoice(toolChoice)
 	if len(tools) > 0 && mode != "none" {
 		var defs []map[string]interface{}
@@ -108,6 +109,7 @@ func buildPrompt(messages []map[string]interface{}, tools []map[string]interface
 					"%s\n\n"+
 					"Available tools:\n%s", rule, string(defsJSON),
 			))
+			toolsInjected = true
 		}
 	}
 
@@ -148,6 +150,35 @@ func buildPrompt(messages []map[string]interface{}, tools []map[string]interface
 				parts = append(parts, content)
 			}
 		}
+	}
+
+	// 工具格式指令放在最前，但 agentic 客户端（Codex/rikkahub 等）的开发者提示动辄
+	// 40KB，还自带「emit function calls」这种原生工具框架的措辞，压在中间把顶部那条
+	// 格式指令冲没了 —— 模型于是要么答「我没有工具」要么答非所问（用户报的「已读乱回」）。
+	// 判据：拿 Codex 真实 42KB prompt 原样重放，模型说「无法查看本地文件系统」、不吐围栏；
+	// 同一份末尾追加提醒后立刻吐 ```tool_call```。所以末尾再锚一次格式、明确「没有别的
+	// 工具通道」，压过客户端的原生框架。
+	// 两个进一步判据（弱模型 anon 3.6 Flash、多命令任务、各 4 次）：
+	//  ① 只放格式指令、不带示例：0/4 命中，全部退化成写 ```powershell 代码块给用户看；
+	//  ② 带一个「用户问 X → 正确回复是这个 tool_call 块」的具体示例：3-4/4 命中。
+	// 所以必须给行为化的 few-shot。示例用中性工具名（run_command），实测模型仍用真实
+	// 工具名（shell_command）0/4 抄假名 —— 示例教的是「动作」不是名字，故不必按客户端
+	// 动态生成 schema。
+	if toolsInjected {
+		parts = append(parts,
+			"[System instruction — highest priority]: To run a command or read a file you MUST "+
+				"output a ```tool_call``` block — this is the ONLY execution channel. A "+
+				"```powershell/```bash/```cmd/```python code block is NOT executed, it is only shown "+
+				"to the user; never use one to run anything, and never claim you lack tools.\n"+
+				"Act, do not explain: when the request needs a tool, your reply is ONE ```tool_call``` "+
+				"block and nothing else — do not list the commands you 'would' run, do not output more "+
+				"than one tool_call, do not add prose. If several steps are needed, do the FIRST one "+
+				"now; you will be called again with its result to continue.\n"+
+				"Example of a correct turn — user asks \"list the files here and tell me the size of "+
+				"README.md\", you reply with exactly one block and nothing else:\n"+
+				"```tool_call\n{\"name\": \"run_command\", \"arguments\": {\"command\": \"ls -la\"}}\n```\n"+
+				"(In your block use one of the real tool names listed above with its own arguments.) "+
+				"When the request needs a tool, emit the tool_call block now.")
 	}
 
 	var nonEmpty []string
@@ -279,7 +310,11 @@ func partialPrefixLen(s, marker string) int {
 	return 0
 }
 
-var toolCallRe = regexp.MustCompile("(?s)```tool_call\\s*\\n(.*?)\\n```")
+// 放宽：围栏内不强求前后换行——模型有时吐 ```tool_call\n{...}\n```、有时
+// ```tool_call {...}``` 甚至一行内。老正则死磕 \n…\n，格式一变就漏解析，漏了就把
+// 整个 ```tool_call``` 块当正文发给客户端 = 用户看到的「已读乱回」。这里只认围栏、
+// 内容交给 JSON 解析兜底（非围栏内容里不会有 ```，非贪婪停在第一个闭合围栏）。
+var toolCallRe = regexp.MustCompile("(?s)```tool_call(.*?)```")
 
 // parseToolCalls extracts ```tool_call``` blocks. Returns clean text + tool_calls.
 func parseToolCalls(text string) (string, []ToolCall) {
