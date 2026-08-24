@@ -144,7 +144,7 @@ func buildPrompt(messages []map[string]interface{}, tools []map[string]interface
 				parts = append(parts, "[Assistant]: "+content)
 			}
 		case "tool":
-			parts = append(parts, fmt.Sprintf("[Tool result for %s]: %s", getStr(msg, "name"), content))
+			parts = append(parts, formatToolResult(getStr(msg, "name"), content))
 		default:
 			if content != "" {
 				parts = append(parts, content)
@@ -174,6 +174,10 @@ func buildPrompt(messages []map[string]interface{}, tools []map[string]interface
 				"block and nothing else — do not list the commands you 'would' run, do not output more "+
 				"than one tool_call, do not add prose. If several steps are needed, do the FIRST one "+
 				"now; you will be called again with its result to continue.\n"+
+				"Know when to STOP: once a tool result shows a step succeeded (for example it exited "+
+				"with code 0, even with no printed output), that step is DONE — do not run it again and "+
+				"do not retry the same thing a different way. When the whole request is accomplished, "+
+				"stop calling tools and reply with a short final answer instead of another tool_call.\n"+
 				"Example of a correct turn — user asks \"list the files here and tell me the size of "+
 				"README.md\", you reply with exactly one block and nothing else:\n"+
 				"```tool_call\n{\"name\": \"run_command\", \"arguments\": {\"command\": \"ls -la\"}}\n```\n"+
@@ -220,6 +224,50 @@ func getStr(m map[string]interface{}, k string) string {
 		return s
 	}
 	return ""
+}
+
+// exitCodeRe 从工具结果里抠退出码。Codex 的 shell 结果是一段带
+// "Process exited with code N" 的包装文本。
+var exitCodeRe = regexp.MustCompile(`(?i)exit(?:ed with|\s*code)?\s*(?:code\s*)?(\d+)`)
+
+// formatToolResult 把工具结果渲染进 prompt，关键是让弱模型认得出「成功」。
+//
+// 为什么要重写：agentic 客户端（Codex）的成功结果长这样——
+//
+//	Chunk ID: 0cdbf0\nWall time: 0.07s\nProcess exited with code 0\nOriginal token count: 0\nOutput:\n
+//
+// 写文件/设值这类命令没有 stdout，"Output:" 后面是空的。弱模型（anon 3.6 Flash）
+// 把「无输出」当成「没干成」，于是换个写法一遍遍重试——实测「写 hello 到 a.txt」
+// 一个任务里试了 26 种命令、90s 不收敛，文件其实第一次就写对了。exit 0 就明摆在
+// 结果里，但被 Chunk ID / Wall time / token count 这些噪音埋了，且没告诉它「无输出
+// 是正常的」。这里把它压成一行清爽的成功/失败信号，并显式说明无输出正常、别重跑。
+//
+// 只加终止指令（提醒里那句 "Know when to STOP"）实测没用（26→27 命令），要配合
+// 这个清爽信号一起才压得住循环。
+func formatToolResult(name, raw string) string {
+	label := "Tool result"
+	if name != "" {
+		label = "Tool result for " + name
+	}
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return fmt.Sprintf("[%s]: ✅ 完成，无输出（正常，动作已生效，不要重复执行）。", label)
+	}
+	// Codex 风格包装：末尾 "Output:" 后是真正的 stdout。
+	out := trimmed
+	if i := strings.LastIndex(trimmed, "Output:"); i >= 0 {
+		out = strings.TrimSpace(trimmed[i+len("Output:"):])
+	}
+	if m := exitCodeRe.FindStringSubmatch(trimmed); m != nil {
+		if m[1] == "0" {
+			if out == "" {
+				return fmt.Sprintf("[%s]: ✅ 命令成功（exit 0），无文本输出——这对写文件/设值类命令是正常的，动作已完成，不要再跑同一条命令。", label)
+			}
+			return fmt.Sprintf("[%s]: ✅ 命令成功（exit 0）。输出：\n%s", label, out)
+		}
+		return fmt.Sprintf("[%s]: ❌ 命令失败（exit %s）。输出：\n%s", label, m[1], out)
+	}
+	return fmt.Sprintf("[%s]: %s", label, raw)
 }
 
 const (
