@@ -2,6 +2,21 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 4.13.0
+
+### 新增
+
+- **读视频**。客户端在 content 里传 `video_url` / `input_video`（data URL）即可让模型分析
+  视频内容，跟读图同一条上传路径（文件元组类型位 2=视频）。要 cookie（匿名引用被上游拒）。
+  实测传红→绿→蓝测试片、问依次哪三色，模型答「红、绿、蓝」——真逐帧看了。
+- **生视频**（`gemini-video`）。`inner[49]=11` 提交异步任务，轮询 hNvQHb 拿
+  `contribution.usercontent.google.com` 下载链，取回 MP4（base64 data URL）。实测「日落
+  海浪」出真 10 秒 720p H.264+AAC 视频。**要 Pro/付费号**（自报 3.7 Flash）；免费号被
+  Google 视频内容政策拒时会明确报错。生成要几十秒到几分钟，客户端记得配长超时。
+- **自动删会话**（issue #19，配置 `auto_delete_conversation`，默认关）。出完结果自动删掉
+  gemini.google.com 上留下的这条会话（rpc GzXR5e），免得账号里堆一堆。只登录态生效，
+  异步 best-effort 不影响响应。
+
 ## 4.12.0
 
 ### 修复
