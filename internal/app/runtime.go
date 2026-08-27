@@ -45,6 +45,8 @@ type RuntimeConfig struct {
 	// 默认 false（保持现有"每轮拼全量 prompt"行为）。实测多轮不放大上下文窗口，只让长
 	// 对话不撞单请求墙——对 Codex 这类长会话有用，对"喂长文档"没用。
 	MultiTurn bool `json:"multi_turn"`
+	// 出完结果自动删掉 gemini.google.com 上的这条会话（#19）。只登录态生效。默认 false。
+	AutoDeleteConversation bool `json:"auto_delete_conversation"`
 }
 
 const runtimeConfigKey = "runtime_config"
@@ -76,6 +78,8 @@ func initRuntimeConfig() {
 		GeminiBLAuto:     cfg.GeminiBLAuto,
 		MaxPromptBytes:   cfg.MaxPromptBytes,
 		MultiTurn:        cfg.MultiTurn,
+
+		AutoDeleteConversation: cfg.AutoDeleteConversation,
 	}
 	if raw := kvGet(runtimeConfigKey); raw != "" {
 		saved := base

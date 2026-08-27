@@ -41,6 +41,9 @@ type Config struct {
 	MaxPromptBytes int `json:"max_prompt_bytes"`
 	// 是否走 Gemini 原生 conversation_id 服务端多轮。默认 false，见 conversation.go。
 	MultiTurn bool `json:"multi_turn"`
+	// 出完结果是否自动删掉 gemini.google.com 上留下的这条会话（#19，rpc GzXR5e）。
+	// 只登录态生效（删除要 XSRF）；异步 best-effort，删失败只记日志不影响响应。默认 false。
+	AutoDeleteConversation bool `json:"auto_delete_conversation"`
 }
 
 var (
@@ -78,8 +81,9 @@ func defaultConfig() Config {
 		GeminiBLAuto:     true,
 		// 实测上游的墙在约 13 万 UTF-8 字节：129,950 字节中英文各 3/3 过，
 		// 135,990 字节各 1/3，141,920 字节各 1/3。取 128000 留一点余量。
-		MaxPromptBytes: 128000,
-		MultiTurn:      false,
+		MaxPromptBytes:         128000,
+		MultiTurn:              false,
+		AutoDeleteConversation: false,
 	}
 }
 

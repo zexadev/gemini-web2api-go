@@ -114,6 +114,13 @@ func rejectUnsupported(req map[string]interface{}, messages []map[string]interfa
 						"uploads succeed but referencing them in a conversation is rejected " +
 						"upstream. Add a cookie in the admin panel (Cookie pool)")
 				}
+			case "video_url", "input_video":
+				// 视频跟图片同理：登录态才能引用，匿名一引用就 1100。
+				if !hasCookie() {
+					return fmt.Errorf("video input needs a Google account cookie: anonymous " +
+						"uploads succeed but referencing them in a conversation is rejected " +
+						"upstream. Add a cookie in the admin panel (Cookie pool)")
+				}
 			case "input_audio":
 				return fmt.Errorf("audio input not supported")
 			}
@@ -145,7 +152,7 @@ func callGemini(prompt, latest string, mc ModelConfig, tools []map[string]interf
 	}
 	// 媒体模型（生图/音乐）：生成 200 了但产物字节没取回来，直接报错而不是返回一个
 	// 只有文字没有图的半成品 —— 客户端要的就是那张图/那段乐。
-	if mc.Tool == toolImage || mc.Tool == toolMusic {
+	if mc.Tool == toolImage || mc.Tool == toolMusic || mc.Tool == toolVideo {
 		if len(res.Artifacts) == 0 {
 			msg := res.MediaErr
 			if msg == "" {
@@ -153,7 +160,7 @@ func callGemini(prompt, latest string, mc ModelConfig, tools []map[string]interf
 			}
 			return "", nil, res, fmt.Errorf("media generation succeeded but artifact retrieval failed: %s", msg)
 		}
-		// 产物以 base64 data URL 追加到正文（可能没正文，只有图）。
+		// 产物以 base64 data URL 追加到正文（可能没正文，只有图/乐/视频）。
 		text = appendArtifactMarkdown(text, res.Artifacts)
 		return text, nil, res, nil
 	}

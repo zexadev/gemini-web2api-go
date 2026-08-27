@@ -86,6 +86,7 @@ var Models = map[string]ModelConfig{
 	// 取回，以 base64 data URL 塞进 content 返回。都要登录态，没 cookie 时不暴露。
 	"gemini-image": {HexID: hexFlash36, Mode: 1, Tool: toolImage, Desc: "Image generation (Nano Banana); returns a base64 data URL; needs a signed-in cookie"},
 	"gemini-music": {HexID: hexFlash36, Mode: 1, Tool: toolMusic, Desc: "Music generation (Lyria, ~30s); returns a base64 data URL; needs a signed-in cookie"},
+	"gemini-video": {HexID: hexFlash36, Mode: 1, Tool: toolVideo, Desc: "Video generation (Veo, async); returns a base64 data URL; needs a signed-in cookie (usually a paid account)"},
 	// 画布：生成 immersive 交互 HTML 文档，内联返回（不是二进制、不用下载）。要登录态。
 	"gemini-canvas": {HexID: hexFlash36, Mode: 1, Tool: toolCanvas, Desc: "Canvas: generates an interactive HTML document (returned inline as a ```html block); needs a signed-in cookie"},
 }
@@ -404,14 +405,20 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 				"anonymous uploads succeed but referencing them in a conversation is " +
 				"rejected upstream. Add a cookie in the admin panel (Cookie pool)"))
 		}
+		nImg, nVid := 0, 0
 		for _, u := range pending {
 			ref, uerr := uploadBytes(cookieStr, proxyURL, u.Data, u.Name)
 			if uerr != nil {
-				return attrib(fmt.Errorf("上传图片 %s 失败: %w", u.Name, uerr))
+				return attrib(fmt.Errorf("上传附件 %s 失败: %w", u.Name, uerr))
 			}
 			files = append(files, fileRef{Ref: ref, Name: u.Name, Kind: u.Kind, Mime: u.Mime})
+			if u.Kind == 2 {
+				nVid++
+			} else {
+				nImg++
+			}
 		}
-		logf("[vision] 上传了 %d 张图", len(pending))
+		logf("[vision] 上传了 %d 张图 / %d 个视频", nImg, nVid)
 	}
 
 	// prompt 超长时转成文本附件。要等挑完号和出口才能做：上传要 cookie，
@@ -485,6 +492,10 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 	// 媒体工具开关。填了服务端就换后端模型出图/出乐（响应里带产物引用，字节要另取）。
 	if mc.Tool > 0 {
 		inner[49] = mc.Tool
+	}
+	// 视频还要在 inner[55] 指定画幅比例：[[16]]=16:9，[[17]]=9:16（抓包）。
+	if mc.Tool == toolVideo {
+		inner[55] = []interface{}{[]interface{}{16}}
 	}
 
 	innerJSON, err := json.Marshal(inner)
@@ -645,10 +656,13 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 		}
 		// 媒体模型：生成的产物字节不在这条响应里，要用同一套 cookie / 出口再走一遍
 		// hNvQHb + 下载 host 取回。取不到就记 MediaErr，让上层报错而不是返回半成品。
-		if mc.Tool == toolImage || mc.Tool == toolMusic {
+		if mc.Tool == toolImage || mc.Tool == toolMusic || mc.Tool == toolVideo {
 			mime := "image/png"
-			if mc.Tool == toolMusic {
+			switch mc.Tool {
+			case toolMusic:
 				mime = "audio/mpeg"
+			case toolVideo:
+				mime = "video/mp4"
 			}
 			arts, aerr := fetchMediaArtifacts(
 				mc.Tool, string(raw), extractConversationID(string(raw)),
@@ -659,6 +673,13 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 			} else {
 				result.Artifacts = arts
 				logf("[media] 取回 %d 份产物", len(arts))
+			}
+		}
+		// #19 自动删会话：出完结果把 gemini.google.com 上留下的这条会话删掉，避免
+		// 用户账号里堆一堆。只登录态能删（要 XSRF），异步 best-effort，不影响响应。
+		if rtCfg().AutoDeleteConversation && cookieStr != "" && xsrfToken != "" {
+			if cid := extractConversationID(string(raw)); cid != "" {
+				go deleteConversation(cid, cookieStr, sapisid, xsrfToken, proxyURL)
 			}
 		}
 		return result, nil
