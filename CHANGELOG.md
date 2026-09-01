@@ -2,6 +2,21 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 4.14.0
+
+### 新增
+
+- **MySQL / PostgreSQL 支持**（issue #22）。设 `SQL_DSN` 环境变量即可，不设仍默认 SQLite、无需改动。
+  `SQL_DSN=mysql://user:pass@host:3306/db` 或 `postgres://user:pass@host:5432/db?sslmode=disable`。
+  建表自动完成，三种库共用一套 schema；方言差异（`?`/`$N` 占位符、upsert、自增主键、TEXT 键列、
+  `IFNULL`/`COALESCE`）全收敛在 `dbdialect.go`，业务层 ~70 条查询不动。用真 mysql8 + pg16 各跑通验证。
+
+### 修复
+
+- SSE 响应补 `X-Accel-Buffering: no`，避免流式经 nginx 一类反代被整体缓冲成一次性下发
+  （客户端直连本就是流式，仅「自己在前面架了反代」的部署需要）。注：issue #21 里 Dify 的
+  一次性输出不是这个原因——实测经 Dify 的 squid(ssrf_proxy) 是流式透传的，那问题在 Dify 侧。
+
 ## 4.13.0
 
 ### 新增
