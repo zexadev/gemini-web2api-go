@@ -47,7 +47,7 @@
 
 **运维**
 - 单二进制，交叉编译 6 平台；容器镜像基于 distroless
-- SQLite 持久化：30 天请求明细 + 永久聚合统计
+- SQLite 持久化：30 天请求明细 + 永久聚合统计（可选 MySQL / PostgreSQL，设 `SQL_DSN` 即可）
 - 中文管理面板：概览 / 请求记录 / 代理池 / Cookie 池 / 设置，配置改完即时生效
 - **prompt 和回复内容永不入库**，只存元数据（长度、耗时、模型、状态）
 
@@ -64,6 +64,17 @@ chmod +x gemini-web2api-go_*
 ```
 
 数据默认落在 `./data/gemini.db`，换位置加 `--db /your/path.db`。
+
+想用 MySQL / PostgreSQL，设 `SQL_DSN` 环境变量即可（不设就是 SQLite，无需改动）：
+
+```bash
+# MySQL（也接受 go-sql-driver 原生 user:pass@tcp(host:3306)/dbname）
+SQL_DSN="mysql://user:pass@host:3306/dbname"
+# PostgreSQL
+SQL_DSN="postgres://user:pass@host:5432/dbname?sslmode=disable"
+```
+
+建表自动完成，三种库共用同一套 schema。单机就用默认 SQLite 最省事，多实例共享一个池子才需要 MySQL/PG。
 
 ### Docker（不用源码）
 

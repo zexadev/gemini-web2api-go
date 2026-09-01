@@ -51,7 +51,7 @@ This is not a wrapper around Google's official API ([generativelanguage.googleap
 
 **Operations**
 - Single binary, cross-compiled for 6 platforms; container image built on distroless
-- SQLite persistence: 30 days of per-request detail plus permanent aggregates
+- SQLite persistence: 30 days of per-request detail plus permanent aggregates (optional MySQL / PostgreSQL via `SQL_DSN`)
 - Admin panel: overview / requests / proxy pool / cookie pool / settings, with
   config changes applied without a restart
 - **Prompt and response bodies are never stored** — metadata only (length, latency,
@@ -71,6 +71,17 @@ chmod +x gemini-web2api-go_*
 ```
 
 Data lands in `./data/gemini.db` by default; pass `--db /your/path.db` to move it.
+
+To use MySQL / PostgreSQL, just set the `SQL_DSN` env var (unset = SQLite, nothing to change):
+
+```bash
+# MySQL (also accepts the native go-sql-driver form user:pass@tcp(host:3306)/dbname)
+SQL_DSN="mysql://user:pass@host:3306/dbname"
+# PostgreSQL
+SQL_DSN="postgres://user:pass@host:5432/dbname?sslmode=disable"
+```
+
+Tables are created automatically; all three backends share one schema. Single instance? Stick with the default SQLite. You only need MySQL/PG when several instances share one pool.
 
 ### Docker (no source needed)
 
