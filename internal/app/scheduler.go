@@ -50,14 +50,14 @@ func startScheduler() {
 // hour up to (now - 1h), so a long downtime catches up cleanly.
 func aggregateHourlyCatchup() {
 	var lastBucket int64
-	_ = getDB().QueryRow(`SELECT IFNULL(MAX(bucket), 0) FROM stats_hourly`).Scan(&lastBucket)
+	_ = getDB().QueryRow(`SELECT COALESCE(MAX(bucket), 0) FROM stats_hourly`).Scan(&lastBucket)
 	now := time.Now().Unix()
 	currentHourStart := now - (now % 3600)
 	target := currentHourStart - 3600 // most recent CLOSED hour
 	if lastBucket == 0 {
 		// First run — bootstrap from oldest request available.
 		var minTS int64
-		_ = getDB().QueryRow(`SELECT IFNULL(MIN(ts), 0) FROM requests`).Scan(&minTS)
+		_ = getDB().QueryRow(`SELECT COALESCE(MIN(ts), 0) FROM requests`).Scan(&minTS)
 		if minTS == 0 {
 			return
 		}
@@ -70,13 +70,13 @@ func aggregateHourlyCatchup() {
 
 func aggregateDailyCatchup() {
 	var lastBucket int64
-	_ = getDB().QueryRow(`SELECT IFNULL(MAX(bucket), 0) FROM stats_daily`).Scan(&lastBucket)
+	_ = getDB().QueryRow(`SELECT COALESCE(MAX(bucket), 0) FROM stats_daily`).Scan(&lastBucket)
 	now := time.Now().Unix()
 	currentDayStart := now - (now % 86400)
 	target := currentDayStart - 86400
 	if lastBucket == 0 {
 		var minTS int64
-		_ = getDB().QueryRow(`SELECT IFNULL(MIN(bucket), 0) FROM stats_hourly`).Scan(&minTS)
+		_ = getDB().QueryRow(`SELECT COALESCE(MIN(bucket), 0) FROM stats_hourly`).Scan(&minTS)
 		if minTS == 0 {
 			return
 		}
@@ -114,7 +114,7 @@ func aggregateBucket(start, span int64, target string) {
 
 	if target == "stats_hourly" {
 		// from raw requests
-		r, e := getDB().Query(`SELECT model, IFNULL(proxy_id,0), status, total_ms, prompt_tokens, output_tokens
+		r, e := getDB().Query(`SELECT model, COALESCE(proxy_id,0), status, total_ms, prompt_tokens, output_tokens
 			FROM requests WHERE ts >= ? AND ts < ?`, start, end)
 		err = e
 		rows = r
@@ -207,9 +207,10 @@ func aggregateBucket(start, span int64, target string) {
 			if a.p95N > 0 {
 				p95 = a.p95Sum / a.p95N
 			}
-			_, _ = tx.Exec(`INSERT OR REPLACE INTO stats_daily(bucket, model, proxy_id,
-                requests, successes, failures, total_ms, p50_ms, p95_ms, prompt_tokens, output_tokens)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+			_, _ = tx.Exec(upsert("stats_daily",
+				[]string{"bucket", "model", "proxy_id", "requests", "successes", "failures",
+					"total_ms", "p50_ms", "p95_ms", "prompt_tokens", "output_tokens"},
+				[]string{"bucket", "model", "proxy_id"}),
 				start, k.model, k.proxy,
 				a.count, a.success, a.fail, a.totalMs, p50, p95, a.promptT, a.outT)
 		}
@@ -224,9 +225,10 @@ func aggregateBucket(start, span int64, target string) {
 	}
 	for k, a := range groups {
 		p50, p95 := percentiles(a.latencies)
-		_, _ = tx.Exec(`INSERT OR REPLACE INTO stats_hourly(bucket, model, proxy_id,
-            requests, successes, failures, total_ms, p50_ms, p95_ms, prompt_tokens, output_tokens)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		_, _ = tx.Exec(upsert("stats_hourly",
+			[]string{"bucket", "model", "proxy_id", "requests", "successes", "failures",
+				"total_ms", "p50_ms", "p95_ms", "prompt_tokens", "output_tokens"},
+			[]string{"bucket", "model", "proxy_id"}),
 			start, k.model, k.proxy,
 			a.count, a.success, a.fail, a.totalMs, p50, p95, a.promptT, a.outT)
 	}

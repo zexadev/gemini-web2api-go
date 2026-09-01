@@ -102,13 +102,9 @@ func accountInsert(label, cookie, note string) (int64, error) {
 	if cookie == "" {
 		return 0, fmt.Errorf("cookie 不能为空")
 	}
-	res, err := getDB().Exec(
+	return insertID(
 		`INSERT INTO accounts(label, cookie, status, note, created_at) VALUES (?,?,?,?,?)`,
 		strings.TrimSpace(label), cookie, "enabled", strings.TrimSpace(note), time.Now().Unix())
-	if err != nil {
-		return 0, err
-	}
-	return res.LastInsertId()
 }
 
 // accountList 返回池里全部账号，按 id 升序。

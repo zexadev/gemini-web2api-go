@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 
 var (
 	db     *sql.DB
+	dbw    *dbx
 	dbOnce sync.Once
 )
 
@@ -116,19 +118,26 @@ CREATE TABLE IF NOT EXISTS accounts (
 CREATE INDEX IF NOT EXISTS idx_accounts_pick ON accounts(status, last_used_at);
 `
 
-func getDB() *sql.DB {
+func getDB() *dbx {
 	dbOnce.Do(func() {
-		path := cfg.DBPath
-		if path == "" {
-			path = "./data/gemini.db"
+		var driver, connStr, sqliteDir string
+		if dsnEnv := strings.TrimSpace(os.Getenv("SQL_DSN")); dsnEnv != "" {
+			curDialect, driver, connStr = detectDSN(dsnEnv)
+		} else {
+			curDialect = dialectSQLite
+			driver = "sqlite"
+			path := cfg.DBPath
+			if path == "" {
+				path = "./data/gemini.db"
+			}
+			sqliteDir = filepath.Dir(path)
+			if err := os.MkdirAll(sqliteDir, 0o755); err != nil {
+				fmt.Fprintf(os.Stderr, "[db] 建目录 %s 失败: %v\n%s", sqliteDir, err, dbPermHint(sqliteDir))
+				os.Exit(1)
+			}
+			connStr = fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)", path)
 		}
-		dir := filepath.Dir(path)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			fmt.Fprintf(os.Stderr, "[db] 建目录 %s 失败: %v\n%s", dir, err, dbPermHint(dir))
-			os.Exit(1)
-		}
-		dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)", path)
-		conn, err := sql.Open("sqlite", dsn)
+		conn, err := sql.Open(driver, connStr)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[db] open failed: %v\n", err)
 			os.Exit(1)
@@ -136,29 +145,36 @@ func getDB() *sql.DB {
 		conn.SetMaxOpenConns(8)
 		conn.SetMaxIdleConns(4)
 		conn.SetConnMaxLifetime(0)
-		if _, err := conn.Exec(schema); err != nil {
-			// 这里最常见的是 SQLITE_CANTOPEN(14)：目录存在但当前用户写不进去。
-			// 光报 "unable to open database file (14)" 没人猜得到是权限，所以把
-			// 判据和解法一起打出来。
-			fmt.Fprintf(os.Stderr, "[db] 初始化 %s 失败: %v\n%s", path, err, dbPermHint(dir))
-			os.Exit(1)
+		// mysql/pg 驱动默认不接受多语句 Exec，按方言逐条建表。
+		for _, stmt := range schemaStatements(curDialect) {
+			if _, err := conn.Exec(stmt); err != nil {
+				// mysql 的 CREATE INDEX 没有 IF NOT EXISTS，重启时重复报错，容忍。
+				if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(stmt)), "CREATE INDEX") {
+					continue
+				}
+				// sqlite 最常见 SQLITE_CANTOPEN(14)：目录能进但写不了，判据+解法一起打。
+				hint := ""
+				if curDialect == dialectSQLite {
+					hint = dbPermHint(sqliteDir)
+				}
+				fmt.Fprintf(os.Stderr, "[db] 初始化失败: %v\n  语句: %s\n%s", err, stmt, hint)
+				os.Exit(1)
+			}
 		}
-		// Migration: drop legacy prompt_preview / response_preview columns
-		// from older deployments. SQLite 3.35+ supports DROP COLUMN.
-		// Errors are ignored — columns may already be absent.
-		// 老库补上服务端自报的模型名列（列已存在时报错，忽略）
-		_, _ = conn.Exec(`ALTER TABLE requests ADD COLUMN upstream_model TEXT`)
-		// 老库补上 cookie 归属列（列已存在时报错，忽略）
-		_, _ = conn.Exec(`ALTER TABLE requests ADD COLUMN account_id INTEGER`)
-		_, _ = conn.Exec(`ALTER TABLE requests ADD COLUMN account_label TEXT`)
-		// 老库补上账号↔出口绑定列
-		_, _ = conn.Exec(`ALTER TABLE accounts ADD COLUMN proxy_id INTEGER NOT NULL DEFAULT 0`)
-		_, _ = conn.Exec(`ALTER TABLE requests DROP COLUMN prompt_preview`)
-		_, _ = conn.Exec(`ALTER TABLE requests DROP COLUMN response_preview`)
+		// 老 sqlite 库的列迁移。新库/mysql/pg 不需要（跑了也只是报错忽略），只在 sqlite 上做。
+		if curDialect == dialectSQLite {
+			_, _ = conn.Exec(`ALTER TABLE requests ADD COLUMN upstream_model TEXT`)
+			_, _ = conn.Exec(`ALTER TABLE requests ADD COLUMN account_id INTEGER`)
+			_, _ = conn.Exec(`ALTER TABLE requests ADD COLUMN account_label TEXT`)
+			_, _ = conn.Exec(`ALTER TABLE accounts ADD COLUMN proxy_id INTEGER NOT NULL DEFAULT 0`)
+			_, _ = conn.Exec(`ALTER TABLE requests DROP COLUMN prompt_preview`)
+			_, _ = conn.Exec(`ALTER TABLE requests DROP COLUMN response_preview`)
+		}
 		db = conn
-		logf("[db] opened %s", path)
+		dbw = &dbx{conn}
+		logf("[db] opened dialect=%d driver=%s", curDialect, driver)
 	})
-	return db
+	return dbw
 }
 
 // Request rows ───────────────────────────────────────────────────────────────
@@ -204,7 +220,7 @@ func insertRequest(r *RequestRow) {
 
 func createSession(token string, ttl time.Duration) {
 	now := time.Now().Unix()
-	_, err := getDB().Exec(`INSERT OR REPLACE INTO sessions(token, created_at, expires_at) VALUES (?,?,?)`,
+	_, err := getDB().Exec(upsert("sessions", []string{"token", "created_at", "expires_at"}, []string{"token"}),
 		token, now, now+int64(ttl.Seconds()))
 	if err != nil {
 		logf("[db] session insert failed: %v", err)
@@ -234,7 +250,7 @@ func kvGet(k string) string {
 }
 
 func kvSet(k, v string) error {
-	_, err := getDB().Exec(`INSERT INTO kv(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v`, k, v)
+	_, err := getDB().Exec(upsert("kv", []string{"k", "v"}, []string{"k"}), k, v)
 	return err
 }
 

@@ -40,7 +40,7 @@ var (
 // UPDATE 期间 rows.Next() 完全可能返回 SQLITE_BUSY，所以"偶发"就是这么来的。
 func loadProxies() {
 	rows, err := getDB().Query(`SELECT id, name, url, enabled, weight, fail_count,
-        IFNULL(last_used,0), IFNULL(last_error,''), created_at FROM proxies ORDER BY id`)
+        COALESCE(last_used,0), COALESCE(last_error,''), created_at FROM proxies ORDER BY id`)
 	if err != nil {
 		logf("[proxy] 读取失败，保留上一次的代理池: %v", err)
 		return
@@ -332,12 +332,11 @@ func proxyCreate(name, url string, weight int) (int64, error) {
 	if weight <= 0 {
 		weight = 1
 	}
-	res, err := getDB().Exec(`INSERT INTO proxies(name, url, enabled, weight, created_at)
+	id, err := insertID(`INSERT INTO proxies(name, url, enabled, weight, created_at)
         VALUES (?,?,?,?,?)`, name, url, 1, weight, time.Now().Unix())
 	if err != nil {
 		return 0, err
 	}
-	id, _ := res.LastInsertId()
 	loadProxies()
 	return id, nil
 }

@@ -108,9 +108,9 @@ func handleAdminStats(w http.ResponseWriter, r *http.Request) {
 	_ = getDB().QueryRow(`SELECT COUNT(*),
         SUM(CASE WHEN status=200 THEN 1 ELSE 0 END),
         SUM(CASE WHEN status<>200 THEN 1 ELSE 0 END),
-        IFNULL(SUM(total_ms),0),
-        IFNULL(SUM(prompt_tokens),0),
-        IFNULL(SUM(output_tokens),0)
+        COALESCE(SUM(total_ms),0),
+        COALESCE(SUM(prompt_tokens),0),
+        COALESCE(SUM(output_tokens),0)
         FROM requests WHERE ts >= ?`, since).Scan(&total, &success, &fail, &sumMs, &sumPT, &sumOT)
 
 	stats["window_hours"] = hours
@@ -131,8 +131,8 @@ func handleAdminStats(w http.ResponseWriter, r *http.Request) {
 	// per-model breakdown
 	rows, _ := getDB().Query(`SELECT model, COUNT(*),
         SUM(CASE WHEN status=200 THEN 1 ELSE 0 END),
-        IFNULL(AVG(total_ms),0),
-        IFNULL(SUM(prompt_tokens),0), IFNULL(SUM(output_tokens),0)
+        COALESCE(AVG(total_ms),0),
+        COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(output_tokens),0)
         FROM requests WHERE ts >= ? GROUP BY model ORDER BY 2 DESC`, since)
 	var byModel []map[string]interface{}
 	if rows != nil {
@@ -157,9 +157,9 @@ func handleAdminStats(w http.ResponseWriter, r *http.Request) {
 	stats["by_model"] = byModel
 
 	// per-proxy breakdown
-	prows, _ := getDB().Query(`SELECT IFNULL(proxy_name,'(direct)') as p, COUNT(*),
+	prows, _ := getDB().Query(`SELECT COALESCE(proxy_name,'(direct)') as p, COUNT(*),
         SUM(CASE WHEN status=200 THEN 1 ELSE 0 END),
-        IFNULL(AVG(total_ms),0)
+        COALESCE(AVG(total_ms),0)
         FROM requests WHERE ts >= ? GROUP BY p ORDER BY 2 DESC`, since)
 	var byProxy []map[string]interface{}
 	if prows != nil {
@@ -234,11 +234,11 @@ func handleAdminTimeseries(w http.ResponseWriter, r *http.Request) {
 		rows = r2
 	} else {
 		// 24h: live aggregate from raw requests for fresh-out-of-the-oven curve
-		r2, err := getDB().Query(`SELECT (ts/3600)*3600 as b,
+		r2, err := getDB().Query(`SELECT (ts - ts % 3600) as b,
             COUNT(*),
             SUM(CASE WHEN status=200 THEN 1 ELSE 0 END),
             0, 0,
-            IFNULL(SUM(prompt_tokens),0), IFNULL(SUM(output_tokens),0)
+            COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(output_tokens),0)
             FROM requests WHERE ts >= ? GROUP BY b ORDER BY b`, since)
 		if err != nil {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
@@ -279,11 +279,11 @@ func handleAdminRequests(w http.ResponseWriter, r *http.Request) {
 	model := r.URL.Query().Get("model")
 	status := r.URL.Query().Get("status")
 
-	q := `SELECT id, ts, model, IFNULL(upstream_model,''), IFNULL(proxy_id,0), IFNULL(proxy_name,''),
-        IFNULL(account_id,0), IFNULL(account_label,''),
-        status, IFNULL(error,''), IFNULL(ttfb_ms,0), total_ms,
+	q := `SELECT id, ts, model, COALESCE(upstream_model,''), COALESCE(proxy_id,0), COALESCE(proxy_name,''),
+        COALESCE(account_id,0), COALESCE(account_label,''),
+        status, COALESCE(error,''), COALESCE(ttfb_ms,0), total_ms,
         prompt_chars, response_chars, prompt_tokens, output_tokens,
-        IFNULL(endpoint,''), stream FROM requests WHERE 1=1`
+        COALESCE(endpoint,''), stream FROM requests WHERE 1=1`
 	args := []interface{}{}
 	if model != "" {
 		q += " AND model=?"
@@ -690,7 +690,7 @@ func classifyError(errStr string) string {
 // errorBreakdown 统计窗口内各类错误的次数。
 func errorBreakdown(since int64) []map[string]interface{} {
 	rows, err := getDB().Query(
-		`SELECT IFNULL(error,''), COUNT(*) FROM requests
+		`SELECT COALESCE(error,''), COUNT(*) FROM requests
          WHERE ts >= ? AND status <> 200 GROUP BY error`, since)
 	if err != nil || rows == nil {
 		return nil
