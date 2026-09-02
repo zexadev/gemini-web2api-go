@@ -29,6 +29,7 @@ This is not a wrapper around Google's official API ([generativelanguage.googleap
 
 **API**
 - OpenAI-compatible: `/v1/chat/completions`, `/v1/models`, `/v1/responses`
+- `/v1/videos`: OpenAI (Sora)-shaped async video generation — `POST` to create, `GET /v1/videos/{id}` to poll, `GET /v1/videos/{id}/content` to download the MP4 (needs a signed-in Pro cookie)
 - Real incremental streaming for plain chat (requests with `tools`, and `/v1/responses`, are buffered then sent)
 - Bearer token / `x-api-key` auth; the key can be rotated from the panel
 - `usage` computed with tiktoken; `reasoning_tokens` counted separately, not folded

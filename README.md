@@ -29,6 +29,7 @@
 
 **接口**
 - OpenAI 兼容：`/v1/chat/completions`、`/v1/models`、`/v1/responses`
+- `/v1/videos`：OpenAI(Sora) 形状的异步视频生成——`POST` 建任务、`GET /v1/videos/{id}` 轮询、`GET /v1/videos/{id}/content` 下 MP4（要登录态 Pro 号）
 - 普通对话真流式：上游每出一帧就转发增量（带 `tools` 的请求和 `/v1/responses` 是收完再发）
 - Bearer token / `x-api-key` 鉴权，key 可在面板轮换
 - `usage` 用 tiktoken 算，`reasoning_tokens` 单列不计入 `completion_tokens`

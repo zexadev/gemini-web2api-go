@@ -114,6 +114,9 @@ func Run() {
 			writeJSON(w, 405, map[string]string{"error": "method not allowed"})
 		}
 	}))
+	// /v1/videos —— OpenAI(Sora) 形状的异步视频生成。POST 建任务，GET 轮询，GET .../content 下 MP4。
+	mux.HandleFunc("/v1/videos", requireAPIKey(handleCreateVideo))
+	mux.HandleFunc("/v1/videos/", requireAPIKey(handleVideoItem))
 	// MCP over HTTP（Streamable HTTP）：跟 OpenAI 接口同进程同端口，暴露 web_search。
 	// 用同一把 API key 鉴权，客户端配 Authorization: Bearer <key> 连这个 URL。
 	mux.HandleFunc("/mcp", requireAPIKey(handleMCPHTTP))

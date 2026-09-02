@@ -2,6 +2,16 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 4.15.0
+
+### 新增
+
+- **`/v1/videos` 端点**（issue #24）。OpenAI(Sora) 形状的异步视频生成：`POST /v1/videos`
+  {model, prompt} 建任务、立即返回 `{id, status}`；`GET /v1/videos/{id}` 轮询状态；
+  `GET /v1/videos/{id}/content` 完成后下 MP4。底层复用 `gemini-video` 那条生成链（要登录态 Pro 号）。
+  视频要几十秒到几分钟，异步比 chat/completions 阻塞式更合适。原来 `/v1/chat/completions` +
+  `model=gemini-video`（返回 base64 data URL）仍保留可用。
+
 ## 4.14.0
 
 ### 新增
