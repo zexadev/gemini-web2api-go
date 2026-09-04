@@ -361,12 +361,12 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 		// 取不到 SNlM0e 基本等于这个 cookie 已失效（页面把我们当匿名用户了）。
 		// 换号之前先给它一次机会：强制轮转一次再重取。
 		//
-		// 轮转会把上游刷新的 *SIDCC 合并回来，而 cookie 就是因为一直发旧值才被判成
-		// 过期会话的 —— 陈旧到这一步还能救回来的号，直接换掉等于白白丢一个。
-		// 只试一次，且只在这一轮：救不回来说明不是陈旧问题。
+		// 轮转会换发 __Secure-1PSIDTS（约 30 分钟过期的那张票）并合并 *SIDCC。
+		// 只是票过期、持久身份还在的号，这一步能救回来；救不回来再换号。
+		// 只试一次，且只在这一轮。
 		if !rotatedOnce[acct.ID] {
 			rotatedOnce[acct.ID] = true
-			if _, rerr := rotateAccount(*acct); rerr == nil {
+			if _, _, rerr := rotateAccount(*acct); rerr == nil {
 				if fresh := accountByID(acct.ID); fresh != nil {
 					if tok2, err2 := getXSRF(fresh.Cookie, proxyURL); err2 == nil {
 						logf("[cookie] 账号 #%d 轮转后恢复可用", acct.ID)

@@ -648,11 +648,12 @@ const pages = {
           <summary>每行一个 Google 登录态账号</summary>
           <div class="body">
             粘贴 gemini.google.com 下的<b>完整 cookie 串</b>（至少含 SID / HSID / SSID /
-            APISID / SAPISID / __Secure-1PSID）。请求时按<b>最久未用优先</b>自动轮转挑一个
+            APISID / SAPISID / __Secure-1PSID / __Secure-1PSIDTS）。请求时按<b>最久未用优先</b>自动轮转挑一个
             启用的账号，媒体生成有每账号 10/天 的配额，配越多号总容量越大。<br><br>
             凭证保存后<b>不再回传浏览器</b>，列表只显示脱敏摘要（cookie 数 / 关键项 /
-            SAPISID 末 4 位 / 失败次数）。缺 <code>__Secure-1PSIDTS</code> 的号无法长期续命，
-            会标黄提示。
+            SAPISID 末 4 位 / 失败次数）。缺 <code>__Secure-1PSIDTS</code> 的号会标黄，
+            首次保活会尝试向 Google 补发；若反复失败请用 <b>Firefox</b> 重新导出
+            （Chrome 新版本的设备绑定会话续不了）。
           </div>
         </details>
         <div class="table-scroll">
@@ -674,7 +675,7 @@ const pages = {
                 <td class="nw">${a.status === 'enabled' ? '<span class="badge ok">启用</span>' : '<span class="badge muted">禁用</span>'}</td>
                 <td class="nw" title="共 ${a.cookie_count} 个 cookie，关键项：${(a.key_cookies||[]).join(' / ')}">
                   <span class="badge ${a.has_1psidts ? 'ok' : 'warn'}">${(a.key_cookies||[]).length}/7 项</span>
-                  ${a.has_1psidts ? '' : '<span class="badge warn" title="缺 __Secure-1PSIDTS，无法长期续命">缺 TS</span>'}
+                  ${a.has_1psidts ? '' : '<span class="badge warn" title="缺 __Secure-1PSIDTS，首次保活会尝试补发；失败请用 Firefox 重新导出">缺 TS</span>'}
                 </td>
                 <td class="pre nw">${a.sapisid_tail ? '…' + escapeHtml(a.sapisid_tail) : '—'}</td>
                 <td class="num nw">${a.fail_count > 0 ? '<span class="badge fail">' + a.fail_count + '</span>' : 0}</td>
@@ -1127,7 +1128,7 @@ async function resetProxy(id) {
 const COOKIE_KEYS = [
   { k: '__Secure-1PSID', hint: '主会话' },
   { k: 'SAPISID', req: true, hint: '算授权头用，缺了会被当匿名' },
-  { k: '__Secure-1PSIDTS', hint: '会话时间戳，随会话刷新而变' },
+  { k: '__Secure-1PSIDTS', hint: '约 30 分钟过期，保活会自动换发' },
   { k: 'SID' }, { k: 'HSID' }, { k: 'SSID' }, { k: 'APISID' },
 ];
 
@@ -1188,8 +1189,9 @@ async function addCookieAcct() {
       <div data-pane="raw">
         <div class="field">
           <textarea data-name="cookie" rows="6" spellcheck="false"
-            placeholder="SID=...; HSID=...; SSID=...; APISID=...; SAPISID=...; __Secure-1PSID=..."></textarea>
-          <div class="hint">整行粘贴，分号分隔。至少要含 SAPISID。DevTools 里全选复制即可，
+            placeholder="SID=...; HSID=...; SSID=...; APISID=...; SAPISID=...; __Secure-1PSID=...; __Secure-1PSIDTS=..."></textarea>
+          <div class="hint">整行粘贴，分号分隔。至少要含 SAPISID 和 __Secure-1PSID。
+          建议用 Firefox 导出（Chrome 新版本的会话绑在设备上，续不了）。DevTools 里全选复制即可，
           多余的项会一并保留 —— 发得越全越像真实浏览器。</div>
         </div>
       </div>
@@ -1308,7 +1310,7 @@ async function checkCookieAcct(id, btn) {
   }
 }
 
-// 手动触发一次会话保活。后台每 10 分钟自动跑一次，这个按钮用来当场验证。
+// 手动触发一次会话保活（刷新 1PSIDTS + SIDCC）。后台启动 15 秒后跑第一次，之后每 10 分钟。
 async function rotateCookieAcct(id, btn) {
   const old = btn.textContent;
   btn.textContent = '…'; btn.disabled = true;
@@ -1878,7 +1880,8 @@ const I18N_EN = {
   '最近成功': 'Last success',
   '未命名': 'Unnamed',
   '缺 TS': 'Missing TS',
-  '缺 __Secure-1PSIDTS，无法长期续命': 'Missing __Secure-1PSIDTS; cannot be kept alive long-term',
+  '缺 __Secure-1PSIDTS，首次保活会尝试补发；失败请用 Firefox 重新导出': 'Missing __Secure-1PSIDTS; first keepalive will try to mint one. If that fails, re-export from Firefox',
+  '约 30 分钟过期，保活会自动换发': 'Expires in ~30 minutes; keepalive rotates it automatically',
   '检测': 'Check',
   '保活': 'Keep-alive',
   '编辑': 'Edit',
@@ -1961,8 +1964,8 @@ const I18N_EN = {
   '仅用于面板里区分账号，不参与请求。': 'Only used to tell accounts apart in the panel; not sent with requests.',
   '整串粘贴（推荐）': 'Paste full string (recommended)',
   '逐项填写': 'Fill in individually',
-  '整行粘贴，分号分隔。至少要含 SAPISID。DevTools 里全选复制即可，多余的项会一并保留 —— 发得越全越像真实浏览器。':
-    'Paste the whole line, semicolon-separated. Must contain at least SAPISID. Select-all and copy in DevTools; extra items are kept too — the more complete, the more it looks like a real browser.',
+  '整行粘贴，分号分隔。至少要含 SAPISID 和 __Secure-1PSID。 建议用 Firefox 导出（Chrome 新版本的会话绑在设备上，续不了）。DevTools 里全选复制即可， 多余的项会一并保留 —— 发得越全越像真实浏览器。':
+    'Paste the whole line, semicolon-separated. Must contain at least SAPISID and __Secure-1PSID. Prefer Firefox (recent Chrome binds the session to the device and it will not renew). Select-all and copy in DevTools; extra items are kept too — the more complete, the more it looks like a real browser.',
   '备注': 'Note',
   'Cookie 不能为空': 'Cookie cannot be empty',
   'cookie 里没有 SAPISID，多半没复制全': 'No SAPISID in the cookie — you probably did not copy it all',

@@ -219,7 +219,7 @@ Claude Code / Cursor 这类 MCP 客户端能「用 Gemini 去搜网」，返回*
 - **概览** — 24h KPI + 请求量/P50 延迟双轴趋势图 + 模型/代理分组统计 + IP 限流用量 + 一键连通性诊断
 - **请求记录** — 明细列表（仅元数据，无 prompt/response 内容），状态/模型筛选 + 分页
 - **代理池** — 运行时增删改 + 启用/禁用 + 失败次数熔断（每代理是独立 IP slot）
-- **Cookie 池** — 导入多个 Google 登录态账号，请求按**最久未用优先**自动轮转。每个账号一键「检测」是否仍是登录态；自动续期 + 每 10 分钟保活；每个账号粘住自己的出口。列表只显示脱敏摘要（cookie 数 / 关键项 / SAPISID 末 4 位 / 失败次数）
+- **Cookie 池** — 导入多个 Google 登录态账号，请求按**最久未用优先**自动轮转。每个账号一键「检测」是否仍是登录态；自动换发 `__Secure-1PSIDTS` + 每 10 分钟保活；每个账号粘住自己的出口。列表只显示脱敏摘要（cookie 数 / 关键项 / SAPISID 末 4 位 / 失败次数）
 - **设置** — 运行时配置表单（保存即生效）+ API Key 轮换 + 部署期配置只读展示
 
 面板前端是单个 HTML，Chart.js 随二进制 embed，**不走 CDN**——内网/离线部署也能开。
@@ -422,11 +422,11 @@ Cookie 池（按 URL、cookie 内容去重），之后一律从面板管理。�
 
 1. 浏览器登录 [gemini.google.com](https://gemini.google.com)
 2. DevTools (F12) → Application → Cookies → `https://gemini.google.com`
-3. 复制：`SID` / `HSID` / `SSID` / `APISID` / `SAPISID` / `__Secure-1PSID`
+3. 复制：`SID` / `HSID` / `SSID` / `APISID` / `SAPISID` / `__Secure-1PSID` / `__Secure-1PSIDTS`
 4. 粘进面板「Cookie 池 → 添加账号」；或写成 `cookie.txt` 后启动加
    `--cookie-file cookie.txt`（启动时导入池子，之后从面板管理）：
 ```
-SID=...; HSID=...; SSID=...; APISID=...; SAPISID=...; __Secure-1PSID=...
+SID=...; HSID=...; SSID=...; APISID=...; SAPISID=...; __Secure-1PSID=...; __Secure-1PSIDTS=...
 ```
 
 JSON 形式 `{"cookie": "SID=...; ...", "sapisid": "..."}` 也吃。带 `SAPISID` 的请求会自动
@@ -443,9 +443,17 @@ JSON 形式 `{"cookie": "SID=...; ...", "sapisid": "..."}` 也吃。带 `SAPISID
 过期后 Gemini 不报错，只是把你当匿名用户。要确认有效性点列表里的「检测」按钮，它区分
 "登录态有效"和"过期/无效"，不用发一次真实对话去试。
 
-**cookie 会自动续期，不用你操心**。上游几乎每个响应都会刷新 `SIDCC` / `__Secure-1PSIDCC` /
-`__Secure-3PSIDCC`，我们收下并写回账号；另外每 10 分钟往 `accounts.google.com/RotateCookies`
-打一次保活（间隔由服务端指定，那个响应刷的也是同一组三项）。
+**cookie 会自动续期，不用你操心**。两件事一起做：
+
+- 上游几乎每个响应都会刷新 `SIDCC` / `__Secure-1PSIDCC` / `__Secure-3PSIDCC`，我们收下并写回账号。
+- 每 10 分钟（启动后 15 秒先刷一次）往 `accounts.google.com/RotateCookies` 打保活：
+  先用哨兵 payload 换发 `__Secure-1PSIDTS`（约 30 分钟过期的那张票，不刷就会被当匿名），
+  再走浏览器 iframe 那条刷 SIDCC。同一账号 60 秒内不重复打，避免 429。
+
+> **请用 Firefox 导出 cookie。** Chrome 新版本开了 Device Bound Session Credentials，
+> 导出的会话绑在这台设备上，`*PSIDTS` 续不了，大概半小时到几小时就死。Firefox 没有
+> 这层绑定，同一套保活可以一直续。用 Chrome 的话：开一个全新的隐私窗口登录、立刻导出、
+> **马上关掉那个窗口**，不要让浏览器自己再去轮转同一份会话。
 
 **每个账号会粘住自己的出口**。cookie 池和代理池如果各自独立轮转，同一个 Google 账号会
 从几十个不同 IP 发出请求，这在 Google 眼里是账号共享的典型特征。账号首次用到哪个出口就
@@ -572,7 +580,7 @@ internal/app/              全部实现
   db.go                    SQLite schema：sessions / requests / accounts / kv
   proxy.go                 代理池 CRUD + 容量调度 + 熔断
   cookie_pool.go           Cookie 池数据层（CRUD + 最久未用优先挑选 + 健康度回写 + 刷新项合并）
-  rotate.go                会话保活（accounts.google.com/RotateCookies，间隔由服务端指定）
+  rotate.go                会话保活（RotateCookies：1PSIDTS 哨兵 + SIDCC iframe，间隔由服务端指定）
   upload.go                附件上传（content-push 两步 resumable）
   context_file.go          超长对话转文本附件
   vision.go                图片输入：data: URL / http(s) 链接 → 待上传附件
@@ -598,6 +606,7 @@ docker-compose.yml         单容器，默认拉 ghcr 镜像，sqlite 挂 volume
 - **长上下文有两堵墙**：请求体约 13 万字节、附件约 16 万字节（后者是模型能看到的内容**总量**，切成多份附件不涨额度）。挂 cookie 只能把可用长度从 13 万提到约 16 万，真正的长对话仍需客户端自己压缩
 - **token 数**：用 tiktoken 估算（Gemini 真 tokenizer 未公开），跟真值偏差 ±20% 以内
 - **Cookie 池不自动摘除坏号**：请求成败会回写（只把 401/403 算作 cookie 的错，网络错误和 302 拦截不算），但失败到一定次数不会自动禁用，得看面板手动停。另外 `last_ok_at` 只说明"这个 cookie 参与的请求成功过"，不等于它仍然有效——cookie 过期后 Gemini 不报错，只是把你当匿名用户，纯文本请求照样 200
+- **Chrome 导出的 cookie 可能续不了**：新版 Chrome 的 Device Bound Session Credentials 把会话绑在设备上，`__Secure-1PSIDTS` 换发会 401。用 Firefox 导出即可长期续命
 - **假流式的那一半**：`/v1/responses` 和带 `tools` 的 chat 请求都是收完再发，只有普通 chat 流式是真增量
 
 ## 故障排查
@@ -611,6 +620,7 @@ docker-compose.yml         单容器，默认拉 ghcr 镜像，sqlite 挂 volume
 | 启动即退出，报 `unable to open database file (14)` | 容器以 nonroot(uid 65532) 运行，而 bind mount 的宿主目录属主是 root，写不进去 | 改用具名卷（compose 默认已是），或 `sudo chown -R 65532:65532 ./data` |
 | 选 `gemini-3.1-pro` 直接报错 | 没配 cookie 时它不暴露，这是故意的 | 挂 cookie（面板「设置」或「Cookie 池」）后即可用 |
 | 挂了 cookie 后请求全部 502 | cookie 已失效，取不到 XSRF token | 重新导出 cookie。判据：请求 `gemini-3.1-pro` 若回报 3.5 Flash-Lite 就是失效了 |
+| cookie 大约半小时就失效，保活没用 | Chrome 设备绑定会话，`__Secure-1PSIDTS` 换发 401 | 用 **Firefox** 重新登录再导出；点面板「保活」应能看到刷新了 `__Secure-1PSIDTS` |
 | 面板打不开 / 401 | `--admin-token`（或 `ADMIN_TOKEN`）没对上 | token 留空则不鉴权，只有绑 127.0.0.1 时才可接受 |
 
 Docker 用默认 bridge 网络时上游可能返回空内容（Google 拒绝某些 NAT 段）。本项目**没有复现过**，真遇到可以试 `network_mode: host` 验证是不是这个原因。
