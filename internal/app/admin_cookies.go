@@ -123,13 +123,17 @@ func handleAdminCookieItem(w http.ResponseWriter, r *http.Request) {
 		if action == "rotate" {
 			for _, a := range accountList() {
 				if a.ID == id {
-					iv, err := rotateAccount(a)
+					iv, names, err := rotateAccount(a)
 					if err != nil {
 						writeJSON(w, 200, map[string]interface{}{"ok": false, "detail": err.Error()})
 						return
 					}
+					detail := "保活成功"
+					if len(names) > 0 {
+						detail = "保活成功，刷新了 " + strings.Join(names, ", ")
+					}
 					writeJSON(w, 200, map[string]interface{}{
-						"ok": true, "detail": "保活成功", "next_sec": int(iv.Seconds())})
+						"ok": true, "detail": detail, "refreshed": names, "next_sec": int(iv.Seconds())})
 					return
 				}
 			}

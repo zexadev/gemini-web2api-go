@@ -225,7 +225,7 @@ a specific URL's content — is not implemented yet).
 - **Overview** — 24h KPIs, request volume / P50 latency dual-axis chart, per-model and per-proxy breakdowns, IP rate-limit usage, one-click connectivity check
 - **Requests** — request log (metadata only, no prompt/response content), status/model filters, pagination
 - **Proxy pool** — runtime CRUD, enable/disable, circuit breaker on repeated failures (each proxy is its own IP slot)
-- **Cookie pool** — import multiple signed-in Google accounts; requests rotate through them **least-recently-used first**. One-click "check" tells you whether an account is still signed in; cookies are auto-refreshed and kept alive every 10 minutes; each account is pinned to its own exit. The list shows redacted summaries only (cookie count / key entries / last 4 of SAPISID / failure count)
+- **Cookie pool** — import multiple signed-in Google accounts; requests rotate through them **least-recently-used first**. One-click "check" tells you whether an account is still signed in; `__Secure-1PSIDTS` is rotated automatically plus a 10-minute keepalive; each account is pinned to its own exit. The list shows redacted summaries only (cookie count / key entries / last 4 of SAPISID / failure count)
 - **Settings** — runtime config form (saved settings take effect immediately), API key rotation, read-only view of deploy-time config
 
 The frontend is a single HTML file and Chart.js is embedded in the binary, **not loaded from a CDN**, so the panel also works on air-gapped or intranet deployments.
@@ -384,10 +384,10 @@ A signed-in session unlocks `gemini-3.1-pro` + reasoning chain, image/video inpu
 
 1. Sign in to [gemini.google.com](https://gemini.google.com)
 2. DevTools (F12) → Application → Cookies → `https://gemini.google.com`
-3. Copy: `SID` / `HSID` / `SSID` / `APISID` / `SAPISID` / `__Secure-1PSID`
+3. Copy: `SID` / `HSID` / `SSID` / `APISID` / `SAPISID` / `__Secure-1PSID` / `__Secure-1PSIDTS`
 4. Add it in the panel under Cookie pool → Add account, or write it to `cookie.txt` and start with `--cookie-file cookie.txt` (imported into the pool at startup, managed from the panel afterwards):
 ```
-SID=...; HSID=...; SSID=...; APISID=...; SAPISID=...; __Secure-1PSID=...
+SID=...; HSID=...; SSID=...; APISID=...; SAPISID=...; __Secure-1PSID=...; __Secure-1PSIDTS=...
 ```
 
 The JSON form `{"cookie": "SID=...; ...", "sapisid": "..."}` is also accepted. Requests carrying `SAPISID` get a computed `SAPISIDHASH` authorization header, so that entry cannot be missing.
@@ -398,7 +398,12 @@ An account's "failure count" and "last success" columns update automatically. On
 
 Note that "last success" only means a request involving this cookie succeeded; it does **not** prove the cookie is still valid. An expired cookie doesn't error — Gemini just treats you as anonymous. Use the **Check** button in the list to tell "still signed in" from "expired/invalid" without spending a real conversation on it.
 
-**Cookies renew themselves.** Nearly every upstream response refreshes `SIDCC` / `__Secure-1PSIDCC` / `__Secure-3PSIDCC` via `Set-Cookie`, and we merge those back into the account; separately, a keepalive ping goes to `accounts.google.com/RotateCookies` every 10 minutes (the interval is dictated by the server). (that response refreshes the same three entries).
+**Cookies renew themselves.** Two things run together:
+
+- Nearly every upstream response refreshes `SIDCC` / `__Secure-1PSIDCC` / `__Secure-3PSIDCC` via `Set-Cookie`, and we merge those back into the account.
+- Every 10 minutes (first ping 15 seconds after boot) we hit `accounts.google.com/RotateCookies`: first the sentinel payload that mints a fresh `__Secure-1PSIDTS` (the ~30-minute ticket — without it Gemini treats you as anonymous), then the browser iframe flow that refreshes SIDCC. The same account is not pinged twice within 60 seconds, to avoid HTTP 429.
+
+> **Export cookies from Firefox.** Recent Chrome enables Device Bound Session Credentials, so a session exported from Chrome is bound to that machine and `*PSIDTS` cannot be rotated — it dies in about 30 minutes to a few hours. Firefox has no such binding, and the same keepalive will keep the session alive. If you must use Chrome: log in in a fresh private window, export immediately, and **close that window** so the browser does not rotate the same session out from under you.
 
 **Each account is pinned to its own exit.** If the cookie pool and proxy pool rotated independently, one Google account would emit requests from dozens of different IPs, which is exactly what account sharing looks like to Google. An account binds to the first exit it uses and stays there until that exit becomes unusable.
 
@@ -504,7 +509,7 @@ internal/app/              everything else
   db.go                    SQLite schema: sessions / requests / accounts / kv
   proxy.go                 proxy pool CRUD + capacity scheduling + circuit breaker
   cookie_pool.go           cookie pool data layer (CRUD + least-recently-used pick + health writeback + refresh merge)
-  rotate.go                session keepalive (accounts.google.com/RotateCookies, server-dictated interval)
+  rotate.go                session keepalive (RotateCookies: 1PSIDTS sentinel + SIDCC iframe, server-dictated interval)
   upload.go                attachment upload (content-push, two-step resumable)
   context_file.go          over-long conversations as a text attachment
   vision.go                image input: data: URL / http(s) link -> pending attachment
@@ -530,6 +535,7 @@ docker-compose.yml         single container, pulls the ghcr image by default, sq
 - **Long context hits two walls**: ~130,000 bytes for the request body and ~160,000 bytes for attachments (the latter is the **total** amount of content the model can see — splitting it across several attachments does not raise the budget). A cookie only takes the usable length from 130K to ~160K; genuinely long conversations still have to be compacted by the client
 - **Token counts**: tiktoken estimates (Gemini's real tokenizer is not public), within about ±20% of the true value
 - **Cookie pool never auto-removes a bad account**: outcomes are written back (only 401/403 count as the cookie's fault — network errors and 302 blocks don't), but failures never trigger an automatic disable, so you have to do it from the panel. Also `last_ok_at` only means "a request using this cookie succeeded", not that the cookie is still valid — an expired cookie doesn't error, Gemini just treats you as anonymous and plain text requests still return 200
+- **Cookies exported from Chrome may not renew**: recent Chrome Device Bound Session Credentials bind the session to the machine, and rotating `__Secure-1PSIDTS` then returns 401. Export from Firefox for a session that can be kept alive
 - **Streaming is only half real**: `/v1/responses` and chat requests carrying `tools` are buffered; only plain chat streams incrementally
 
 ## Troubleshooting
@@ -543,6 +549,7 @@ docker-compose.yml         single container, pulls the ghcr image by default, sq
 | Exits at startup with `unable to open database file (14)` | The container runs as nonroot (uid 65532) but the bind-mounted host directory is owned by root, so it can't be written | Use a named volume (the default in compose), or `sudo chown -R 65532:65532 ./data` |
 | `gemini-3.1-pro` errors out immediately | It isn't exposed without a cookie, by design | Add an account on the Cookie pool page and it becomes available |
 | Every request returns 502 after attaching a cookie | The cookie expired, so the XSRF token can't be fetched | Re-export the cookie. Quick check: if `gemini-3.1-pro` reports 3.5 Flash-Lite, it's expired |
+| Cookie dies in about 30 minutes; keepalive does nothing | Chrome device-bound session; rotating `__Secure-1PSIDTS` returns 401 | Re-login in **Firefox** and export again. The panel Keep-alive button should report that `__Secure-1PSIDTS` was refreshed |
 | Panel won't open / 401 | `--admin-token` (or `ADMIN_TOKEN`) doesn't match | An empty token disables auth, which is only acceptable when bound to 127.0.0.1 |
 
 With Docker's default bridge network, upstream may return empty content (Google rejects certain NAT ranges). We have **never reproduced it here**. If you hit it, try `network_mode: host` to confirm whether that is the cause.

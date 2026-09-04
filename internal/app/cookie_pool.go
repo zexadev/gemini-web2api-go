@@ -43,14 +43,38 @@ func splitCookiePairs(cookie string) [][2]string {
 	return out
 }
 
-// extractSAPISID 从一整串 cookie 里取 SAPISID 的值，取不到返回空串。
-func extractSAPISID(cookie string) string {
+// cookieValue 从一整串 cookie 里取指定名字的值，取不到返回空串。
+func cookieValue(cookie, name string) string {
 	for _, kv := range splitCookiePairs(cookie) {
-		if kv[0] == "SAPISID" {
+		if kv[0] == name {
 			return kv[1]
 		}
 	}
 	return ""
+}
+
+// extractSAPISID 从一整串 cookie 里取 SAPISID 的值，取不到返回空串。
+func extractSAPISID(cookie string) string {
+	return cookieValue(cookie, "SAPISID")
+}
+
+// cookieSubset 只留下指定名字的项，顺序跟原串一致。刷新 1PSIDTS 时不能把整串
+// 都带上：多带 Chrome DBSC / 其它主机的 cookie 实测会让 RotateCookies 回 401。
+func cookieSubset(cookie string, names []string) string {
+	want := make(map[string]bool, len(names))
+	for _, n := range names {
+		want[n] = true
+	}
+	var parts []string
+	seen := map[string]bool{}
+	for _, kv := range splitCookiePairs(cookie) {
+		if !want[kv[0]] || kv[1] == "" || seen[kv[0]] {
+			continue
+		}
+		seen[kv[0]] = true
+		parts = append(parts, kv[0]+"="+kv[1])
+	}
+	return strings.Join(parts, "; ")
 }
 
 // cookieNames 返回 cookie 串里出现的所有 cookie 名（顺序保留），供 UI 展示。
