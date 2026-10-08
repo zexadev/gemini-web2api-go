@@ -6,11 +6,12 @@ import (
 	"time"
 )
 
-// bl 是上游前端的构建版本号，形如 boq_assistant-bard-web-server_20260805.16_p0，
+// bl 是上游前端的构建版本号，形如 boq_gemini-web-uiserver_20261007.01_p0，
 // 每个 StreamGenerate 请求都要带。它埋在 /app 页面 HTML 的 "cfb2h" 字段里。
+// （2026-10 上游把服务名从 assistant-bard-web-server 改成了 gemini-web-uiserver，
+// 新旧两个值实测都还能用；校验正则已放宽不钉服务名，见 blValueRe。）
 //
-// 钉死一个值是能用的 —— 我们钉的 20260525.09_p0 比抓包里浏览器用的
-// 20260805.16_p0 落后两个多月，实测仍然正常。但"仍然可用"不等于"永远可用"，
+// 钉死一个值是能用的 —— 实测落后好几个月的旧值仍然正常。但"仍然可用"不等于"永远可用"，
 // 而这个值一旦被上游弃用，表现是所有请求大面积失败，排查时很难第一时间想到
 // 是个版本号过期了。既然 xsrf.go 本来就在抓 /app 页面，顺手取一下成本几乎为零。
 var (
@@ -25,11 +26,16 @@ const blTTL = 6 * time.Hour
 
 var cfb2hRe = regexp.MustCompile(`"cfb2h":"([^"]{10,120})"`)
 
-// blValueRe 卡住形状：boq_assistant-bard-web-server_<8位日期>.<2位>_p<数字>。
+// blValueRe 卡住形状：boq_<服务名>_<8位日期>.<2位>_p<数字>。
 // 页面上的 cfb2h 理论上就是这个格式，但它是外部输入，直接拿去拼 URL 等于让
 // 上游页面决定我们发什么请求。形状对不上就当没抓到，继续用配置里钉的值 ——
 // 宁可落后，不可乱发。
-var blValueRe = regexp.MustCompile(`^boq_assistant-bard-web-server_\d{8}\.\d{2}_p\d+$`)
+//
+// 服务名那段不钉死（原来钉的是 assistant-bard-web-server）：2026-10 上游把服务
+// 改名成 gemini-web-uiserver，钉死服务名会让自动跟随把新值当"形状不对"拒掉，于是
+// 永远回退到配置里那个旧值。只校验 boq_ 前缀 + 日期.版本_p 后缀这个总体形状，
+// 服务名随它改——够挡住抓错的垃圾，又扛得住改名。
+var blValueRe = regexp.MustCompile(`^boq_[a-z0-9-]+_\d{8}\.\d{2}_p\d+$`)
 
 // currentBL 返回这次请求该用的 bl。
 //

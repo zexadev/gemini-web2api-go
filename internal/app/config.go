@@ -61,7 +61,7 @@ func defaultConfig() Config {
 		RetryAttempts:  3,
 		RetryDelaySec:  2,
 		RequestTimeout: 180,
-		GeminiBL:       "boq_assistant-bard-web-server_20260525.09_p0",
+		GeminiBL:       "boq_gemini-web-uiserver_20261007.01_p0",
 		DefaultModel:   "gemini-3.6-flash",
 		LogRequests:    true,
 		CookieFile:     "",

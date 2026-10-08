@@ -13,7 +13,7 @@
   "per_ip_concurrent": 5,
   "per_ip_rpm": 30,
   "per_ip_rph": 80,
-  "gemini_bl": "boq_assistant-bard-web-server_20260525.09_p0",
+  "gemini_bl": "boq_gemini-web-uiserver_20261007.01_p0",
   "cookie_file": "",
   "proxy": "",
   "log_requests": true
