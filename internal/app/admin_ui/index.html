@@ -443,7 +443,7 @@ const pages = {
               else if (rph === 0) { note = '本小时还没有请求'; }
               return `<div class="slot">
                 <div class="slot-head">
-                  <span class="slot-name">${escapeHtml(u.name)}</span>
+                  <span class="slot-name">${escapeHtml(t(u.name))}</span>
                   <span class="slot-count"><b>${rph}</b> / ${BAN_LINE}</span>
                 </div>
                 <div class="track">
@@ -530,8 +530,8 @@ const pages = {
               ${(stats.error_breakdown || []).map(e => `<tr>
                 <td class="nw"><span class="badge ${ERR_BADGE[e.kind] || 'muted'}">${escapeHtml(e.kind)}</span></td>
                 <td class="num nw">${e.count}</td>
-                <td style="font-size:12.5px">${ERR_DESC[e.kind] || ''}
-                  <div class="pre" style="margin-top:5px;color:var(--muted)">${escapeHtml(e.sample || '')}</div></td>
+                <td style="font-size:12.5px">${t(ERR_DESC[e.kind] || '')}
+                  <div class="pre" style="margin-top:5px;color:var(--muted)">${escapeHtml(t(e.sample || ''))}</div></td>
               </tr>`).join('') || '<tr><td colspan="3" class="empty">窗口内没有失败</td></tr>'}
             </tbody>
           </table>
@@ -618,7 +618,7 @@ const pages = {
                 <td class="pre truncate" title="${escapeHtml(p.url)}">${escapeHtml(p.url)}</td>
                 <td class="nw">${p.enabled ? '<span class="badge ok">已启用</span>' : '<span class="badge muted">已禁用</span>'}</td>
                 <td class="num nw">${p.fail_count > 0 ? '<span class="badge fail">' + p.fail_count + '</span>' : p.fail_count}</td>
-                <td class="pre truncate" title="${escapeHtml(p.last_error || '')}">${escapeHtml(p.last_error || '—')}</td>
+                <td class="pre truncate" title="${escapeHtml(t(p.last_error || ''))}">${escapeHtml(t(p.last_error) || '—')}</td>
                 <td class="nw">
                   <span class="actions">
                     <button class="btn muted" onclick="toggleProxy(${p.id})">${p.enabled ? '禁用' : '启用'}</button>
@@ -642,8 +642,8 @@ const pages = {
       <div class="panel page-fill">
         <h2>Cookie 池
           <span class="controls">
-            ${deadN > 0 ? '<span class="badge fail" style="margin-right:8px" title="这些号鉴权在失败，多半 cookie 过期了，建议用 Firefox 重新导出">' + deadN + ' 疑似失效</span>' : ''}
-            <span class="badge ${data.enabled > 0 ? 'ok' : 'muted'}" style="margin-right:8px">${data.enabled || 0} 启用 / ${data.total || 0} 共</span>
+            ${deadN > 0 ? '<span class="badge fail" style="margin-right:8px" title="' + t('这些号鉴权在失败，多半 cookie 过期了，建议用 Firefox 重新导出') + '">' + deadN + ' ' + t('疑似失效') + '</span>' : ''}
+            <span class="badge ${data.enabled > 0 ? 'ok' : 'muted'}" style="margin-right:8px">${LANG === 'en' ? (data.enabled || 0) + ' active / ' + (data.total || 0) + ' total' : (data.enabled || 0) + ' 启用 / ' + (data.total || 0) + ' 共'}</span>
             <button class="btn" onclick="addCookieAcct()">+ 导入 Cookie</button>
           </span>
         </h2>
@@ -681,14 +681,14 @@ const pages = {
                   : a.health === 'unknown' ? '<span class="badge warn" title="还没成功用过，点「检测」确认">待检测</span>'
                   : '<span class="badge ok">正常</span>'
                 }</td>
-                <td class="nw" title="共 ${a.cookie_count} 个 cookie，关键项：${(a.key_cookies||[]).join(' / ')}">
-                  <span class="badge ${a.has_1psidts ? 'ok' : 'warn'}">${(a.key_cookies||[]).length}/7 项</span>
+                <td class="nw" title="${LANG === 'en' ? 'Total ' + a.cookie_count + ' cookies, key items: ' + (a.key_cookies||[]).join(' / ') : '共 ' + a.cookie_count + ' 个 cookie，关键项：' + (a.key_cookies||[]).join(' / ')}">
+                  <span class="badge ${a.has_1psidts ? 'ok' : 'warn'}">${(a.key_cookies||[]).length}/9 项</span>
                   ${a.has_1psidts ? '' : '<span class="badge warn" title="缺 __Secure-1PSIDTS，首次保活会尝试补发；失败请用 Firefox 重新导出">缺 TS</span>'}
                 </td>
                 <td class="pre nw">${a.sapisid_tail ? '…' + escapeHtml(a.sapisid_tail) : '—'}</td>
                 <td class="num nw">${a.fail_count > 0 ? '<span class="badge fail">' + a.fail_count + '</span>' : 0}</td>
                 <td class="nw" style="font-size:12px;color:var(--muted)">${a.last_ok_at ? fmt.ts(a.last_ok_at) : '—'}</td>
-                <td class="pre truncate" title="${escapeHtml(a.last_error || '')}">${escapeHtml(a.last_error || '—')}</td>
+                <td class="pre truncate" title="${escapeHtml(t(a.last_error || ''))}">${escapeHtml(t(a.last_error) || '—')}</td>
                 <td class="nw">
                   <span class="actions">
                     <button class="btn muted" onclick="checkCookieAcct(${a.id}, this)">检测</button>
@@ -793,11 +793,11 @@ async function loadChart(range = '24h') {
     data: {
       labels,
       datasets: [
-        { label: '请求数', data: reqs, yAxisID: 'y',
+        { label: LANG === 'en' ? 'Requests' : '请求数', data: reqs, yAxisID: 'y',
           borderColor: '#0B57D0', backgroundColor: areaBlue, fill: true,
           tension: .35, borderWidth: 2, pointRadius: 0, pointHoverRadius: 4,
           pointBackgroundColor: '#0B57D0' },
-        { label: 'P50 延迟', data: p50, yAxisID: 'y1',
+        { label: LANG === 'en' ? 'P50 Latency' : 'P50 延迟', data: p50, yAxisID: 'y1',
           borderColor: '#9B72CB', backgroundColor: 'transparent',
           tension: .35, borderWidth: 2, borderDash: [5, 4],
           pointRadius: 0, pointHoverRadius: 4, pointBackgroundColor: '#9B72CB' },
@@ -856,10 +856,10 @@ async function loadReqs() {
       <td class="nw muted">${fmt.ts(r.ts)}</td>
       <td class="truncate" title="${escapeHtml(r.model)}">${escapeHtml(r.model)}</td>
       <td class="nw">${upstreamCell(r)}</td>
-      <td class="nw truncate">${r.proxy_name ? escapeHtml(r.proxy_name) : '<span class="badge muted">直连</span>'}</td>
+      <td class="nw truncate">${r.proxy_name ? escapeHtml(t(r.proxy_name)) : '<span class="badge muted">' + t('直连') + '</span>'}</td>
       <td class="nw truncate" title="${escapeHtml(r.account_label || '')}">${
         r.account_id ? escapeHtml(r.account_label || ('#' + r.account_id))
-                     : '<span class="badge muted">匿名</span>'}</td>
+                     : '<span class="badge muted">' + t('匿名') + '</span>'}</td>
       <td class="nw">${r.status === 200 ? '<span class="badge ok">200</span>' : '<span class="badge fail">' + r.status + '</span>'}</td>
       <td class="num nw">${fmt.ms(r.ttfb_ms)}</td>
       <td class="num nw">${fmt.ms(r.total_ms)}</td>
@@ -867,7 +867,7 @@ async function loadReqs() {
       <td class="num nw">${fmt.num(r.output_tokens)}</td>
       <td><span class="pre">${escapeHtml(r.endpoint)}${r.stream ? ' <span class="badge muted">stream</span>' : ''}</span>
         ${r.error ? '<div class="pre clamp2" style="color:var(--fail);margin-top:4px" title="'
-          + escapeHtml(r.error) + '"><b>错误：</b>' + escapeHtml(r.error) + '</div>' : ''}
+          + escapeHtml(t(r.error)) + '"><b>' + t('错误：') + '</b>' + escapeHtml(t(r.error)) + '</div>' : ''}
       </td>
     </tr>`).join('') || '<tr><td colspan="11" class="empty">还没有请求记录</td></tr>';
   const size = reqPageSize();
@@ -877,19 +877,24 @@ async function loadReqs() {
   const from = total ? reqOffset + 1 : 0;
   const to = Math.min(reqOffset + size, total);
   document.getElementById('reqPager').innerHTML = `
-    <span class="muted">${from}-${to} / 共 ${total} 条</span>
+    <span class="muted">${from}-${to} / ${LANG === 'en' ? 'total ' + total + ' items' : '共 ' + total + ' 条'}</span>
     <span class="pager-btns">
       <button class="btn muted" ${reqOffset === 0 ? 'disabled' : ''}
-        onclick="reqOffset=0;loadReqs()">最前</button>
+        onclick="reqOffset=0;loadReqs()">${t('最前')}</button>
       <button class="btn muted" ${reqOffset === 0 ? 'disabled' : ''}
-        onclick="reqOffset=Math.max(0,reqOffset-${size});loadReqs()">上一页</button>
-      <span class="muted" style="min-width:80px;text-align:center">第 ${page} / ${pages} 页</span>
+        onclick="reqOffset=Math.max(0,reqOffset-${size});loadReqs()">${t('上一页')}</button>
+      <span class="muted" style="min-width:80px;text-align:center">${LANG === 'en' ? 'Page ' + page + ' / ' + pages : '第 ' + page + ' / ' + pages + ' 页'}</span>
       <button class="btn muted" ${to >= total ? 'disabled' : ''}
-        onclick="reqOffset+=${size};loadReqs()">下一页</button>
+        onclick="reqOffset+=${size};loadReqs()">${t('下一页')}</button>
       <button class="btn muted" ${to >= total ? 'disabled' : ''}
-        onclick="reqOffset=${(pages-1)*size};loadReqs()">最后</button>
+        onclick="reqOffset=${(pages-1)*size};loadReqs()">${t('最后')}</button>
     </span>
   `;
+  if (LANG === 'en') {
+    translateTree(tbody, true);
+    const pager = document.getElementById('reqPager');
+    if (pager) translateTree(pager, true);
+  }
   // populate model dropdown from current page (best-effort)
   const sel = document.getElementById('reqModel');
   if (sel && sel.options.length === 1) {
@@ -1039,19 +1044,19 @@ async function saveRtCfg() {
       : f.type === 'int' ? parseInt(el.value, 10)
       : el.value.trim();
   }
-  msg.textContent = '保存中…'; msg.style.color = 'var(--muted)';
+  msg.textContent = t('保存中…'); msg.style.color = 'var(--muted)';
   const res = await fetch('api/config', {
     method: 'PUT', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    msg.textContent = '保存失败：' + (data.error || res.status);
+    msg.textContent = t('保存失败：') + t(data.error || res.status);
     msg.style.color = 'var(--fail)';
     return;
   }
   rtCfgCache = data.config;
-  msg.textContent = '已保存并生效';
+  msg.textContent = t('已保存并生效');
   msg.style.color = 'var(--ok)';
   setTimeout(() => { msg.textContent = ''; }, 3000);
 }
@@ -1089,7 +1094,7 @@ function upstreamCell(r) {
                (upstreamExpected[nm] && nu.startsWith(upstreamExpected[nm]));
   return same
     ? escapeHtml(up)
-    : '<span class="badge warn" title="服务端实际使用的模型与请求的不一致">'
+    : '<span class="badge warn" title="' + escapeHtml(t('服务端实际使用的模型与请求的不一致')) + '">'
       + escapeHtml(up) + '</span>';
 }
 
@@ -1111,8 +1116,8 @@ async function addProxy() {
     body: JSON.stringify({ name: data.name, url: data.url, weight: 1 }),
   });
   const j = await r.json();
-  if (j.error) return flash('添加失败：' + j.error);
-  flash('代理已添加');
+  if (j.error) return flash(t('添加失败：') + t(j.error));
+  flash(t('代理已添加'));
   await refreshPage();
 }
 async function delProxy(id) {
@@ -1235,7 +1240,9 @@ async function addCookieAcct() {
         inputs().forEach(el => { el.value = obj[el.dataset.ck] || ''; });
         const n = Object.keys(extras).length;
         $('[data-role=extras]').textContent = n
-          ? `另有 ${n} 项未在上面列出（${Object.keys(extras).slice(0, 4).join(', ')}${n > 4 ? ' …' : ''}），会一并保留。`
+          ? (LANG === 'en'
+              ? `${n} additional item${n > 1 ? 's' : ''} not listed above (${Object.keys(extras).slice(0, 4).join(', ')}${n > 4 ? ' …' : ''}) will be kept.`
+              : `另有 ${n} 项未在上面列出（${Object.keys(extras).slice(0, 4).join(', ')}${n > 4 ? ' …' : ''}），会一并保留。`)
           : '';
       };
 
@@ -1247,6 +1254,7 @@ async function addCookieAcct() {
             .forEach(b => b.classList.toggle('on', b === btn));
           $('[data-pane=fields]').style.display = mode === 'fields' ? '' : 'none';
           $('[data-pane=raw]').style.display = mode === 'raw' ? '' : 'none';
+          if (LANG === 'en') translateTree(overlay, true);
         };
       });
       // 在逐项模式里直接粘贴一整串时自动拆开，省得用户先去切 tab
@@ -1302,8 +1310,8 @@ async function editCookieAcct(id, label, note) {
   const j = await api('api/cookies/' + id, {
     method: 'PATCH', body: JSON.stringify({ label: data.label, note: data.note }),
   });
-  if (j.error) return flash('保存失败：' + j.error);
-  flash('已保存');
+  if (j.error) return flash(t('保存失败：') + t(j.error));
+  flash(t('已保存'));
   await refreshPage();
 }
 
@@ -1311,12 +1319,12 @@ async function editCookieAcct(id, label, note) {
 // Gemini 不报错、只是把你当匿名，纯文本请求照样 200，所以不能拿"请求成功"当判据。
 async function checkCookieAcct(id, btn) {
   const old = btn.textContent;
-  btn.textContent = '检测中…'; btn.disabled = true;
+  btn.textContent = t('检测中…'); btn.disabled = true;
   try {
     const r = await fetch('api/cookies/' + id + '/check',
       { method: 'POST', credentials: 'include' });
     const d = await r.json().catch(() => ({}));
-    if (!r.ok) { flash('检测失败：' + (d.error || r.status)); return; }
+    if (!r.ok) { flash(t('检测失败：') + t(d.error || r.status)); return; }
     const via = d.proxy_name ? `，出口 ${d.proxy_name}` : '';
     flash((d.ok ? '✓ #' + id + ' ' : '✗ #' + id + ' ') + (d.detail || '') +
           `${via}，${d.took_ms}ms`);
@@ -1334,7 +1342,7 @@ async function rotateCookieAcct(id, btn) {
     const r = await fetch('api/cookies/' + id + '/rotate',
       { method: 'POST', credentials: 'include' });
     const d = await r.json().catch(() => ({}));
-    if (!r.ok) { flash('保活失败：' + (d.error || r.status)); return; }
+    if (!r.ok) { flash(t('保活失败：') + t(d.error || r.status)); return; }
     flash((d.ok ? '✓ #' + id + ' ' : '✗ #' + id + ' ') + (d.detail || '') +
           (d.next_sec ? `，服务端建议 ${d.next_sec}s 后再来` : ''));
     await refreshPage();
@@ -1383,7 +1391,7 @@ async function populateTestProxies() {
     (data.items || []).filter(p => p.enabled).forEach(p => {
       const opt = document.createElement('option');
       opt.value = p.id;
-      opt.text = '代理: ' + p.name;
+      opt.text = (LANG === 'en' ? 'Proxy: ' : '代理: ') + t(p.name);
       sel.appendChild(opt);
     });
   } catch (e) { /* ignore — login redirect handled in api() */ }
@@ -1394,32 +1402,34 @@ async function runTest() {
   const proxy = sel.value;
   const box = document.getElementById('testResult');
   box.style.display = 'block';
-  box.innerHTML = '<div class="empty">正在测试…（最多等 30 秒）</div>';
+  box.innerHTML = `<div class="empty">${t('正在测试…（最多等 30 秒）')}</div>`;
   try {
     const url = 'api/test' + (proxy !== '' ? '?proxy_id=' + proxy : '');
     const r = await api(url);
     const statusBadge = {
-      success: '<span class="badge ok">成功</span>',
-      blocked_sorry: '<span class="badge fail">被风控（302）</span>',
-      rate_limited: '<span class="badge fail">被限流（429）</span>',
-      upstream_error: '<span class="badge fail">上游错误</span>',
-      network_error: '<span class="badge fail">网络层错误</span>',
-    }[r.status] || `<span class="badge muted">${r.status}</span>`;
+      success: '<span class="badge ok">' + t('成功') + '</span>',
+      blocked_sorry: '<span class="badge fail">' + t('被风控（302）') + '</span>',
+      rate_limited: '<span class="badge fail">' + t('被限流（429）') + '</span>',
+      upstream_error: '<span class="badge fail">' + t('上游错误') + '</span>',
+      network_error: '<span class="badge fail">' + t('网络层错误') + '</span>',
+    }[r.status] || `<span class="badge muted">${escapeHtml(r.status)}</span>`;
+    const proxyDesc = (t(r.proxy_name) || '-') + (r.use_direct ? '' : (r.proxy_id ? ' (' + t('代理 #' + r.proxy_id) + ')' : ''));
     box.innerHTML = `
       <div style="display: grid; grid-template-columns: max-content 1fr; gap: 8px 16px; font-size: 13px;">
-        <div style="color: var(--muted)">结果</div><div>${statusBadge}</div>
+        <div style="color: var(--muted)">${t('结果')}</div><div>${statusBadge}</div>
         <div style="color: var(--muted)">HTTP code</div><div><code>${r.http_code || '-'}</code></div>
-        <div style="color: var(--muted)">总用时</div><div><code>${r.total_ms} ms</code></div>
-        <div style="color: var(--muted)">使用的 IP slot</div><div>${r.proxy_name || '-'}${r.use_direct ? '' : (r.proxy_id ? ' (代理 #' + r.proxy_id + ')' : '')}</div>
-        <div style="color: var(--muted)">指纹</div><div><code>${r.impersonate}</code></div>
-        ${r.response_text ? `<div style="color: var(--muted)">回复内容</div><div class="pre">${escapeHtml(r.response_text)}</div>` : ''}
-        <div style="color: var(--muted)">诊断说明</div><div style="line-height: 1.6;">${escapeHtml(r.diagnostic)}</div>
-        ${r.upstream_snip && !r.ok ? `<div style="color: var(--muted)">上游响应片段</div>
+        <div style="color: var(--muted)">${t('总用时')}</div><div><code>${r.total_ms} ms</code></div>
+        <div style="color: var(--muted)">${t('使用的 IP slot')}</div><div>${escapeHtml(proxyDesc)}</div>
+        <div style="color: var(--muted)">${t('指纹')}</div><div><code>${escapeHtml(r.impersonate)}</code></div>
+        ${r.response_text ? `<div style="color: var(--muted)">${t('回复内容')}</div><div class="pre">${escapeHtml(r.response_text)}</div>` : ''}
+        <div style="color: var(--muted)">${t('诊断说明')}</div><div style="line-height: 1.6;">${escapeHtml(t(r.diagnostic))}</div>
+        ${r.upstream_snip && !r.ok ? `<div style="color: var(--muted)">${t('上游响应片段')}</div>
           <div class="pre" style="max-height: 120px; overflow: auto; background: var(--bg); padding: 8px; border-radius: 4px;">${escapeHtml(r.upstream_snip)}</div>` : ''}
       </div>
     `;
+    if (LANG === 'en') translateTree(box, true);
   } catch (e) {
-    box.innerHTML = `<div class="err">测试请求失败：${e.message}</div>`;
+    box.innerHTML = `<div class="err">${t('测试请求失败：' + e.message)}</div>`;
   }
 }
 
@@ -1429,7 +1439,7 @@ function toggleKeyVis() {
   const el = document.getElementById('apiKeyView');
   const btn = el.parentElement.querySelector('button');
   el.type = el.type === 'password' ? 'text' : 'password';
-  if (btn) btn.textContent = el.type === 'password' ? '显示' : '隐藏';
+  if (btn) btn.textContent = t(el.type === 'password' ? '显示' : '隐藏');
 }
 
 async function copyKey() {
@@ -1475,17 +1485,18 @@ async function customKey() {
   });
   const j = await r.json();
   if (j.ok) { flash('Key 已更新'); await refreshPage(); }
-  else flash('错误：' + (j.error || '未知错误'));
+  else flash(t('错误：') + t(j.error || '未知错误'));
 }
 
 function flash(msg) {
-  const t = document.createElement('div');
-  t.textContent = msg;
-  t.style.cssText = 'position:fixed;bottom:24px;right:24px;background:#1F1F1F;color:#fff;'
+  const toast = document.createElement('div');
+  toast.className = 'toast';
+  toast.textContent = t(msg);
+  toast.style.cssText = 'position:fixed;bottom:24px;right:24px;background:#1F1F1F;color:#fff;'
     + 'padding:12px 20px;border-radius:12px;font-size:13px;z-index:9999;'
     + 'box-shadow:0 4px 16px rgba(60,64,67,.3);';
-  document.body.appendChild(t);
-  setTimeout(() => t.remove(), 1800);
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 1800);
 }
 
 // 自定义弹窗 ──────────────────────────────────────────────────────────────
@@ -1500,16 +1511,17 @@ function buildModal({ title, desc, bodyHTML, submitText, danger, wide, allowEnte
     overlay.className = 'modal-overlay';
     overlay.innerHTML = `
       <div class="modal${wide ? ' wide' : ''}" role="dialog" aria-modal="true">
-        ${title ? `<h3>${escapeHtml(title)}</h3>` : ''}
-        ${desc ? `<div class="desc">${desc}</div>` : ''}
+        ${title ? `<h3>${escapeHtml(t(title))}</h3>` : ''}
+        ${desc ? `<div class="desc">${t(desc)}</div>` : ''}
         <div class="modal-err" style="display:none;"></div>
         <div class="modal-body">${bodyHTML || ''}</div>
         <div class="actions">
-          <button class="btn muted" data-act="cancel">取消</button>
-          <button class="btn ${danger ? 'danger' : ''}" data-act="ok">${escapeHtml(submitText || '确定')}</button>
+          <button class="btn muted" data-act="cancel">${t('取消')}</button>
+          <button class="btn ${danger ? 'danger' : ''}" data-act="ok">${escapeHtml(t(submitText || '确定'))}</button>
         </div>
       </div>`;
     document.body.appendChild(overlay);
+    if (LANG === 'en') translateTree(overlay, true);
     // 弹窗挂上 DOM 之后再交给调用方接事件——内容是 innerHTML 灌进去的，
     // 早于这一步拿不到里面的节点。
     if (onReady) onReady(overlay);
@@ -1521,7 +1533,7 @@ function buildModal({ title, desc, bodyHTML, submitText, danger, wide, allowEnte
     };
     const showErr = (msg) => {
       const e = overlay.querySelector('.modal-err');
-      e.textContent = msg;
+      e.textContent = t(msg);
       e.style.display = msg ? 'block' : 'none';
       e.className = 'modal-err err';
     };
@@ -1562,9 +1574,9 @@ function modalPrompt({ title, desc, label, placeholder = '', value = '', hint, p
   return buildModal({
     title, desc, allowEnter: true,
     bodyHTML: `<div class="field">
-      ${label ? `<label>${escapeHtml(label)}</label>` : ''}
-      <input type="${password ? 'password' : 'text'}" placeholder="${escapeHtml(placeholder)}" value="${escapeHtml(value)}" />
-      ${hint ? `<div class="hint">${hint}</div>` : ''}
+      ${label ? `<label>${escapeHtml(t(label))}</label>` : ''}
+      <input type="${password ? 'password' : 'text'}" placeholder="${escapeHtml(t(placeholder))}" value="${escapeHtml(value)}" />
+      ${hint ? `<div class="hint">${escapeHtml(t(hint))}</div>` : ''}
     </div>`,
     submitText: '确定',
     onSubmit: (overlay) => {
@@ -1579,11 +1591,11 @@ function modalPrompt({ title, desc, label, placeholder = '', value = '', hint, p
 function modalForm({ title, desc, fields, submitText = '提交' }) {
   const html = fields.map(f => `
     <div class="field">
-      <label>${escapeHtml(f.label)}${f.required ? ' *' : ''}</label>
+      <label>${escapeHtml(t(f.label))}${f.required ? ' *' : ''}</label>
       <input data-name="${escapeHtml(f.name)}" type="${f.password ? 'password' : 'text'}"
-             placeholder="${escapeHtml(f.placeholder || '')}"
+             placeholder="${escapeHtml(t(f.placeholder || ''))}"
              value="${escapeHtml(f.value || '')}" />
-      ${f.hint ? `<div class="hint">${f.hint}</div>` : ''}
+      ${f.hint ? `<div class="hint">${escapeHtml(t(f.hint))}</div>` : ''}
     </div>`).join('');
   return buildModal({
     title, desc, bodyHTML: html, submitText, allowEnter: true,
@@ -1737,13 +1749,13 @@ async function loadSideStat() {
     const dot = document.getElementById('healthDot');
     const ht = document.getElementById('healthText');
     if (dot) dot.classList.toggle('bad', !root);
-    if (ht) ht.textContent = root ? '运行中' : '无法连接';
+    if (ht) ht.textContent = t(root ? '运行中' : '无法连接');
     box.innerHTML = [
       ['版本', root ? 'v' + root.version : '—'],
-      ['模型', root ? root.models.length + ' 个' : '—'],
-      ['Cookie', ck && ck.items && ck.items.length ? ck.items.length + ' 个' : '匿名'],
-      ['IP slot', usage ? (usage.items || []).length + ' 个' : '—'],
-    ].map(([k, v]) => `<div class="sf-row"><span>${k}</span><b>${v}</b></div>`).join('');
+      ['模型', root ? root.models.length + (LANG === 'en' ? ' models' : ' 个') : '—'],
+      ['Cookie', ck && ck.items && ck.items.length ? ck.items.length + (LANG === 'en' ? ' accounts' : ' 个') : t('匿名')],
+      ['IP slot', usage ? (usage.items || []).length + (LANG === 'en' ? ' slots' : ' 个') : '—'],
+    ].map(([k, v]) => `<div class="sf-row"><span>${t(k)}</span><b>${v}</b></div>`).join('');
   } catch (e) { box.innerHTML = ''; }
 }
 
@@ -1770,7 +1782,7 @@ async function doLogin() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ token: tok }) });
   if (r.ok) renderShell();
-  else document.getElementById('loginErr').textContent = 'Token 错误';
+  else document.getElementById('loginErr').textContent = t('Token 错误');
 }
 
 // ── i18n（中 ⇄ 英）───────────────────────────────────────────────────────
@@ -1778,6 +1790,43 @@ async function doLogin() {
 // I18N_EN 词典替换成英文；切回中文时从 ZH_ORIG 里恢复原文。渲染逻辑一行不用改，
 // 只在最外面套一层翻译。插值文案（带数字/名字的）不精确匹配、保持中文，属可接受。
 const I18N_EN = {
+  '名称 *': 'Name *',
+  '代理 URL *': 'Proxy URL *',
+  '未知错误': 'Unknown error',
+  '启动参数': 'CLI args',
+  'cookie 已失效：页面能打开但没有登录态，请求会被当匿名处理': 'Cookie expired: page opens but has no login state; requests will be treated as anonymous',
+  'cookie 无效：被重定向到登录页': 'Cookie invalid: redirected to login page',
+  '出口被上游限流，换个代理再试（不是 cookie 的问题）': 'Egress rate limited by upstream, try another proxy (not a cookie issue)',
+  '匿名 /app 没返回 Set-Cookie': 'Anonymous /app did not return Set-Cookie',
+  'impersonate 不能为空': 'impersonate cannot be empty',
+  'gemini_bl 不能为空': 'gemini_bl cannot be empty',
+  '上游没有返回内容': 'Upstream returned no content',
+  '轮转页里没有 init(...)（cookie 可能已失效）': 'Rotation page has no init(...) (cookie may have expired)',
+  '代理 URL 必须以 http:// / https:// / socks5:// / socks5h:// 开头': 'Proxy URL must start with http://, https://, socks5://, or socks5h://',
+  'cookie 解析失败：既不是 "k=v; k=v" 串，也不是可识别的 JSON': 'Failed to parse cookie: neither "k=v; k=v" string nor recognizable JSON',
+  '媒体产物取回失败': 'Failed to retrieve media artifact',
+  '建匿名会话失败': 'Failed to create anonymous session',
+  '取 XSRF 失败': 'Failed to obtain XSRF',
+  '超长对话转附件失败': 'Failed to convert long prompt to attachment',
+  '搜索失败': 'Search failed',
+  '取上传页面参数失败': 'Failed to get upload page parameters',
+  '上传 start 失败': 'Upload start failed',
+  '上传 finalize 失败': 'Upload finalize failed',
+  '构建请求失败': 'Failed to build request',
+  '网络层错误（DNS/TCP/TLS 失败）': 'Network error (DNS/TCP/TLS failed)',
+  '拿不到出口：': 'Failed to obtain egress: ',
+  '，但缺 SAPISID（算不出授权头，部分接口会被当匿名）': ', but missing SAPISID (cannot sign auth header, some APIs treated as anonymous)',
+  'query 不能为空': 'Query cannot be empty',
+  'cookie 里没有 SAPISID，多半没复制全（需要 gemini.google.com 下的完整 cookie，至少含 SID / HSID / SSID / APISID / SAPISID / __Secure-1PSID）': 'Missing SAPISID in cookie, likely incomplete (need full cookie from gemini.google.com, at least SID / HSID / SSID / APISID / SAPISID / __Secure-1PSID)',
+  'cookie 解析失败': 'Failed to parse cookie',
+  'cookie 不能为空': 'Cookie cannot be empty',
+  '页面里没有 push_id，无法上传': 'No push_id in page, cannot upload',
+  '上传 start 没返回 x-goog-upload-url': 'Upload start did not return x-goog-upload-url',
+  '响应里没有图片 CDN 链接': 'No image CDN URL in response',
+  '没拿到会话 id，无法定位产物': 'No session ID returned, cannot locate artifact',
+  '视频被内容政策拒绝（换个 prompt 再试）': 'Video rejected by content policy (try another prompt)',
+  'hNvQHb 里没等到可下载的产物链接（response_data）': 'Did not receive downloadable artifact URL (response_data) in hNvQHb',
+  '下载重定向次数过多': 'Too many download redirects',
   'gemini-web2api 管理面板': 'gemini-web2api Admin Panel',
   '概览': 'Overview',
   '请求记录': 'Requests',
@@ -2001,6 +2050,7 @@ const I18N_EN = {
   '不能为空': 'Cannot be empty',
   '代理已添加': 'Proxy added',
   '已删除': 'Deleted',
+  '(已删除)': '(Deleted)',
   '已重置失败计数': 'Failure count reset',
   '已保存': 'Saved',
   '已复制到剪贴板': 'Copied to clipboard',
@@ -2008,41 +2058,318 @@ const I18N_EN = {
   '已生成新 Key': 'New key generated',
   'Key 至少 20 字符': 'Key must be at least 20 characters',
   'Key 已更新': 'Key updated',
+  '自动删网页会话': 'Auto-delete web chat',
+  '出完结果自动删掉 gemini.google.com 上留下的这条会话，免得登录号里堆一堆。只登录态生效，异步 best-effort，删失败不影响响应':
+    'Automatically deletes the conversation on gemini.google.com after completion to prevent account clutter. Logged-in only, asynchronous best-effort; deletion failure does not affect the response',
+  '临时对话': 'Temporary chat',
+  '走网页端原生「临时对话」（inner[45]=1）：会话压根不进账号的会话列表、不用于训练，比「自动删网页会话」更干净，还省掉那次删除请求。只登录态有意义；开了「服务端多轮续接」时不生效（临时对话不留列表，多轮要靠服务端留会话）':
+    'Uses web-native "Temporary Chat" (inner[45]=1): conversations never enter account history and are not used for training. Cleaner than auto-delete and eliminates the delete request. Effective only when logged in; inactive if "Server multi-turn resume" is enabled (temporary chat leaves no history, multi-turn requires server sessions)',
+  '服务端多轮续接': 'Server multi-turn resume',
+  '走 Gemini 原生服务端多轮：按历史前缀认出这是上一轮的续接，命中就只发最新一句、历史留在服务端，同一串对话复用同一个 gemini 会话（不再每发一条就新开一个）。匿名/登录都行，带图或带工具时不生效。首轮/重启/改历史会退回整段重发。默认关':
+    'Uses Gemini native server-side multi-turn: recognizes prior context by history prefix, sending only the latest turn while upstream maintains history. Reuses the same Gemini session across conversation turns. Works for anonymous and logged-in; inactive with images or tools. Falls back to full replay on first turn, restart, or edited history. Default off',
+  '匿名优先': 'Anonymous first',
+  '这次请求不需要登录态能力时（纯文本、非思考、无工具、不带图）走匿名、不占用 cookie 账号，省账号额度；用到 3.1 Pro / 3.8 Flash / 扩展思考 / 生图 / 传文件这些才挑号。关掉则只要池里有号就一律用号（默认关）':
+    'Routes requests that do not require account capabilities (plain text, non-thinking, no tools, no images) anonymously to save cookie account quota. Picks an account only when using 3.1 Pro, 3.8 Flash, extended thinking, image gen, or file uploads. When off, always uses an account if any are in the pool (default off)',
+  '主会话': 'Main session',
+  '算授权头用，缺了会被当匿名': 'Used for authorization header; treated as anonymous if missing',
+  '待检测': 'Pending',
+  '正常': 'Healthy',
+  '疑似失效': 'Suspected dead',
+  '（未命名）': '(Unnamed)',
+  '已越过红线，随时可能被拦': 'Crossed red line, may be blocked at any time',
+  '本小时还没有请求': 'No requests in this hour',
+  '鉴权在失败，多半 cookie 过期了，建议用 Firefox 重新导出': 'Auth is failing, cookie likely expired; re-export with Firefox is recommended',
+  '还没成功用过，点「检测」确认': 'Not used successfully yet; click "Check" to verify',
+  '这些号鉴权在失败，多半 cookie 过期了，建议用 Firefox 重新导出': 'Auth is failing for these accounts, cookie likely expired; re-export with Firefox is recommended',
+  '未知错误': 'Unknown error',
+  '保存失败：': 'Save failed: ',
+  '添加失败：': 'Add failed: ',
+  '删除失败：': 'Delete failed: ',
+  '重置失败：': 'Reset failed: ',
+  '检测失败：': 'Check failed: ',
+  '保活失败：': 'Keepalive failed: ',
+  '导入失败：': 'Import failed: ',
+  '测试请求失败：': 'Test request failed: ',
+  // Diagnostics & Connectivity
+  '连通性诊断': 'Connectivity Diagnostics',
+  '测试一次': 'Run test',
+  '自动选择（按调度规则）': 'Auto select (by routing rules)',
+  '直连主机 IP': 'Direct host IP',
+  '正在测试…（最多等 30 秒）': 'Testing… (up to 30s)',
+  '结果': 'Result',
+  '总用时': 'Total time',
+  '使用的 IP slot': 'Used IP slot',
+  '指纹': 'Fingerprint',
+  '回复内容': 'Response body',
+  '诊断说明': 'Diagnostic note',
+  '上游响应片段': 'Upstream response snippet',
+  '被风控（302）': 'Risk controlled (302)',
+  '被限流（429）': 'Rate limited (429)',
+  '上游错误': 'Upstream error',
+  '网络层错误': 'Network error',
+  '调用成功。延迟 / 内容见上面字段。': 'Call succeeded. Latency and response content shown above.',
+  'Google 直接返回 429 限流。同样是 IP 嫌疑，但风控分支不同（朴素 SDK 路径）。': 'Google returned 429 rate limit directly. Also IP-related risk control, but via standard SDK path.',
+  '上游 200 但只回了结束帧、没有内容帧，通常是请求被服务端拒绝（例如带了不被接受的会话 id 或工具开关），不是帧格式变更。': 'Upstream returned 200 with only end-frame and no content frames. Usually request rejected by server, not frame format change.',
+  '打一次真实请求看是否通。不消耗限流配额、不写入请求记录。 返回 302/429 就是出口进了黑名单，该换 IP。': 'Send a real request to verify connectivity. Does not consume rate limits or write to request logs. Returning 302/429 means the egress IP was blacklisted and needs rotation.',
+
+  // Status & Actions
+  '登录态有效': 'Login state valid',
+  '登录态失效': 'Login state invalid',
+  '保活成功': 'Keepalive succeeded',
+  '保活完成': 'Keepalive completed',
+  '检测通过': 'Check passed',
+  '检测失败': 'Check failed',
+  '保活失败': 'Keepalive failed',
+  '检测中…': 'Checking…',
+  '保存': 'Save',
+  '测试': 'Test',
+  '重试': 'Retry',
+  '轮换': 'Rotate',
+  '自定义': 'Custom',
+  '自定义 API Key': 'Custom API Key',
+  '熔断中': 'Tripped',
+  '切换语言 / Switch language': 'Switch language / 切换语言',
+  '错误分类（近 24h）': 'Error breakdown (last 24h)',
+  'Token': 'Tokens',
+
+  // Modals & Prompts
+  '删除代理': 'Delete Proxy',
+  '删除 Cookie': 'Delete Cookie',
+  '编辑 Cookie': 'Edit Cookie',
+  '生成新 Key': 'Generate New Key',
+  '设置自定义 API Key': 'Set Custom API Key',
+
+  // Settings Hints
+  '滚动 1 小时上限，0=不限。实测单出口 80-180 次被拦，默认取下沿 80。按低速率跑可以调高很多——10 次/分钟连打 800 次没被拦过': 'Rolling 1-hour limit, 0 = unlimited. Tested egress blocks at 80-180 requests, lower bound 80 is used by default. Can be set much higher at gentle rates (e.g. 10 req/min ran 800 times without blocks).',
 };
+const I18N_HTML_EN = {
+  '实测单个出口打 <b>80-180 次</b>后会被 Google 重定向到 <code>sorry/index</code>， 轨道取的是这个区间的<b>下沿</b>。区间这么宽是因为它主要由连接策略和出口质量 决定：同样并发 10，复用连接池能打到 172/177，每次新建连接只有 106/109； 静态 IP 上到过 188。<br><br> <b>它不是一条硬线。</b>节奏才是关键 —— 10 次/分钟平缓地打，连打 800 次、 跨 110 分钟一次没被拦。所以这条轨道是保守参考，不是"到了就会挂"。<br><br> 被拦之后是硬拦（封后 20 分钟内 60 次探测 0 成功），106-121 分钟自动恢复。 红竖线是本地 RPH 限额的位置，超了直接返回 429 而不去消耗 Google 配额。 要放大产能就在「代理池」加代理，每个代理是独立 slot。':
+    'Testing showed a single egress gets redirected to <code>sorry/index</code> by Google after <b>80-180 requests</b>; the track uses the <b>lower bound</b> of this range. This wide window is largely determined by connection strategy and egress quality: with concurrency 10, connection pool reuse reaches 172/177, while new connections each time yield only 106/109; static IPs reached 188.<br><br> <b>It is not a hard line.</b> Pacing is key — at a steady 10 requests/min, 800 consecutive requests over 110 minutes were never blocked. Thus this track is a conservative reference, not a cliff edge.<br><br> Once blocked, it is a hard block (0/60 probes succeeded within 20 min post-ban), recovering automatically in 106-121 min. The red vertical bar marks the local RPH limit, returning 429 directly once exceeded without exhausting Google quota. To scale capacity, add proxies in the Proxy Pool — each proxy acts as an independent slot.',
+
+  '每个代理享有独立的并发 / RPM / RPH 配额，<b>配越多代理，总容量线性放大</b>。 请求会自动找有空位的代理，都满则返回 HTTP 429。失败 5 次自动熔断， 「重置」可手动恢复。<br><br> 注意：配了至少一个代理后<b>默认不会再退回直连</b>，避免代理满了把主机 IP 也打爆； 要可用性优先可以在「设置」页打开「无可用代理时退回直连」。熔断的代理默认歇 120 分钟自动放回池子（实测被拦的出口 106-121 分钟自恢复），也可以在这里手动重置。 实测单个出口打 80-180 次就会被 Google 拦，所以扩容只能靠加出口。':
+    'Each proxy has its own independent concurrency / RPM / RPH quota; <b>the more proxies configured, the more total capacity scales linearly</b>. Requests automatically route to an available proxy, returning HTTP 429 if all are full. 5 consecutive failures trigger an automatic circuit breaker; "Reset" restores manually.<br><br> Note: once at least one proxy is configured, requests <b>no longer fall back to direct by default</b> to prevent host IP burnout when proxies saturate. If availability is preferred, enable "Fall back to direct when no proxy is available" in Settings. Tripped proxies rest for 120 minutes before returning to the pool (blocked egresses measured 106-121 min to recover), or can be reset manually here. Testing showed single egresses get blocked by Google after 80-180 requests, so scaling capacity requires adding egresses.',
+
+  '粘贴 gemini.google.com 下的<b>完整 cookie 串</b>（至少含 SID / HSID / SSID / APISID / SAPISID / __Secure-1PSID / __Secure-1PSIDTS）。请求时按<b>最久未用优先</b>自动轮转挑一个 启用的账号，媒体生成有每账号 10/天 的配额，配越多号总容量越大。<br><br> 凭证保存后<b>不再回传浏览器</b>，列表只显示脱敏摘要（cookie 数 / 关键项 / SAPISID 末 4 位 / 失败次数）。缺 <code>__Secure-1PSIDTS</code> 的号会标黄， 首次保活会尝试向 Google 补发；若反复失败请用 <b>Firefox</b> 重新导出 （Chrome 新版本的设备绑定会话续不了）。':
+    'Paste the <b>full cookie string</b> from gemini.google.com (must include at least SID / HSID / SSID / APISID / SAPISID / __Secure-1PSID / __Secure-1PSIDTS). Requests rotate among enabled accounts using <b>least-recently-used first</b>. Media generation has a quota of 10/day per account; configuring more accounts increases overall capacity.<br><br> Credentials are <b>never sent back to the browser</b> once saved; the list displays only sanitized summaries (cookie count / key items / last 4 digits of SAPISID / failure count). Accounts missing <code>__Secure-1PSIDTS</code> are highlighted in yellow and the first keepalive attempts to mint one with Google; if repeated failures occur, re-export using <b>Firefox</b> (recent Chrome versions use device-bound sessions that cannot be renewed).',
+
+  '改完点保存<b>立刻生效</b>，不用重启。存在数据库里，优先级高于 <code>config.json</code> 和命令行参数。':
+    'Click save to <b>apply immediately</b> without restart. Stored in database with higher priority than <code>config.json</code> and CLI flags.',
+
+  '已被 <code>--api-key</code> / <code>API_KEY</code> 锁定，改部署配置才能换。':
+    'Locked by <code>--api-key</code> / <code>API_KEY</code>; update deployment configuration to change.',
+
+  '给 <code>/v1/*</code> 接口鉴权，可随时轮换。':
+    'Authenticates <code>/v1/*</code> endpoints; can be rotated at any time.',
+
+  '改这些本来就要重启进程，所以放在 <code>docker-compose.yml</code> 里管， 不做成网页表单——凭证也不该经过浏览器。':
+    'Changing these requires restarting the process, so they are managed in <code>docker-compose.yml</code> rather than web forms — credentials should never traverse the browser.',
+
+  '浏览器 F12 → Application → Cookies → 选 <code>https://gemini.google.com</code>。逐项抄或整串粘贴都行，两种填法可随时切换，已填的内容会带过去。':
+    'Browser F12 → Application → Cookies → select <code>https://gemini.google.com</code>. Either copy item-by-item or paste the full string; you can switch between modes anytime and entered values will carry over.',
+
+  '前三项是同类项目实践里的最小可用集合，下面四项补齐更稳。 抓包实测浏览器每次实际会发 <b>20 多个</b> cookie，而我们把整串原样转发 （代码里只解析 SAPISID 用来算授权头），所以 <b>整串粘贴比逐项填更接近真实浏览器</b>；逐项模式适合手头只有零散几项时用。':
+    'The first three items form the minimum viable set in similar projects; adding the bottom four is more stable. Packet captures show real browsers send <b>over 20</b> cookies, and we forward the full string intact (only parsing SAPISID to compute the authorization header). Therefore, <b>pasting the full string resembles a real browser more closely than filling items individually</b>; individual mode is suited when only sparse items are available.',
+  '打一次真实请求看是否通。不消耗限流配额、不写入请求记录。 返回 302/429 就是出口进了黑名单，该换 IP。':
+    'Send a real request to verify connectivity. Does not consume rate limits or write to request logs. Returning 302/429 means the egress IP was blacklisted and needs rotation.',
+};
+
+const I18N_PATTERNS = [
+  [/^upstream error:\s*(.*)$/i, (m, p1) => 'Upstream error: ' + t(p1)],
+  [/cookie\s*池里\s*(\d+)\s*个账号都不可用[（(]最后一个[：:](.*?)[）)]；到面板[「"']Cookie\s*池[」"']用[「"']检测[」"']按钮逐个排查，或打开\s*fallback_anon\s*降级匿名/g,
+   (m, n, last) => `all ${n} account(s) in cookie pool unavailable (last: ${t(last)}); check accounts in "Cookie pool" with "Check" button, or enable fallback_anon to fall back to anonymous`],
+  [/^上传附件\s*(.+)\s*失败[：:]\s*(.*)$/, (m, p1, p2) => `Failed to upload attachment ${p1}: ${t(p2)}`],
+  [/^建匿名会话失败[：:]\s*(.*)$/, (m, p1) => `Failed to create anonymous session: ${t(p1)}`],
+  [/^取 XSRF 失败[：:]\s*(.*)$/, (m, p1) => `Failed to obtain XSRF: ${t(p1)}`],
+  [/^续接无内容帧（会话可能已失效，raw\s*(\d+)\s*字节）$/, 'Resume returned no content frame (session may have expired, raw $1 bytes)'],
+  [/^超长对话转附件失败[：:]\s*(.*)$/, (m, p1) => `Failed to convert long prompt to attachment: ${t(p1)}`],
+  [/^拿不到出口[：:]\s*(.*)$/, (m, p1) => `Failed to obtain egress: ${t(p1)}`],
+  [/^取上传页面参数失败[：:]\s*(.*)$/, (m, p1) => `Failed to get upload page parameters: ${t(p1)}`],
+  [/^上传 start 失败[：:]\s*(.*)$/, (m, p1) => `Upload start failed: ${t(p1)}`],
+  [/^上传 start 返回 HTTP\s*(\d+)[：:]\s*(.*)$/, 'Upload start returned HTTP $1: $2'],
+  [/^上传 finalize 失败[：:]\s*(.*)$/, (m, p1) => `Upload finalize failed: ${t(p1)}`],
+  [/^上传 finalize 返回 HTTP\s*(\d+)[：:]\s*(.*)$/, 'Upload finalize returned HTTP $1: $2'],
+  [/^上传返回的不是引用路径[：:]\s*(.*)$/, 'Upload did not return a valid reference path: $1'],
+  [/^下载产物 HTTP\s*(\d+)（(\d+)\s*字节）$/, 'Download artifact HTTP $1 ($2 bytes)'],
+  [/^RotateCookies 1PSIDTS 返回 HTTP\s*(\d+)（Chrome 导出的 cookie 可能受设备绑定限制，建议用 Firefox 重新导出）[：:]\s*(.*)$/, 'RotateCookies 1PSIDTS returned HTTP $1 (Chrome-exported cookies may be device-bound, consider re-exporting with Firefox): $2'],
+  [/^RotateCookies 1PSIDTS 返回 HTTP\s*(\d+)[：:]\s*(.*)$/, 'RotateCookies 1PSIDTS returned HTTP $1: $2'],
+  [/^RotateCookies 返回 HTTP\s*(\d+)[：:]\s*(.*)$/, 'RotateCookies returned HTTP $1: $2'],
+  [/^取轮转页返回 HTTP\s*(\d+)$/, 'Fetch rotation page returned HTTP $1'],
+  [/^retry\s*(\d+)\/(\d+)[：:]\s*空响应（无内容帧，(\d+)\s*字节）$/, 'Retry $1/$2: empty response (no content frames, $3 bytes)'],
+  [/^(.+)=(\d+)\s*超出允许范围\s*\[(\d+),\s*(\d+)\]$/, '$1=$2 out of allowed range [$3, $4]'],
+  [/^default_model 不可用[：:]\s*(.*)$/, (m, p1) => `default_model unavailable: ${t(p1)}`],
+  [/^搜索失败[：:]\s*(.*)$/, (m, p1) => `Search failed: ${t(p1)}`],
+  [/^非法状态\s*(.*)$/, 'Invalid status $1'],
+  [/^cookie 解析失败[：:]\s*(.*)$/, (m, p1) => `Failed to parse cookie: ${t(p1)}`],
+  [/^cookie 里没有 SAPISID，多半没复制全[（(](.*?)[）)]$/, (m, p1) => `Missing SAPISID in cookie, likely incomplete (${t(p1)})`],
+  [/^代理 URL 必须以\s*(.*)\s*开头$/, 'Proxy URL must start with $1'],
+  [/^代理\s*#(\d+)$/, 'Proxy #$1'],
+  [/^测试请求失败[：:]\s*(.*)$/, 'Test request failed: $1'],
+  [/^上游返回非 200 \(HTTP (\d+)\)，可能是协议变更或临时故障。$/, 'Upstream returned non-200 (HTTP $1), possibly protocol change or temporary outage.'],
+  [/^保活成功，刷新了\s*(.*)$/, 'Keepalive succeeded, refreshed $1'],
+  [/^错误[：:]\s*(.*)$/, (m, p1) => 'Error: ' + t(p1)],
+  [/^名称\s*\*/, 'Name *'],
+  [/^代理 URL\s*\*/, 'Proxy URL *'],
+  [/"content":"你好"/g, '"content":"Hello"'],
+  [/^(\d[\d,.]*)\s*成功\s*·\s*(\d[\d,.]*)\s*失败$/, '$1 success · $2 failed'],
+  [/^(\d+)\s*启用\s*\/\s*(\d+)\s*共$/, '$1 enabled / $2 total'],
+  [/^(\d+-\d+)\s*\/\s*共\s*(\d+)\s*条$/, '$1 / $2 total'],
+  [/^第\s*(\d+)\s*\/\s*(\d+)\s*页$/, 'Page $1 of $2'],
+  [/^错误分类（近\s*(\d+)h）$/, 'Error breakdown (last $1h)'],
+  [/^(\d+)\/(\d+)\s*项$/, '$1/$2 items'],
+  [/^(\d+)\s*疑似失效$/, '$1 suspected dead'],
+  [/还能再打约\s*(\d+)\s*次/g, '~$1 requests remaining'],
+  [/接近红线，只剩约\s*(\d+)\s*次/g, 'Near red line, ~$1 requests remaining'],
+  [/本小时还没有请求/g, 'No requests in this hour'],
+  [/已越过红线，随时可能被拦/g, 'Crossed red line, may be blocked at any time'],
+  [/并发\s*(\S+)\s*·\s*RPM\s*(\S+)\s*·\s*RPH\s*(\S+)/g, 'Inflight $1 · RPM $2 · RPH $3'],
+  [/^本地 RPH 限额\s*(\d+)$/, 'Local RPH limit $1'],
+  [/^共\s*(\d+)\s*个 cookie，关键项：(.*)$/, '$1 cookies total, key items: $2'],
+  [/^代理:\s*(.+)$/, 'Proxy: $1'],
+  [/^代理 #(\d+)$/, 'Proxy #$1'],
+  [/\(代理 #(\d+)\)/g, '(Proxy #$1)'],
+  [/^(\d+)\s*个$/, '$1'],
+  [/^测试请求失败：(.*)$/, 'Test request failed: $1'],
+  [/^确定删除代理 #(\d+)？此操作不可撤销。$/, 'Are you sure you want to delete proxy #$1? This cannot be undone.'],
+  [/^确定删除账号 #(\d+)？此操作不可撤销，删除后请求不再用它。$/, 'Are you sure you want to delete account #$1? This cannot be undone, requests will no longer use it.'],
+  [/^编辑 Cookie #(\d+)$/, 'Edit Cookie #$1'],
+  [/^添加失败：(.*)$/, 'Add failed: $1'],
+  [/^删除失败：(.*)$/, 'Delete failed: $1'],
+  [/^重置失败：(.*)$/, 'Reset failed: $1'],
+  [/^保存失败：(.*)$/, 'Save failed: $1'],
+  [/^检测失败：(.*)$/, 'Check failed: $1'],
+  [/^保活失败：(.*)$/, 'Keepalive failed: $1'],
+  [/^导入失败：(.*)$/, 'Import failed: $1'],
+  [/^Cookie 已导入 #(\d+)$/, 'Cookie imported #$1'],
+  [/^，出口\s*(.+)$/, ', egress $1'],
+  [/^，服务端建议\s*(\d+)s\s*后再来$/, ', upstream suggests retry in $1s'],
+  [/IP 被 Google 风控（重定向到 sorry\/index）。通常 6-24 小时解除，或换 VPN\/代理 IP 立即恢复。(.*)/, 'IP risk controlled by Google (redirected to sorry/index). Usually lifts in 6-24h, or switch VPN/proxy IP for immediate recovery.$1'],
+  [/网络层错误（DNS\/TCP\/TLS 失败）:\s*(.*)/, 'Network error (DNS/TCP/TLS failed): $1'],
+  [/构建请求失败:\s*(.*)/, 'Failed to build request: $1'],
+  [/^「(.+)」不能为空$/, (m, f) => `"${I18N_EN[f] || f}" cannot be empty`],
+  [/^「(.+)」至少\s*(\d+)\s*字符$/, (m, f, n) => `"${I18N_EN[f] || f}" must be at least ${n} characters`],
+  [/^另有\s*(\d+)\s*项未在上面列出（(.*?)），会一并保留。$/, '$1 additional items not listed above ($2) will be kept.'],
+];
+
 let LANG = (() => { try { return localStorage.getItem('lang') === 'en' ? 'en' : 'zh'; } catch (e) { return 'zh'; } })();
 const ZH_ORIG = new WeakMap();
 const I18N_ATTRS = ['title', 'placeholder', 'aria-label'];
 
+function t(s) {
+  if (LANG !== 'en' || !s) return s;
+  const k = s.trim().replace(/\s+/g, ' ');
+  if (I18N_EN[k]) return I18N_EN[k];
+
+  // Toast / status prefix pattern (e.g. "✓ #1 登录态有效，出口 启动参数，2109ms")
+  const toastMatch = k.match(/^([✓✗]\s*#\d+\s+)(.*)$/);
+  if (toastMatch) {
+    let rest = toastMatch[2];
+    rest = rest.replace(/保活成功，刷新了\s*/, 'Keepalive succeeded, refreshed ');
+    rest = rest.replace(/，但缺 SAPISID（算不出授权头，部分接口会被当匿名）/, ', but missing SAPISID (cannot sign auth header, some APIs treated as anonymous)');
+    rest = rest.replace(/，出口\s*([^，,]+)/, (x, p) => `, egress ${I18N_EN[p.trim()] || p.trim()}`);
+    rest = rest.replace(/，服务端建议\s*(\d+)s\s*后再来/, ', upstream suggests retry in $1s');
+    rest = rest.replace(/，(\d+)ms/, ', $1ms');
+    for (const [zh, en] of Object.entries(I18N_EN).sort((a, b) => b[0].length - a[0].length)) {
+      if (rest.startsWith(zh)) {
+        rest = en + rest.slice(zh.length);
+        break;
+      }
+    }
+    return toastMatch[1] + rest;
+  }
+
+  let cur = k;
+  let matched = false;
+  for (const [re, repl] of I18N_PATTERNS) {
+    if (re.test(cur)) {
+      cur = cur.replace(re, repl);
+      matched = true;
+    }
+  }
+  return matched ? cur : s;
+}
+
 function translateTree(root, toEN) {
-  // 规整：trim + 把内部换行/缩进折成单空格，好跟词典 key 精确对上（源码里跨行的句子
-  // 在 DOM 里是一个含换行+缩进的文本节点）。命中就整段换成英文、原文存起来供切回。
   const norm = s => s.trim().replace(/\s+/g, ' ');
+
+  // 1. Rich HTML blocks (paragraphs with <b>, <code>, <br>)
+  if (toEN) {
+    const htmlScope = root.querySelectorAll ? root.querySelectorAll('.lede, details.note .body, .ck-extra, .hint, .modal-desc, .desc') : [];
+    htmlScope.forEach(el => {
+      const k = norm(el.innerHTML);
+      const en = I18N_HTML_EN[k];
+      if (en) {
+        if (!el.hasAttribute('data-zh-html')) el.setAttribute('data-zh-html', el.innerHTML);
+        el.innerHTML = en;
+      }
+    });
+  } else {
+    const zhScope = root.querySelectorAll ? root.querySelectorAll('[data-zh-html]') : [];
+    zhScope.forEach(el => {
+      el.innerHTML = el.getAttribute('data-zh-html');
+      el.removeAttribute('data-zh-html');
+    });
+  }
+
+  // 2. Text nodes
   const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   let n;
   while ((n = w.nextNode())) {
-    const key = norm(n.nodeValue);
+    if (toEN && n.parentElement && n.parentElement.closest('[data-zh-html]')) continue;
+    const raw = n.nodeValue;
+    const key = norm(raw);
     if (!key) continue;
     if (toEN) {
-      const en = I18N_EN[key];
+      let en = I18N_EN[key];
+      if (!en) {
+        let cur = key;
+        let matched = false;
+        for (const [re, repl] of I18N_PATTERNS) {
+          if (re.test(cur)) {
+            cur = cur.replace(re, repl);
+            matched = true;
+          }
+        }
+        if (matched) en = cur;
+      }
       if (en) {
-        if (!ZH_ORIG.has(n)) ZH_ORIG.set(n, n.nodeValue);
-        n.nodeValue = en;
+        if (!ZH_ORIG.has(n)) ZH_ORIG.set(n, raw);
+        const leading = raw.match(/^\s*/)[0];
+        const trailing = raw.match(/\s*$/)[0];
+        n.nodeValue = leading + en + trailing;
       }
     } else if (ZH_ORIG.has(n)) {
       n.nodeValue = ZH_ORIG.get(n);
       ZH_ORIG.delete(n);
     }
   }
+
+  // 3. Element attributes
   const scope = root.querySelectorAll ? root.querySelectorAll('[title],[placeholder],[aria-label]') : [];
   scope.forEach(el => {
     I18N_ATTRS.forEach(attr => {
       if (!el.hasAttribute(attr)) return;
       const dz = 'data-zh-' + attr;
       if (toEN) {
-        const en = I18N_EN[norm(el.getAttribute(attr))];
-        if (en && !el.hasAttribute(dz)) { el.setAttribute(dz, el.getAttribute(attr)); el.setAttribute(attr, en); }
+        const val = norm(el.getAttribute(attr));
+        let en = I18N_EN[val];
+        if (!en) {
+          let cur = val;
+          let matched = false;
+          for (const [re, repl] of I18N_PATTERNS) {
+            if (re.test(cur)) {
+              cur = cur.replace(re, repl);
+              matched = true;
+            }
+          }
+          if (matched) en = cur;
+        }
+        if (en && !el.hasAttribute(dz)) {
+          el.setAttribute(dz, el.getAttribute(attr));
+          el.setAttribute(attr, en);
+        }
       } else if (el.hasAttribute(dz)) {
-        el.setAttribute(attr, el.getAttribute(dz)); el.removeAttribute(dz);
+        el.setAttribute(attr, el.getAttribute(dz));
+        el.removeAttribute(dz);
       }
     });
   });
@@ -2055,6 +2382,7 @@ function i18nApply() {
   if (!app) return;
   if (i18nObserver) i18nObserver.disconnect();
   translateTree(app, LANG === 'en');
+  document.querySelectorAll('.modal-overlay, .toast').forEach(el => translateTree(el, LANG === 'en'));
   if (i18nObserver) i18nObserver.observe(app, { childList: true, subtree: true, characterData: true });
 }
 function i18nSchedule() {
@@ -2073,12 +2401,18 @@ function i18nInit() {
 function updateLangBtn() {
   const b = document.getElementById('langBtn');
   if (b) b.textContent = LANG === 'en' ? '中' : 'EN';
+  document.documentElement.lang = LANG === 'en' ? 'en' : 'zh-CN';
+  document.title = LANG === 'en' ? 'gemini-web2api Admin Panel' : 'gemini-web2api 管理面板';
 }
 function toggleLang() {
   LANG = LANG === 'en' ? 'zh' : 'en';
   try { localStorage.setItem('lang', LANG); } catch (e) {}
   i18nApply();
   updateLangBtn();
+  if (currentPage === 'dashboard') {
+    const range = document.getElementById('rangeSel')?.value || '24h';
+    loadChart(range);
+  }
 }
 
 // boot — try fetching stats; if 401, login page
