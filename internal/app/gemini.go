@@ -27,6 +27,11 @@ const (
 	// "当前 Flash" 泛指针，老批次号发它拿到的是 3.6，会冒充 3.7。老批次号发这个主 hex
 	// 会干净降级成 3.5 Flash-Lite（跟 3.1 Pro 一样），所以 gate 成要 cookie。
 	hexFlash38 = "56fdd199312815e2" // 3.8 Flash（原记 3.7；Google 把这个 hex 原地升成 3.8，HAR 响应帧显示名已是 "3.8 Flash"）
+	// 4 Argon（内部代号 Argon4p0，定位「复杂任务」）：hex 来自登录态账号的 otAQ7b
+	// 清单捕获（issue #35），已实测：带 cookie 发它，服务端自报 "4 Argon"。
+	// 匿名清单里这个条目**不带 hex**（brownfield_default_policy 里只有一个空 hex
+	// 的能力条目），所以匿名发它拿不到 Argon，gate 成要 cookie。
+	hexArgon4 = "95a4c0abcba24364" // 4 Argon
 )
 
 // innerSlots 是 payload 里 inner 数组的长度。浏览器发 97-98 槽，我们原来只开 80，
@@ -36,14 +41,21 @@ const (
 // —— 模型选择完全由 x-goog-ext-525001261-jspb header 决定，长度不影响。
 const innerSlots = 97
 
-// inner[80] / 模型 header 下标 15 的取值：1=普通，2=扩展思考。
+// inner[80] / 模型 header 下标 15 的取值：思考档位。
 //
 // **只在登录态生效**：匿名请求带上它服务端静默忽略，回报的仍是普通模型、思考链 0
 // 字符（对齐登录态抓包参数复测 3 组，8 次全灭）。所以带这个的模型跟 3.1 Pro 一样，
 // 没 cookie 时不暴露。
+//
+// 网页 UI（Argon 的「思考等级」子菜单，issue #35 捕获的模型清单元数据）是三档，
+// 线值 1=低点（快速高效）、4=中等（深度适中）、2=高点（超级详尽）。1 和 2 是老值
+// （扩展思考抓包验证过）；4 曾只见于清单元数据，现已实测：发 4 服务端自报
+// "4 Argon Medium"、发 2 自报 "4 Argon High"，三档全部真实生效。只有高点吐思考链
+// （低点/Medium 的 reasoning 长度为 0，思考在服务端内部完成）。
 const (
-	thinkingNormal   = 1
-	thinkingExtended = 2
+	thinkingNormal   = 1 // 低点：所有模型的默认档
+	thinkingExtended = 2 // 高点：网页 UI 的「扩展思考」，上游自报 "4 Argon High"
+	thinkingMedium   = 4 // 中等：上游自报 "4 Argon Medium"，已实测生效
 )
 
 // ModelConfig holds the server-side model id plus the legacy MODE_CATEGORY value.
@@ -54,14 +66,23 @@ type ModelConfig struct {
 	HexID string
 	Mode  int
 	Desc  string
-	// Thinking 为真时填 inner[80]=2，即网页 UI 上的「扩展思考」。跟 HexID 正交
-	// —— 三个模型都能开，不是某个专属模型。
-	Thinking bool
+	// ThinkLevel 是请求里显式带的思考档位（线值见 thinkingNormal 等常量）；
+	// 0 表示不指定，按老行为发普通档（线值 1）。以前是个 Thinking bool，
+	// Argon 把网页的思考等级从两态开成三档后才改成存线值。
+	ThinkLevel int
 	// Tool 非 0 时填 inner[49]，让服务端换后端模型生成媒体产物（14=生图 Nano Banana
 	// / 21=音乐 Lyria）。产物不在 StreamGenerate 响应里，要再走 hNvQHb 拿下载链、
 	// 用下载 host 认的 cookie 子集下回原始字节，见 media.go。跟登录态绑定：匿名请求
 	// 这个会被静默降级成一句「Are you signed in?」文本。
 	Tool int
+}
+
+// thinkWire 返回 inner[80] / 模型 header 下标 15 实际要发的线值。
+func (mc ModelConfig) thinkWire() int {
+	if mc.ThinkLevel == 0 {
+		return thinkingNormal
+	}
+	return mc.ThinkLevel
 }
 
 // 只暴露服务端清单（batchexecute?rpcids=otAQ7b）里真实存在的模型。
@@ -78,13 +99,23 @@ var Models = map[string]ModelConfig{
 	"gemini-3.8-flash": {HexID: hexFlash38, Mode: 1, Desc: "3.8 Flash; needs a signed-in PAID Google account (free accounts get downgraded to 3.5 Flash-Lite)"},
 	"gemini-3.7-flash": {HexID: hexFlash38, Mode: 1, Desc: "alias of gemini-3.8-flash (same hex; Google renamed 3.7→3.8)"},
 
+	// 4 Argon（issue #35）：定位「复杂任务」的新旗舰。Mode=8 取自服务端模型清单
+	// brownfield_default_policy 条目的档位字段——同字段里 Flash-Lite=6 / Flash=1 /
+	// Pro=3 与既有实测值逐个吻合，所以 8 可信（现已实测：服务端自报 "4 Argon"）。
+	// 要登录态：匿名清单里这个条目不带 hex。网页 UI 给 Argon 配了三档思考等级
+	// （线值 1=低 / 4=中 / 2=高），三档都已实测生效，服务端分别自报
+	// "4 Argon" / "4 Argon Medium" / "4 Argon High"；只有高点吐思考链。
+	"gemini-4-argon":                 {HexID: hexArgon4, Mode: 8, Desc: "4 Argon (complex tasks); needs a signed-in cookie (not granted anonymously)"},
+	"gemini-4-argon-thinking-medium": {HexID: hexArgon4, Mode: 8, ThinkLevel: thinkingMedium, Desc: "4 Argon at the web UI's medium thinking level (reported upstream as \"4 Argon Medium\"); needs a signed-in cookie. Emits no reasoning chain"},
+
 	// 扩展思考版。inner[80]=2 跟模型 hex 正交，都能开；但只在登录态生效，
 	// 所以跟 3.1 Pro 一样在没 cookie 时不暴露。
-	"gemini-3.6-flash-thinking":      {HexID: hexFlash36, Mode: 1, Thinking: true, Desc: "3.6 Flash with extended thinking; needs a signed-in cookie"},
-	"gemini-3.5-flash-lite-thinking": {HexID: hexFlashLite, Mode: 6, Thinking: true, Desc: "3.5 Flash-Lite with extended thinking; needs a signed-in cookie"},
-	"gemini-3.1-pro-thinking":        {HexID: hexPro31, Mode: 3, Thinking: true, Desc: "3.1 Pro with extended thinking; needs a signed-in cookie"},
-	"gemini-3.8-flash-thinking":      {HexID: hexFlash38, Mode: 1, Thinking: true, Desc: "3.8 Flash with extended thinking; needs a signed-in cookie"},
-	"gemini-3.7-flash-thinking":      {HexID: hexFlash38, Mode: 1, Thinking: true, Desc: "alias of gemini-3.8-flash-thinking"},
+	"gemini-3.6-flash-thinking":      {HexID: hexFlash36, Mode: 1, ThinkLevel: thinkingExtended, Desc: "3.6 Flash with extended thinking; needs a signed-in cookie"},
+	"gemini-3.5-flash-lite-thinking": {HexID: hexFlashLite, Mode: 6, ThinkLevel: thinkingExtended, Desc: "3.5 Flash-Lite with extended thinking; needs a signed-in cookie"},
+	"gemini-3.1-pro-thinking":        {HexID: hexPro31, Mode: 3, ThinkLevel: thinkingExtended, Desc: "3.1 Pro with extended thinking; needs a signed-in cookie"},
+	"gemini-3.8-flash-thinking":      {HexID: hexFlash38, Mode: 1, ThinkLevel: thinkingExtended, Desc: "3.8 Flash with extended thinking; needs a signed-in cookie"},
+	"gemini-3.7-flash-thinking":      {HexID: hexFlash38, Mode: 1, ThinkLevel: thinkingExtended, Desc: "alias of gemini-3.8-flash-thinking"},
+	"gemini-4-argon-thinking":        {HexID: hexArgon4, Mode: 8, ThinkLevel: thinkingExtended, Desc: "4 Argon at the web UI's high thinking level (reported upstream as \"4 Argon High\"); needs a signed-in cookie"},
 
 	// 媒体生成。inner[49] 一填，服务端换后端模型出图/出乐；产物走 hNvQHb + 下载 host
 	// 取回，以 base64 data URL 塞进 content 返回。都要登录态，没 cookie 时不暴露。
@@ -102,15 +133,15 @@ func hasCookie() bool {
 }
 
 // modelNeedsLogin 判断一个模型是否必须登录态才真正生效。匿名请求这批会被服务端
-// 静默降级：3.1 Pro / 3.8 Flash → 3.5 Flash-Lite；思考链消失；媒体工具变成一句
-// "Are you signed in?" 文本。是「没 cookie 时排除哪些模型」和「#20 匿名优先要不要
-// 占一个 cookie 账号」共用的单一判据。
+// 静默降级：3.1 Pro / 3.8 Flash → 3.5 Flash-Lite；4 Argon 的匿名清单条目干脆不带
+// hex；思考链消失；媒体工具变成一句 "Are you signed in?" 文本。是「没 cookie 时
+// 排除哪些模型」和「#20 匿名优先要不要占一个 cookie 账号」共用的单一判据。
 //
-// 按 HexID + Thinking + Tool 判，跟旧的按模型名（3.1-pro/3.8-flash/3.7-flash）判
+// 按 HexID + ThinkLevel + Tool 判，跟旧的按模型名（3.1-pro/3.8-flash/3.7-flash）判
 // 逐模型核对等价：那三个正名的 HexID 就是 hexPro31 / hexFlash38，其余登录模型都被
-// Thinking 或 Tool 覆盖。
+// ThinkLevel 或 Tool 覆盖。
 func modelNeedsLogin(mc ModelConfig) bool {
-	return mc.HexID == hexPro31 || mc.HexID == hexFlash38 || mc.Thinking || mc.Tool > 0
+	return mc.HexID == hexPro31 || mc.HexID == hexFlash38 || mc.HexID == hexArgon4 || mc.ThinkLevel > 0 || mc.Tool > 0
 }
 
 // anonFirstEligible 判断「匿名优先」开关下这次请求能不能走匿名（不占 cookie 账号）：
@@ -317,27 +348,29 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 	onDelta, onReasoning func(string)) (*StreamResult, error) {
 	var files []fileRef
 
-	// 先挑号，再按它上次绑的出口挑代理 —— 同一个账号要尽量固定从同一个 IP 出去，
-	// 否则一个号在几十个出口之间跳，在 Google 眼里就是账号共享的特征。
+	// 挑号 + 挑出口。粘绑的动机：一个号在几十个出口之间跳，在 Google 眼里就是账号
+	// 共享的特征。两个策略分岔见 acquireExitForAccount：
 	//
-	// 挑号排在 acquireSlot 之前不违反「取 XSRF 必须走正式出口」：挑号只读库、
-	// 不发请求，真正发请求的是下面的 getXSRF，它在拿到 slot 之后。
+	//   account_first=false（默认，可用性优先）：绑定的出口满载就让这个号漂到别的出口。
+	//   account_first=true（换号不换出口）：绑定的出口到了限流线就让这个号歇着、换下一个
+	//   号走它自己绑的出口 —— Google 眼里永远「一号一个固定 IP」，不出现一个号多个 IP。
+	//
+	// 挑号排在占 slot 之前不违反「取 XSRF 必须走正式出口」：挑号只读库、不发请求，
+	// 真正发请求的是下面的 getXSRF，它在拿到 slot 之后。
 	// #20 匿名优先：不需要登录态能力时不占用 cookie 账号，走匿名省额度（见 anonFirstEligible）。
 	// 带附件（图/视频）时不能走匿名——下面 uploadBytes 那段会因 cookieStr=="" 直接报错。
-	var acct *CookieAccount
-	if !anonFirstEligible(mc, len(pending) > 0) {
-		if a, ok := pickCookieAccount(); ok {
-			acct = a
+	//
+	// cookie 取 XSRF 失败时换下一个号：account_first 下连它绑的出口一起换（每个号
+	// 固有自己的出口），旧行为则沿用已占住的出口。
+	var picked Proxy
+	slotHeld := false
+	releaseHeld := func() {
+		if slotHeld {
+			releaseSlot(picked.ID)
+			slotHeld = false
 		}
 	}
-	preferProxy := int64(0)
-	if acct != nil {
-		preferProxy = acct.ProxyID
-	}
-
-	// 出错时也要把「用了哪个号 / 哪个出口」带回去，否则失败记录里全是空白。
-	// picked 是拿到 slot 之后才填的，闭包捕获它，后面每次 attrib 都带上当时的出口。
-	var picked Proxy
+	defer releaseHeld() // 兜底：任何 return 路径都不漏还 slot
 	var cookieID int64
 	var cookieLabel string
 	attrib := func(err error) (*StreamResult, error) {
@@ -347,53 +380,68 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 		}, err
 	}
 
-	// 通过限流器拿一个 slot（代理或直连）。所有 slot 满 → 直接 429。
-	p, slotOK, slotErr := acquireSlot(preferProxy)
-	if !slotOK {
-		return attrib(slotErr)
-	}
-	picked = p
-	defer releaseSlot(picked.ID) // picked.ID=0 表示直连 slot
-
-	// picked.URL 为空 = 直连 slot。代理只有代理池一个入口，没有别的兜底出口了
-	// （原来那个「静态代理」字段已并进池子，见 seedProxiesFromConfig）。
-	proxyURL := picked.URL
-	pickedOK := picked.ID > 0 // 是否真用了代理池里的代理
-
-	// endpoint 要等出口定下来才能拼：currentBL 可能顺手踢一次后台抓取，
-	// 那个抓取必须跟正式请求走同一个出口，否则配了代理池也会从本机 IP 漏一次。
-	reqid := time.Now().Unix() % 1000000
-	endpoint := fmt.Sprintf(
-		"https://gemini.google.com/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate?bl=%s&hl=en&_reqid=%d&rt=c",
-		currentBL(proxyURL), reqid,
-	)
-
-	// 取 XSRF token。一个 cookie 失效不该让整个请求失败：当前号取不到就换下一个，
-	// 最多试 maxCookieTries 个。不这么做的话，池子里 2 个号坏 1 个就会让大约一半
-	// 请求挂掉，而每次失败看起来都像上游的问题，用户只会觉得"成功率莫名很低"。
-	//
-	// 换号**不换出口**：出口已经按第一个号的绑定选定了，同一个请求里再换出口没道理。
+	accountFirst := rtCfg().AccountFirst
+	anon := anonFirstEligible(mc, len(pending) > 0)
 	cookieStr, sapisid, xsrfToken := "", "", ""
 	var lastCookieErr error
 	tried := map[int64]bool{}
 	// 每个号只给一次「轮转后重试」的机会，避免在一个请求里反复打 accounts.google.com
 	rotatedOnce := map[int64]bool{}
-	for acct != nil && len(tried) < maxCookieTries {
-		tried[acct.ID] = true
-		// 归属先记上：这一轮失败了也留痕，面板上看得出是哪个号在坏
+	sawAccount := false
+	quotaSkipped := 0 // 因高级配额受限被绕开的号数
+	expensive := 0    // 真发过 XSRF 网络请求的候选号数；满载换号是纯内存操作，不计入
+	for {
+		var acct *CookieAccount
+		if !anon {
+			// 配额感知路由：登录态模型的挑号绕开配额受限的号（Flash-Lite 等
+			// 基础模型不受影响）。受限号继续服务只会产出静默降级的回答。
+			skipSet, blockedN := quotaSkipSet(mc)
+			quotaSkipped = blockedN
+			skip := mergeSkip(tried, skipSet)
+			acct, _ = pickCookieAccountExcept(skip)
+			if acct == nil {
+				break
+			}
+			tried[acct.ID] = true
+			sawAccount = true
+			// 归属先记上：这一轮失败了也留痕，面板上看得出是哪个号在坏
+			cookieID, cookieLabel = acct.ID, accountDisplayName(acct)
+			p, ok, needsBind, serr := acquireExitForAccount(acct, accountFirst)
+			if !ok {
+				if serr != nil {
+					return attrib(serr)
+				}
+				// 绑定的出口到线了（account_first）：没发过网络请求，换下一个号很便宜
+				continue
+			}
+			if expensive >= maxCookieTries {
+				// 已经对 maxCookieTries 个号做过 XSRF 都失败，再换号大概率同样失败
+				releaseHeld()
+				break
+			}
+			expensive++
+			picked, slotHeld = p, true
+			if needsBind {
+				bindAccountProxy(acct.ID, picked.ID)
+				acct.ProxyID = picked.ID
+			}
+		} else {
+			p, ok, aerr := acquireSlot(0)
+			if !ok {
+				return attrib(aerr)
+			}
+			picked, slotHeld = p, true
+			break
+		}
+
+		proxyURL := picked.URL
+		// 取 XSRF token。一个 cookie 失效不该让整个请求失败：当前号取不到就换下一个，
+		// 最多试 maxCookieTries 个。不这么做的话，池子里 2 个号坏 1 个就会让大约一半
+		// 请求挂掉，而每次失败看起来都像上游的问题，用户只会觉得"成功率莫名很低"。
 		cookieID, cookieLabel = acct.ID, accountDisplayName(acct)
 		tok, err := getXSRF(acct.Cookie, proxyURL)
 		if err == nil {
 			cookieStr, sapisid, xsrfToken = acct.Cookie, extractSAPISID(acct.Cookie), tok
-			// 只在「还没绑过」或「绑的出口已经没了」时写绑定。
-			//
-			// 绝不因为"这次走的是别的出口"就覆盖：出口是按**本次第一个挑中的号**
-			// 的绑定选的，而挑号会换（新加的号 last_used_at=0 排在最前，撞上坏号
-			// 就会换）。拿别人的出口覆盖当前号的绑定，等于每次撞上坏号就把好号的
-			// 粘性打散一次 —— 实测就是这么散掉的。
-			if acct.ProxyID == 0 || !proxyUsableByID(acct.ProxyID) {
-				bindAccountProxy(acct.ID, picked.ID)
-			}
 			break
 		}
 		// 取不到 SNlM0e 基本等于这个 cookie 已失效（页面把我们当匿名用户了）。
@@ -408,9 +456,8 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 				if fresh := accountByID(acct.ID); fresh != nil {
 					if tok2, err2 := getXSRF(fresh.Cookie, proxyURL); err2 == nil {
 						logf("[cookie] 账号 #%d 轮转后恢复可用", acct.ID)
-						acct = fresh
 						cookieStr, sapisid, xsrfToken = fresh.Cookie, extractSAPISID(fresh.Cookie), tok2
-						if fresh.ProxyID == 0 || !proxyUsableByID(fresh.ProxyID) {
+						if fresh.ProxyID != picked.ID {
 							bindAccountProxy(fresh.ID, picked.ID)
 						}
 						break
@@ -418,12 +465,65 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 				}
 			}
 		}
-		// 救不回来：记一次失败让面板上看得出是哪个号该换了，然后换下一个。
-		markCookieByStatus(acct.ID, 401, err.Error())
+		// 救不回来：换下一个号。account_first 下连出口一起换（下一个号用它自己绑的
+		// 出口），slot 当场还回去。
+		//
+		// 定罪要分清责任方：「页面能打开但没有登录态 / 被重定向到登录页」才算 cookie
+		// 的错；网络层失败（出口抖动、CDN 偶发 h2 帧、超时）记到**出口的熔断健康度**
+		// 上、不动 cookie —— 否则一个坏出口一次抖动就把钉在它上面的号标红，account_first
+		// 下号换不掉出口，会反复背锅（markCookieByStatus 只认 401/403，传 0 即不记）。
+		msg := err.Error()
+		if strings.Contains(msg, "no SNlM0e") || strings.Contains(msg, "HTTP 302") {
+			markCookieByStatus(acct.ID, 401, msg)
+		} else if picked.ID > 0 {
+			recordProxyResult(picked.ID, false, msg)
+		}
 		lastCookieErr = err
 		logf("[cookie] 账号 #%d 不可用，换下一个：%v", acct.ID, err)
-		acct, _ = pickCookieAccountExcept(tried) // 取不到时返回 nil，循环自然结束
+		releaseHeld()
 	}
+
+	// 所有账号的高级配额都在受限期（配额感知路由）：明确报错而不是匿名服务——
+	// 匿名发登录态模型必然被静默降级，客户端拿到的是「看起来成功」的劣化回答。
+	if !slotHeld && sawAccount == false && quotaSkipped > 0 {
+		return attrib(fmt.Errorf(
+			"全部 %d 个账号的高级配额都在受限期（滚动窗口，最迟 %v 后自动恢复）；"+
+				"本次请求已取消，避免拿到静默降级的 Flash-Lite 回答", quotaSkipped, quotaBlockDur))
+	}
+
+	// 所有 enabled 账号绑定的出口都在限流线上（account_first）：要么按 fallback_direct
+	// 退直连，要么明确 429 —— 绝不静默漂移，也不静默降级成匿名（那会让登录态模型
+	// 被静默降级，客户端完全看不出来）。
+	if !slotHeld {
+		if sawAccount {
+			if rtCfg().FallbackDirect && func() bool { ok, _ := trySlotAcquire(0); return ok }() {
+				logf("[proxy] 所有账号绑定的出口都在限流线上，本次退回直连（fallback_direct 已开）")
+				picked, slotHeld = Proxy{}, true
+			} else {
+				return attrib(&RateLimitError{Reason: "rph", ProxyID: -1})
+			}
+		} else {
+			// 池里一个号都没有：跟旧行为一致，走匿名（无 cookie）
+			p, ok, aerr := acquireSlot(0)
+			if !ok {
+				return attrib(aerr)
+			}
+			picked, slotHeld = p, true
+		}
+	}
+
+	// picked.URL 为空 = 直连 slot。代理只有代理池一个入口，没有别的兜底出口了
+	// （原来那个「静态代理」字段已并进池子，见 seedProxiesFromConfig）。
+	proxyURL := picked.URL
+	pickedOK := picked.ID > 0 // 是否真用了代理池里的代理
+
+	// endpoint 要等出口定下来才能拼：currentBL 可能顺手踢一次后台抓取，
+	// 那个抓取必须跟正式请求走同一个出口，否则配了代理池也会从本机 IP 漏一次。
+	reqid := time.Now().Unix() % 1000000
+	endpoint := fmt.Sprintf(
+		"https://gemini.google.com/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate?bl=%s&hl=en&_reqid=%d&rt=c",
+		currentBL(proxyURL), reqid,
+	)
 	if lastCookieErr != nil && cookieStr == "" {
 		if !rtCfg().FallbackAnon {
 			// 默认报错而不是降级：cookie 失效后上游不会拒绝，只是把你当匿名用户，
@@ -526,11 +626,10 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 	inner[61] = []interface{}{}
 	inner[68] = 1
 	inner[79] = mc.Mode
-	inner[80] = thinkingNormal
+	inner[80] = mc.thinkWire()
 	inner[91] = 0
 	inner[96] = 0
-	if mc.Thinking {
-		inner[80] = thinkingExtended
+	if mc.ThinkLevel > 0 {
 		inner[96] = 1
 	}
 	// 媒体工具开关。填了服务端就换后端模型出图/出乐（响应里带产物引用，字节要另取）。
@@ -565,12 +664,8 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 
 	body := buildBody(xsrfToken)
 
-	thinkVal := thinkingNormal
-	if mc.Thinking {
-		thinkVal = thinkingExtended
-	}
 	// 抓包里 header 下标 16 和 inner[59] 是两个不同的 uuid，各生成各的。
-	modelHeader := buildModelHeader(mc.HexID, mc.Mode, thinkVal, uuid.NewString())
+	modelHeader := buildModelHeader(mc.HexID, mc.Mode, mc.thinkWire(), uuid.NewString())
 	sessionHeader := fmt.Sprintf(`["%s",1]`, reqUUID)
 
 	geminiHeaders := buildGeminiHeaders(cookieStr, sapisid, mc.HexID)
@@ -698,6 +793,21 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 			TTFBMs:           ttfb,
 			TotalMs:          time.Since(t0).Milliseconds(),
 		}
+		// 配额感知路由：登录态模型的响应被自报成了别家模型 = 静默降级。
+		// 给该号打受限标记，还没吐过字就换号重试；已吐字（真流式）或没有可换的号
+		// 时按降级结果如实返回——upstream_model 字段让客户端看得见。
+		if downgraded(mc, result) {
+			markQuotaBlocked(cookieID)
+			if tracker.emitted == "" && rtracker.emitted == "" &&
+				enabledAccountCount() > quotaBlockedCount() {
+				logf("[quota] 账号 #%d 被静默降级（上游自报 %s），换号重试",
+					cookieID, result.UpstreamModel)
+				return streamGenerateWithFiles(prompt, latest, mc, pending, onDelta, onReasoning)
+			}
+			logf("[quota] 账号 #%d 被静默降级（上游自报 %s），无可换的号或已吐字，按降级结果返回",
+				cookieID, result.UpstreamModel)
+		}
+
 		// 媒体模型：生成的产物字节不在这条响应里，要用同一套 cookie / 出口再走一遍
 		// hNvQHb + 下载 host 取回。取不到就记 MediaErr，让上层报错而不是返回半成品。
 		if mc.Tool == toolImage || mc.Tool == toolMusic || mc.Tool == toolVideo {

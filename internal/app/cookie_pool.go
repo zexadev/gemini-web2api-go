@@ -526,9 +526,22 @@ type CookieCheck struct {
 // 只抓页面，不发对话，不消耗生成配额。
 func checkAccountCookie(a CookieAccount) CookieCheck {
 	t0 := time.Now()
-	picked, ok, err := acquireSlot(a.ProxyID)
-	if !ok {
-		return CookieCheck{Detail: "拿不到出口：" + err.Error()}
+	// 绑定了出口的号必须从绑定出口测：account_first 下它永远只从那个 IP 出去，
+	// 从别的出口测出来的"有效"没有意义。没绑过（或绑的已删）才按普通路径挑。
+	var picked Proxy
+	var err error
+	if a.ProxyID > 0 && proxyUsableByID(a.ProxyID) {
+		var ok bool
+		picked, ok = acquireBoundSlot(a.ProxyID)
+		if !ok {
+			return CookieCheck{Detail: "绑定的出口不可用或已到限流线（不影响账号本身，稍后再测）"}
+		}
+	} else {
+		var ok bool
+		picked, ok, err = acquireSlot(a.ProxyID)
+		if !ok {
+			return CookieCheck{Detail: "拿不到出口：" + err.Error()}
+		}
 	}
 	defer releaseSlot(picked.ID)
 	proxyURL := picked.URL
@@ -539,16 +552,33 @@ func checkAccountCookie(a CookieAccount) CookieCheck {
 
 	// 先作废缓存，否则可能拿到几分钟前的旧结论，检测就没意义了
 	invalidateXSRF(a.Cookie)
-	_, err = getXSRF(a.Cookie, proxyURL)
+	var xsrfTok string
+	xsrfTok, err = getXSRF(a.Cookie, proxyURL)
 	took := time.Since(t0).Milliseconds()
 	if err != nil {
-		markAccountResult(a.ID, false, err.Error())
+		// 只有「能打开页面但没有登录态 / 被重定向到登录页」才定罪 cookie —— 跟
+		// markCookieByStatus 同一口径（401/403 才算 cookie 的错）。出口抖动、上游限流
+		// 这类网络层失败不动 fail_count：否则一个坏出口一次抖动就把好号标红，
+		// 用户会误以为 cookie 过期去换号（实测就是这么误报的）。
+		msg := err.Error()
+		if strings.Contains(msg, "no SNlM0e") || strings.Contains(msg, "HTTP 302") {
+			markAccountResult(a.ID, false, err.Error())
+		} else if picked.ID > 0 {
+			// 网络层失败是出口的证据，不是 cookie 的：记到出口置信度上，
+			// 让下一次检测/绑定的加权选口立刻绕开它（硅谷5 那类 h2 节点一次现形）。
+			recordProxyResult(picked.ID, false, msg)
+		}
 		return CookieCheck{Detail: explainCookieFailure(err), ProxyName: name, TookMs: took}
 	}
 	markAccountResult(a.ID, true, "")
 	detail := "登录态有效"
 	if extractSAPISID(a.Cookie) == "" {
 		detail += "，但缺 SAPISID（算不出授权头，部分接口会被当匿名）"
+	}
+	// 顺手拉配额窗口（jSf9Qc，/usage 页的数据源）：高级档剩多少、何时重置。
+	// 失败不影响检测结论——配额探测是增值信息，不是登录态判据。
+	if wins, qerr := fetchQuotaWindows(a.Cookie, xsrfTok, proxyURL); qerr == nil && len(wins) > 0 {
+		detail += "；配额 " + describeQuota(wins)
 	}
 	return CookieCheck{OK: true, Detail: detail, ProxyName: name, TookMs: took}
 }
@@ -574,6 +604,61 @@ func bindAccountProxy(accountID, proxyID int64) {
 		return
 	}
 	_, _ = getDB().Exec(`UPDATE accounts SET proxy_id=? WHERE id=?`, proxyID, accountID)
+}
+
+// boundProxyIDs 当前所有 enabled 账号已绑定的出口 id 集合。
+// 给「没绑定过的号」分配新出口时用：一号一出口，别把两个号塞进同一个 IP。
+func boundProxyIDs() map[int64]bool {
+	out := map[int64]bool{}
+	rows, err := getDB().Query(`SELECT DISTINCT proxy_id FROM accounts WHERE status='enabled' AND proxy_id>0`)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		if rows.Scan(&id) == nil && id > 0 {
+			out[id] = true
+		}
+	}
+	return out
+}
+
+// acquireExitForAccount 给这个账号占一个出口 slot，按 account_first 策略分岔：
+//
+//   - **account_first=true（换号不换出口）**：绑定的出口还活着就**只用它**——满了或
+//     熔断了返回 ok=false，调用方换下一个账号（它走它自己绑的出口）；绑定的出口已被
+//     删、或从来没绑过，才新挑出口（优先没被别的 enabled 账号占的，一号一出口）。
+//   - **account_first=false（旧行为，可用性优先）**：绑定的满了就漂到别的可用出口，
+//     尽量不排队。漂移正是 Google 判账号共享的特征，所以才有了 account_first。
+//
+// ok=true 时调用方必须 releaseSlot(p.ID)。p == Proxy{} 表示直连 slot（池子为空）。
+func acquireExitForAccount(acct *CookieAccount, accountFirst bool) (p Proxy, ok bool, needsBind bool, err error) {
+	if acct.ProxyID > 0 && proxyUsableByID(acct.ProxyID) {
+		if bp, got := acquireBoundSlot(acct.ProxyID); got {
+			return bp, true, false, nil
+		}
+		if accountFirst {
+			// 绑定的出口到了限流线（并发/RPM/RPH 任一档满）。这三档线本身就留足了
+			// 离 Google 真正封禁的余量（实测 80-180 次才被拦，默认 RPH=80），在这里
+			// 换账号就是「封禁线之前主动切」。绝不漂移：让这个号从别的 IP 出去，
+			// 比让它歇一轮危险得多。
+			return Proxy{}, false, false, nil
+		}
+		// 旧行为：可用性优先，绑的满了就漂
+		dp, got, derr := acquireSlot(acct.ProxyID)
+		return dp, got, false, derr
+	}
+	// 没绑过，或绑的出口已被删出池子（旧绑定永远无法满足，必须重挑）
+	if proxyPoolEmpty() {
+		dp, got, derr := acquireSlot(0) // 池子空：直连 slot（account_first 无从谈起）
+		return dp, got, false, derr
+	}
+	np, got := pickProxyForNewBinding(boundProxyIDs())
+	if !got {
+		return Proxy{}, false, false, nil // 全满：换下一个账号碰碰运气
+	}
+	return np, true, true, nil
 }
 
 // accountDisplayName 面板/记录里显示的账号名，没填标签就用 #id。

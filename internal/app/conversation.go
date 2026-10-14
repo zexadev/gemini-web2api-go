@@ -305,11 +305,10 @@ func streamGenerateConv(prompt string, mc ModelConfig, conv *convState,
 	inner[61] = []interface{}{}
 	inner[68] = 1
 	inner[79] = mc.Mode
-	inner[80] = thinkingNormal
+	inner[80] = mc.thinkWire()
 	inner[91] = 0
 	inner[96] = 0
-	if mc.Thinking {
-		inner[80] = thinkingExtended
+	if mc.ThinkLevel > 0 {
 		inner[96] = 1
 	}
 
@@ -326,12 +325,8 @@ func streamGenerateConv(prompt string, mc ModelConfig, conv *convState,
 	}
 	body := buildBody(xsrf)
 
-	thinkVal := thinkingNormal
-	if mc.Thinking {
-		thinkVal = thinkingExtended
-	}
 	geminiHeaders := buildGeminiHeaders(conv.cookie, conv.sapisid, mc.HexID)
-	geminiHeaders["x-goog-ext-525001261-jspb"] = buildModelHeader(mc.HexID, mc.Mode, thinkVal, uuid.NewString())
+	geminiHeaders["x-goog-ext-525001261-jspb"] = buildModelHeader(mc.HexID, mc.Mode, mc.thinkWire(), uuid.NewString())
 	geminiHeaders["x-goog-ext-525005358-jspb"] = fmt.Sprintf(`["%s",1]`, reqUUID)
 
 	reqid := time.Now().UnixNano() % 1000000
@@ -435,40 +430,115 @@ func callGeminiConv(messages []map[string]interface{}, mc ModelConfig,
 	fresh := conv == nil
 
 	var prompt string
+	var res *StreamResult
+	var convErr error
 	if fresh {
-		conv = &convState{}
-		// 有 cookie 池就用登录号（能力更全），否则匿名（首轮就地拿 session cookie）。
-		// #20 匿名优先：模型不需要登录态时不占号（多轮已被 gate 限成无图无工具，附件
-		// 恒无，所以第二个参数传 false）。必须在调用前短路：pickCookieAccount 会更新
-		// last_used_at，调了不用等于白占一轮。
-		if !anonFirstEligible(mc, false) {
-			if a, ok := pickCookieAccount(); ok {
-				conv.cookie = a.Cookie
-				conv.sapisid = extractSAPISID(a.Cookie)
-				conv.isLogin = true
-				conv.accountID = a.ID
-				conv.proxyID = a.ProxyID
+		// 挑号 + 死 cookie 换号：Google 对无效 cookie **不报错、只当匿名用户**，
+		// 拿死号建会话 = 整条会话被静默降级（登录态模型变 Flash-Lite、思考链消失、
+		// 工具围栏失灵——agent 场景里表现就是「4 Argon 突然变成聊天模式」）。
+		// 所以首轮必须先证明 cookie 活着：XSRF 阶段判死就换下一个号，最多
+		// maxCookieTries 个。#20 匿名优先：模型不需要登录态时不占号（多轮已被
+		// gate 限成无图无工具，附件恒无，所以第二个参数传 false）。必须在调用前
+		// 短路：pickCookieAccount 会更新 last_used_at，调了不用等于白占一轮。
+		var lastCookieErr string
+		tried := map[int64]bool{}
+		emitted := false
+		servedDowngraded := false
+		wrapDelta := func(d string) {
+			emitted = true
+			if onDelta != nil {
+				onDelta(d)
 			}
 		}
-		// 首轮带上 tools 指令：模型要靠它知道怎么吐 tool_call 围栏，续接轮不再重发
-		//（指令已在服务端首轮历史里）。
-		prompt, _ = messagesToPrompt(messages, tools, toolChoice)
+		skipSet, blockedN := quotaSkipSet(mc)
+		for attempt := 0; attempt < maxCookieTries; attempt++ {
+			var a *CookieAccount
+			skip := mergeSkip(tried, skipSet)
+			a, _ = pickCookieAccountExcept(skip)
+			if a == nil {
+				if attempt == 0 && blockedN > 0 {
+					// 全部账号的高级配额都在受限期：明确报错而不是匿名服务——
+					// 匿名发登录态模型必然被静默降级，agent 拿到的是「看起来成功」
+					// 的劣化回答。
+					return "", nil, nil, fmt.Errorf(
+						"全部 %d 个账号的高级配额都在受限期（滚动窗口，最迟 %v 后自动恢复）；"+
+							"本次请求已取消，避免拿到静默降级的 Flash-Lite 回答", blockedN, quotaBlockDur)
+				}
+				break
+			}
+			tried[a.ID] = true
+			conv = &convState{}
+			conv.cookie = a.Cookie
+			conv.sapisid = extractSAPISID(a.Cookie)
+			conv.isLogin = true
+			conv.accountID = a.ID
+			conv.proxyID = a.ProxyID
+			// 首轮带上 tools 指令：模型要靠它知道怎么吐 tool_call 围栏，续接轮不再重发
+			//（指令已在服务端首轮历史里）。
+			prompt, _ = messagesToPrompt(messages, tools, toolChoice)
+			logf("[conv] 新会话，账号 #%d，首轮发 %d 字节（tools=%d）", a.ID, len(prompt), len(tools))
+			res, convErr = streamGenerateConv(prompt, mc, conv, wrapDelta, onReasoning)
+			if convErr == nil {
+				// 配额感知路由：登录态模型被自报成别家模型 = 静默降级。还没吐过字
+				// 就换下一个号重建会话；已吐字只能如实返回（upstream_model 可见）。
+				if downgraded(mc, res) {
+					markQuotaBlocked(a.ID)
+					if emitted {
+						logf("[quota] 账号 #%d 被静默降级（上游自报 %s），已吐字，按降级结果返回",
+							a.ID, res.UpstreamModel)
+						servedDowngraded = true
+						break
+					}
+					logf("[quota] 账号 #%d 被静默降级（上游自报 %s），换下一个号建会话",
+						a.ID, res.UpstreamModel)
+					continue
+				}
+				break
+			}
+			msg := convErr.Error()
+			if !strings.Contains(msg, "no SNlM0e") && !strings.Contains(msg, "HTTP 302") {
+				break // 不是 cookie 的错（出口/限流等），换号救不了，按原错误返回
+			}
+			if emitted {
+				break // 已经往客户端吐过字，换号重发会重复，只能如实报错
+			}
+			markCookieByStatus(a.ID, 401, msg)
+			lastCookieErr = msg
+			logf("[conv] 账号 #%d cookie 已死，换下一个建会话：%v", a.ID, msg)
+		}
+		if servedDowngraded {
+			// 所有候选号都被降级过：按最后一次的降级结果返回（upstream_model 可见）。
+			// 时机上是正确的降级兜底——明确失败 vs 劣化成功之间，这里选劣化成功，
+			// 因为多轮会话的上下文已经在服务端，客户端重试也改变不了配额现实。
+			logf("[quota] %d 个候选账号均被静默降级，按最后一次降级结果返回", len(tried))
+		}
+		if convErr != nil {
+			// 最后一个号死于 cookie 之外的错误：如实返回（res 可能为 nil）
+			return "", nil, res, convErr
+		}
+		if res == nil {
+			if lastCookieErr != "" {
+				return "", nil, nil, fmt.Errorf("cookie 池里 %d 个账号都不可用（最后一个：%v）；"+
+					"到面板「Cookie 池」重新导一个登录态", len(tried), lastCookieErr)
+			}
+			// 池子里一个号都没有：走匿名（首轮就地拿 session cookie）
+			conv = &convState{}
+			prompt, _ = messagesToPrompt(messages, tools, toolChoice)
+			logf("[conv] 新会话，匿名，首轮发 %d 字节（tools=%d）", len(prompt), len(tools))
+			res, convErr = streamGenerateConv(prompt, mc, conv, onDelta, onReasoning)
+			if convErr != nil {
+				return "", nil, res, convErr
+			}
+		}
 	} else {
 		prompt = formatNewTurn(messages[len(messages)-1])
-	}
-	if fresh {
-		logf("[conv] 新会话，首轮发 %d 字节（tools=%d）", len(prompt), len(tools))
-	} else {
 		logf("[conv] 续接命中 turn=%d，只发 %d 字节（历史留服务端）", conv.turn, len(prompt))
-	}
-
-	res, err := streamGenerateConv(prompt, mc, conv, onDelta, onReasoning)
-	if err != nil {
-		if !fresh {
+		res, convErr = streamGenerateConv(prompt, mc, conv, onDelta, onReasoning)
+		if convErr != nil {
 			// 续接失败：这路会话作废，客户端重试时会当新会话全量重发。
 			convDelete(parentKey)
+			return "", nil, res, convErr
 		}
-		return "", nil, res, err
 	}
 	text := extractResponseText(res.Raw)
 	var toolCalls []ToolCall

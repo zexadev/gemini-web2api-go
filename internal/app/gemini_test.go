@@ -15,6 +15,7 @@ func TestModelHeader(t *testing.T) {
 		{"gemini-3.6-flash", hexFlash36},
 		{"gemini-3.5-flash-lite", hexFlashLite},
 		{"gemini-3.1-pro", hexPro31},
+		{"gemini-4-argon", hexArgon4},
 	}
 	for _, c := range cases {
 		name, mc, err := resolveModel(c.name)
@@ -50,24 +51,61 @@ func TestModelHeader(t *testing.T) {
 		}
 	}
 	// 守的是「不许冒出假模型」：thinking 版复用同样的 hex，所以看**去重后的 hex 数**，
-	// 不是条目数。服务端清单（otAQ7b）里 3.6/3.5-lite/3.1-pro + 灰度放出的 3.7 = 4 个。
+	// 不是条目数。服务端清单（otAQ7b）里 3.6/3.5-lite/3.1-pro + 灰度放出的 3.7
+	// + 登录态清单里的 4 Argon（issue #35）= 5 个。
 	hexes := map[string]bool{}
 	for _, m := range Models {
 		hexes[m.HexID] = true
 	}
-	if len(hexes) != 4 {
-		t.Errorf("只应存在 4 个真模型 hex, got %d", len(hexes))
+	if len(hexes) != 5 {
+		t.Errorf("只应存在 5 个真模型 hex, got %d", len(hexes))
 	}
 	// 反过来：每个真 hex 都应该有一个 thinking 版
-	for _, base := range []string{hexFlash36, hexFlashLite, hexPro31, hexFlash38} {
+	for _, base := range []string{hexFlash36, hexFlashLite, hexPro31, hexFlash38, hexArgon4} {
 		found := false
 		for _, m := range Models {
-			if m.HexID == base && m.Thinking {
+			if m.HexID == base && m.ThinkLevel == thinkingExtended {
 				found = true
 			}
 		}
 		if !found {
 			t.Errorf("hex %s 缺 thinking 版", base)
+		}
+	}
+}
+
+// Argon 的三档思考等级（issue #35）：默认档发线值 1（低点），-thinking-medium 发
+// 清单元数据里的 4（中等），-thinking 发 2（高点，跟其他模型的扩展思考同一编码）。
+// 模型 header 下标 14 必须是 Mode=8（otAQ7b brownfield 条目里 Flash-Lite=6/Flash=1/
+// Pro=3 与实测逐一吻合的那个字段），下标 15 是思考线值——header 是服务端唯一认的
+// 开关，填错了整个档位就白搭。
+func TestArgonThinkLevels(t *testing.T) {
+	withPoolCookie(t)
+	cases := []struct {
+		name      string
+		wantThink int
+	}{
+		{"gemini-4-argon", thinkingNormal},
+		{"gemini-4-argon-thinking-medium", thinkingMedium},
+		{"gemini-4-argon-thinking", thinkingExtended},
+	}
+	for _, c := range cases {
+		_, mc, err := resolveModel(c.name)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if mc.Mode != 8 {
+			t.Errorf("%s: mode=%d want 8", c.name, mc.Mode)
+		}
+		if got := mc.thinkWire(); got != c.wantThink {
+			t.Errorf("%s: thinkWire=%d want %d", c.name, got, c.wantThink)
+		}
+		h := buildModelHeader(mc.HexID, mc.Mode, mc.thinkWire(), "uuid-x")
+		want := fmt.Sprintf(
+			`[1,null,null,null,"%s",null,null,0,[4,5,6,8],null,null,1,null,null,8,%d,"uuid-x"]`,
+			hexArgon4, c.wantThink)
+		if h != want {
+			t.Errorf("%s: header=%s want %s", c.name, h, want)
 		}
 	}
 }
@@ -254,10 +292,10 @@ func TestProHiddenWithoutCookie(t *testing.T) {
 	if _, ok := availableModels()["gemini-3.1-pro"]; ok {
 		t.Error("无 cookie 时不该暴露 3.1 Pro")
 	}
-	// inner[80]（扩展思考）只在登录态生效，匿名带上服务端静默忽略，
+	// inner[80]（思考档位）只在登录态生效，匿名带上服务端静默忽略，
 	// 所以 thinking 版跟 3.1 Pro 一样不能暴露
 	for name, m := range availableModels() {
-		if m.Thinking {
+		if m.ThinkLevel > 0 {
 			t.Errorf("无 cookie 时不该暴露 thinking 版: %s", name)
 		}
 	}
@@ -283,7 +321,8 @@ func TestProHiddenWithoutCookie(t *testing.T) {
 		t.Errorf("配了 cookie 时不该报错: %v", err)
 	}
 	for _, n := range []string{"gemini-3.6-flash-thinking", "gemini-3.5-flash-lite-thinking",
-		"gemini-3.1-pro-thinking"} {
+		"gemini-3.1-pro-thinking", "gemini-4-argon", "gemini-4-argon-thinking",
+		"gemini-4-argon-thinking-medium"} {
 		if _, ok := availableModels()[n]; !ok {
 			t.Errorf("配了 cookie 时应暴露 %s", n)
 		}

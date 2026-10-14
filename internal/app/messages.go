@@ -185,6 +185,14 @@ func buildPrompt(messages []map[string]interface{}, tools []map[string]interface
 				"When the request needs a tool, emit the tool_call block now.")
 	}
 
+	// 用户可配置的行为后缀（system_prompt_suffix）锚在最末尾——末尾指令权重最大，
+	// 与上面工具围栏「末尾锚一次」是同一条实测结论。它压在所有客户端提示之后，
+	// 专门负责扳自我认知：Gemini 网页系模型在 agent 场景会冒出「我只是聊天助手/
+	// 无法操作」的推诿，客户端自己的 system 提示压不住网页端调教出来的口吻。
+	if suffix := strings.TrimSpace(rtCfg().SystemPromptSuffix); suffix != "" {
+		parts = append(parts, "[System instruction]: "+suffix)
+	}
+
 	var nonEmpty []string
 	for _, p := range parts {
 		if p != "" {

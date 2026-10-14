@@ -48,10 +48,13 @@ type Config struct {
 	// 不占用 cookie 账号，走匿名省额度；需要登录才挑号。默认 false。见 modelNeedsLogin。
 	AnonFirst bool `json:"anon_first"`
 	// 临时对话（#34）：发请求时塞 inner[45]=1，走 Gemini 网页端原生「临时对话」——
-	// 会话不进账号的会话列表、不用于训练，天然取代 auto_delete_conversation（无需再发删除
-	// RPC）。只登录态有意义（匿名本就不落账号）。与 multi_turn 冲突：multi_turn 开着时不发，
+	// 会话不进账号的会话列表、不用于训练，天然取代 auto_delete_conversation（无需再发
+	// 删除 RPC）。只登录态有意义（匿名本就不落账号）。与 multi_turn 冲突：multi_turn 开着时不发，
 	// 见 temporaryChatEligible。默认 false。
 	TemporaryChat bool `json:"temporary_chat"`
+	// 账号优先调度：绑定的出口到限流线时换账号不换出口。默认 false（旧行为：可用性
+	// 优先，绑定的满了让号漂到别的出口）。语义详见 RuntimeConfig.AccountFirst。
+	AccountFirst bool `json:"account_first"`
 }
 
 var (
@@ -94,6 +97,7 @@ func defaultConfig() Config {
 		AutoDeleteConversation: false,
 		AnonFirst:              false,
 		TemporaryChat:          false,
+		AccountFirst:           false,
 	}
 }
 

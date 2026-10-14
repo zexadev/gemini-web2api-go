@@ -129,6 +129,29 @@ func handleAdminCookieItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch r.Method {
+	case http.MethodGet:
+		// GET .../quota — 配额探测（公开给配额中枢/上游聚合器的结构化接口）。
+		// 返回 {ok, quota:[{window_id,remaining,tier,reset_at}], proxy, detail}。
+		if action == "quota" {
+			var acct *CookieAccount
+			for _, a := range accountList() {
+				if a.ID == id {
+					acct = &a
+					break
+				}
+			}
+			if acct == nil {
+				writeJSON(w, 404, map[string]string{"error": "account not found"})
+				return
+			}
+			wins, proxyName, detail := probeAccountQuota(*acct)
+			writeJSON(w, 200, map[string]interface{}{
+				"ok": len(wins) > 0, "id": id, "label": acct.Label,
+				"quota": wins, "proxy": proxyName, "detail": detail,
+			})
+			return
+		}
+		writeJSON(w, 405, map[string]string{"error": "method not allowed"})
 	case http.MethodDelete:
 		if err := accountDelete(id); err != nil {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})

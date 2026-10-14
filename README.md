@@ -42,14 +42,16 @@
 **模型**
 - `gemini-3.6-flash`、`gemini-3.5-flash-lite` 匿名可用，含联网搜索
 - `gemini-3.1-pro` 挂 cookie 后可用，每次回答带思考链（`reasoning_content`）
-- 三个模型都有 `-thinking` 版（扩展思考），挂 cookie 后可用
-- 响应里记录服务端**实际**用了哪个模型，被静默降级一眼可见
+- `gemini-4-argon` 挂 cookie 后可用，带网页端三档思考等级（低/中/高）
+- 各模型都有 `-thinking` 版（扩展思考），挂 cookie 后可用
+- 响应里的 `upstream_model` 字段（和管理面板「实际模型」列）记录服务端**实际**用了哪个模型，被静默降级一眼可见
 
 **不被拦 / 跑得久**
 - utls 模拟 Chrome 146 真 TLS 指纹，不是 SDK 默认握手
 - 每个出口 IP 独立限流：并发 / RPM / RPH 三档
-- 代理池：运行时增删改、失败熔断、轮转调度，每个代理是独立限流槽
+- 代理池：运行时增删改、失败熔断、置信度加权调度（key-pool 算法：稳定出口吃大流量、坏出口自动降到 ~2% 探测权重、失败随 5 分钟半衰期自行洗掉），每个代理是独立限流槽
 - Cookie 池：多个 Google 账号按最久未用优先轮转，自动续期 + 保活，每个账号粘住自己的出口
+- `account_first` 调度（可选）：绑定的出口到限流线就**换账号不换出口**——封禁线之前主动切号，每个号永远一个固定 IP
 
 **运维**
 - 单二进制，交叉编译 6 平台；容器镜像基于 distroless
@@ -225,6 +227,7 @@ Claude Code / Cursor 这类 MCP 客户端能「用 Gemini 去搜网」，返回*
 - **请求记录** — 明细列表（仅元数据，无 prompt/response 内容），状态/模型筛选 + 分页
 - **代理池** — 运行时增删改 + 启用/禁用 + 失败次数熔断（每代理是独立 IP slot）
 - **Cookie 池** — 导入多个 Google 登录态账号，请求按**最久未用优先**自动轮转。每个账号一键「检测」是否仍是登录态，**失效的账号标红提示重导**；自动换发 `__Secure-1PSIDTS` + 每 10 分钟保活；每个账号粘住自己的出口。列表只显示脱敏摘要（cookie 数 / 关键项 / SAPISID 末 4 位 / 失败次数）
+- **`account_first` 调度**（设置页开关，默认关）— 开启后账号↔出口粘绑升级成硬约束：绑定的出口到了限流线（并发/RPM/RPH，本身就留足了离 Google 真封禁的余量），这个号就歇着、自动换下一个账号走它自己绑的出口，Google 眼里永远「一号一个固定 IP」；全部号的绑定出口都在线上才 429。关着是旧行为：绑定的满了让号漂到别的出口（可用性优先）。
 - **设置** — 运行时配置表单（保存即生效）+ API Key 轮换 + 部署期配置只读展示
 
 面板前端是单个 HTML，Chart.js 随二进制 embed，**不走 CDN**——内网/离线部署也能开。
@@ -236,7 +239,7 @@ Claude Code / Cursor 这类 MCP 客户端能「用 Gemini 去搜网」，返回*
 
 ## 模型
 
-Gemini 网页端服务端只认三个模型（清单来自 `batchexecute?rpcids=otAQ7b`）：
+Gemini 网页端服务端只认五个模型（清单来自 `batchexecute?rpcids=otAQ7b`）：
 
 | 模型 | 描述 |
 |---|---|
@@ -244,6 +247,9 @@ Gemini 网页端服务端只认三个模型（清单来自 `batchexecute?rpcids=
 | `gemini-3.5-flash-lite` | 极速、轻量 |
 | `gemini-3.1-pro` | 最强，**要配 cookie**；每次回答都带思考链 |
 | `gemini-3.8-flash` | 新款 Flash，**要付费 Gemini 账号的 cookie**（免费号降级成 3.5 Flash-Lite）。`gemini-3.7-flash` 是它的别名——Google 把 3.7 那个 hex 原地升成了 3.8 |
+| `gemini-4-argon` | 复杂任务的新旗舰（issue #35），**要配 cookie**；匿名清单里这个条目不带 hex，所以匿名拿不到。已实测，服务端自报 `4 Argon` |
+| `gemini-4-argon-thinking` | 4 Argon 开**高点**思考（网页 UI 的「超级详尽」），**要配 cookie**；上游自报 `4 Argon High`，带思考链 |
+| `gemini-4-argon-thinking-medium` | 4 Argon 开**中等**思考（网页 UI 的「深度适中」），**要配 cookie**；上游自报 `4 Argon Medium`，无思考链（思考在服务端内部完成） |
 | `gemini-3.6-flash-thinking` | 3.6 Flash 开扩展思考，**要配 cookie** |
 | `gemini-3.5-flash-lite-thinking` | 3.5 Flash-Lite 开扩展思考，**要配 cookie** |
 | `gemini-3.1-pro-thinking` | 3.1 Pro 开扩展思考，**要配 cookie** |
@@ -253,18 +259,23 @@ Gemini 网页端服务端只认三个模型（清单来自 `batchexecute?rpcids=
 | `gemini-canvas` | 画布，生成交互 HTML 文档（内联返回 ```html 块），**要配 cookie** |
 | `gemini-video` | 生视频（异步，几十秒~几分钟），产物 base64 MP4，**要 Pro/付费号**；免费号被上游内容政策拒 |
 
-没配 cookie 时 `/v1/models` 只返回前两个，选 `gemini-3.1-pro` 会直接报错并说明
-原因。因为匿名请求它必然被静默降级成 3.5 Flash-Lite——与其让客户端拿到一个
+没配 cookie 时 `/v1/models` 只返回前两个，选 `gemini-3.1-pro`（或 `gemini-4-argon`）
+会直接报错并说明原因。因为匿名请求它们必然被静默降级——与其让客户端拿到一个
 "成功但其实不是 Pro"的回复，不如在选型时就失败。
 
 配了有效 cookie 时它是**真的 Pro**：连打 6 次服务端回报的都是 `3.1 Pro` 本身。
 
-三个 `-thinking` 是网页 UI 上「扩展思考」的开关，跟模型正交——三个模型都能开，
-不是三个额外的模型。服务端回报的名字会带 `Extended`（如 `3.6 Flash Extended`），
+各 `-thinking` 是网页 UI 上「扩展思考」的开关，跟模型正交——几个模型都能开，
+不是几个额外的模型。服务端回报的名字会带 `Extended`（如 `3.6 Flash Extended`），
 思考链明显变长（实测 2467 / 1059 / 583 字符，对应普通版 0 / 0 / 268）。
 **只在登录态生效**：匿名请求带上这个开关会被服务端静默忽略，所以没 cookie 时不暴露。
 
-只暴露这三个基础模型。旧的 `gemini-3.5-flash`、`gemini-3.5-flash-thinking`、
+`gemini-4-argon` 的思考等级对应网页 UI 的三档，三档都已实测生效（看服务端自报的
+`upstream_model`）：默认发**低点**（快速高效，自报 `4 Argon`），`gemini-4-argon-thinking`
+发**高点**（超级详尽，线值 2，自报 `4 Argon High`，带思考链），`gemini-4-argon-thinking-medium`
+发**中等**（深度适中，线值 4，自报 `4 Argon Medium`，不吐思考链——思考在服务端内部完成）。
+
+只暴露服务端清单里真实存在的模型。旧的 `gemini-3.5-flash`、`gemini-3.5-flash-thinking`、
 `gemini-3.5-flash-thinking-lite`、`gemini-auto`、`gemini-flash-lite` **已移除**
 （传了会返回 400）——它们在服务端没有对应条目，留着只会让人以为有五种不同
 的模型可选。
@@ -305,12 +316,12 @@ I've successfully defined..."
 匿名调用（不挂 cookie）只能拿到上面两个文本模型 + Gemini 自带的联网搜索。
 `gemini-3.1-pro` 匿名时被静默降级成 3.5 Flash-Lite，所以干脆不暴露。
 
-挂上 cookie 额外解锁：`gemini-3.1-pro`、**三个模型的扩展思考版**、**读图 / 读视频**、
+挂上 cookie 额外解锁：`gemini-3.1-pro`、`gemini-4-argon`（含三档思考等级）、**各模型的扩展思考版**、**读图 / 读视频**、
 **更长的上下文**（超长对话自动转成文本附件发，见下文），以及 **生图（`gemini-image`）**、
 **音乐（`gemini-music`）**、**画布（`gemini-canvas`）**、**生视频（`gemini-video`，要 Pro 号）**。
 
-深度研究仍**未实现**（多步异步流程）。管理面板的「实际模型」列会把服务端实际用了哪个
-模型标出来，降级一眼可见。
+深度研究仍**未实现**（多步异步流程）。管理面板的「实际模型」列和 API 响应的
+`upstream_model` 字段会把服务端实际用了哪个模型标出来，降级一眼可见。
 
 ### 生图 / 音乐
 

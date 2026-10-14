@@ -99,6 +99,11 @@ func handleAdminLogout(w http.ResponseWriter, r *http.Request) {
 // /admin/api/stats — KPI summary for last N hours (default 24).
 func handleAdminStats(w http.ResponseWriter, r *http.Request) {
 	hours := atoiDefault(r.URL.Query().Get("hours"), 24)
+	writeJSON(w, 200, usageStats(hours))
+}
+
+// usageStats 最近 hours 小时的请求/token 统计（管理面板与 /v1/usage 共用）。
+func usageStats(hours int) map[string]interface{} {
 	since := time.Now().Unix() - int64(hours)*3600
 
 	stats := map[string]interface{}{}
@@ -180,7 +185,7 @@ func handleAdminStats(w http.ResponseWriter, r *http.Request) {
 	}
 	stats["by_proxy"] = byProxy
 
-	writeJSON(w, 200, stats)
+	return stats
 }
 
 // /admin/api/timeseries?range=24h|7d|30d

@@ -664,12 +664,12 @@ const pages = {
             <colgroup>
               <col style="width:48px"><col style="width:160px"><col style="width:80px">
               <col style="width:150px"><col style="width:92px"><col style="width:64px">
-              <col style="width:150px"><col><col style="width:150px">
+              <col style="width:150px"><col><col style="width:170px"><col style="width:150px">
             </colgroup>
             <thead><tr>
               <th class="nw">ID</th><th class="nw">标签</th><th class="nw">状态</th>
               <th class="nw">关键 Cookie</th><th class="nw">SAPISID</th><th class="nw">失败</th>
-              <th class="nw">最近成功</th><th>最近错误</th><th class="nw">操作</th>
+              <th class="nw">最近成功</th><th>最近错误</th><th class="nw" title="实时探测：jSf9Qc（/usage 页数据源）。高级档低于 10% 会静默降级成 Flash-Lite">配额</th><th class="nw">操作</th>
             </tr></thead>
             <tbody>${items.map(a => `
               <tr class="${a.health === 'dead' ? 'row-dead' : ''}">
@@ -689,6 +689,7 @@ const pages = {
                 <td class="num nw">${a.fail_count > 0 ? '<span class="badge fail">' + a.fail_count + '</span>' : 0}</td>
                 <td class="nw" style="font-size:12px;color:var(--muted)">${a.last_ok_at ? fmt.ts(a.last_ok_at) : '—'}</td>
                 <td class="pre truncate" title="${escapeHtml(a.last_error || '')}">${escapeHtml(a.last_error || '—')}</td>
+                <td class="nw" id="cq_${a.id}"><span class="badge muted">…</span></td>
                 <td class="nw">
                   <span class="actions">
                     <button class="btn muted" onclick="checkCookieAcct(${a.id}, this)">检测</button>
@@ -949,6 +950,8 @@ const RT_GROUPS = [
         hint: '走网页端原生「临时对话」（inner[45]=1）：会话压根不进账号的会话列表、不用于训练，比「自动删网页会话」更干净，还省掉那次删除请求。只登录态有意义；开了「服务端多轮续接」时不生效（临时对话不留列表，多轮要靠服务端留会话）' },
       { k: 'multi_turn', label: '服务端多轮续接', type: 'bool',
         hint: '走 Gemini 原生服务端多轮：按历史前缀认出这是上一轮的续接，命中就只发最新一句、历史留在服务端，同一串对话复用同一个 gemini 会话（不再每发一条就新开一个）。匿名/登录都行，带图或带工具时不生效。首轮/重启/改历史会退回整段重发。默认关' },
+      { k: 'system_prompt_suffix', label: '提示词后缀（扳自我认知）', type: 'textarea', wide: true,
+        hint: '非空时追加到每次请求 prompt 的最末尾（末尾指令权重最大）。专门治 Gemini 网页系模型在 agent 场景冒出的「我只是聊天助手/无法操作」推诿——客户端 system 提示压不住网页端调教出来的口吻，这条压得住。留空 = 纯透传' },
       { k: 'anon_first', label: '匿名优先', type: 'bool',
         hint: '这次请求不需要登录态能力时（纯文本、非思考、无工具、不带图）走匿名、不占用 cookie 账号，省账号额度；用到 3.1 Pro / 3.8 Flash / 扩展思考 / 生图 / 传文件这些才挑号。关掉则只要池里有号就一律用号（默认关）' },
     ],
@@ -962,6 +965,8 @@ const RT_GROUPS = [
         hint: '关：直接返回 429，本机 IP 不会暴露给上游（默认）。开：可用性优先，但上游会看到本机真实出口' },
       { k: 'fallback_anon', label: 'cookie 失效时降级匿名', type: 'bool',
         hint: '关：直接报错，能立刻发现该换号了（默认）。开：继续跑，但 3.1 Pro 会被静默降级成 3.5 Flash-Lite、思考链消失，客户端看不出来' },
+      { k: 'account_first', label: '账号优先调度（换号不换出口）', type: 'bool',
+        hint: '开：每个账号永远只从自己绑定的那个 IP 出去；绑定出口到限流线（并发/RPM/RPH）就让这个号歇着、自动换下一个账号走它自己的出口——在封禁线之前主动切号，Google 眼里不存在一个号多个 IP。全部号的绑定出口都在线上才 429。关（默认）：可用性优先，绑定的满了让这个号漂到别的出口。新号分配出口时两种模式都优先挑没被别的账号占的（一号一出口）' },
     ],
   },
   {
@@ -995,6 +1000,8 @@ async function loadRtCfg() {
             ).join('') + '</select>';
           } else if (f.type === 'int') {
             input = `<input type="number" id="rt_${f.k}" value="${v}" min="${f.min}" max="${f.max}">`;
+          } else if (f.type === 'textarea') {
+            input = `<textarea id="rt_${f.k}" rows="4" class="wide">${escapeHtml(String(v ?? ''))}</textarea>`;
           } else {
             input = `<input type="text" id="rt_${f.k}" value="${escapeHtml(String(v ?? ''))}">`;
           }
@@ -1309,6 +1316,41 @@ async function editCookieAcct(id, label, note) {
 
 // 检测 cookie 还有没有登录态。判据是 /app 页面里有没有 SNlM0e——cookie 失效时
 // Gemini 不报错、只是把你当匿名，纯文本请求照样 200，所以不能拿"请求成功"当判据。
+// 配额列：并行探测每个号的配额窗口（jSf9Qc），填进「配额」列。
+// 高级档剩余 <10% 标红（生成已静默降级 Flash-Lite）、<30% 标黄。
+function quotaBadge(remaining, resetText, tier) {
+  const cls = remaining < 0.10 ? 'fail' : remaining < 0.30 ? 'warn' : 'ok';
+  const tag = tier === 2 ? '高级' : tier === 1 ? '基础' : '档' + tier;
+  return `<span class="badge ${cls}" title="${tag}档剩余 ${(remaining * 100).toFixed(1)}%">${tag} ${Math.round(remaining * 100)}%</span>` +
+         `<span style="font-size:11px;color:var(--muted)"> ${resetText}</span>`;
+}
+
+async function loadQuotaCol() {
+  const data = await api('api/cookies').catch(() => null);
+  const items = (data && data.items) || [];
+  await Promise.all(items.map(async a => {
+    const cell = document.getElementById('cq_' + a.id);
+    if (!cell) return;
+    try {
+      const r = await fetch('api/cookies/' + a.id + '/quota', { credentials: 'include' });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || !d.ok || !(d.quota || []).length) {
+        cell.innerHTML = '<span class="badge muted" title="' + escapeHtml(d.detail || '探测失败') + '">—</span>';
+        return;
+      }
+      const now = Date.now() / 1000;
+      cell.innerHTML = (d.quota || []).map(w => {
+        const t = new Date(w.reset_at * 1000);
+        const today = new Date().toDateString() === t.toDateString();
+        const reset = today ? t.toTimeString().slice(0, 5) : (t.getMonth() + 1 + '-' + t.getDate());
+        return quotaBadge(w.remaining, reset, w.tier);
+      }).join('<br>');
+    } catch (e) {
+      cell.innerHTML = '<span class="badge muted" title="' + escapeHtml(String(e)) + '">—</span>';
+    }
+  }));
+}
+
 async function checkCookieAcct(id, btn) {
   const old = btn.textContent;
   btn.textContent = '检测中…'; btn.disabled = true;
@@ -1639,6 +1681,9 @@ async function switchPage(name, force = false) {
     await loadChart('24h');
     document.getElementById('rangeSel').onchange = (e) => loadChart(e.target.value);
     await populateTestProxies();
+  }
+  if (name === 'cookies') {
+    loadQuotaCol();  // 异步填充，不阻塞表格首屏
   }
   if (name === 'requests') {
     reqOffset = 0;

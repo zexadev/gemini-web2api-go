@@ -42,11 +42,11 @@ This is not a wrapper around Google's official API ([generativelanguage.googleap
 
 **Models**
 - `gemini-3.6-flash` and `gemini-3.5-flash-lite` work anonymously, web search included
-- `gemini-3.1-pro` needs a cookie; every reply carries a reasoning chain
-- Each of the three models has a `-thinking` variant (extended thinking), available with a cookie
-  (`reasoning_content`)
-- Every response records which model the backend **actually** used, so silent
-  downgrades are visible
+- `gemini-3.1-pro` needs a cookie; every reply carries a reasoning chain (`reasoning_content`)
+- `gemini-4-argon` needs a cookie, with the web UI's three thinking levels (low/medium/high)
+- Every model has a `-thinking` variant (extended thinking), available with a cookie
+- Every response records which model the backend **actually** used (the `upstream_model`
+  response field and the admin panel's "actual model" column), so silent downgrades are visible
 
 **Staying unblocked, and scaling past one IP**
 - Real Chrome 146 TLS fingerprint via utls, not a default SDK handshake
@@ -54,6 +54,7 @@ This is not a wrapper around Google's official API ([generativelanguage.googleap
 - Proxy pool: runtime CRUD, failure circuit breaker, rotation — each proxy is its
   own rate-limit slot
 - Cookie pool: several Google accounts rotated least-recently-used first, auto-refreshed and kept alive, each account pinned to its own exit
+- `account_first` scheduling (optional): when a bound exit hits the rate-limit line, **switch the account, not the exit** — rotate proactively before the ban line, every account keeps one fixed IP
 
 **Operations**
 - Single binary, cross-compiled for 6 platforms; container image built on distroless
@@ -231,6 +232,7 @@ a specific URL's content — is not implemented yet).
 - **Requests** — request log (metadata only, no prompt/response content), status/model filters, pagination
 - **Proxy pool** — runtime CRUD, enable/disable, circuit breaker on repeated failures (each proxy is its own IP slot)
 - **Cookie pool** — import multiple signed-in Google accounts; requests rotate through them **least-recently-used first**. One-click "check" tells you whether an account is still signed in, and **dead accounts are flagged in red** so you know which to re-import; `__Secure-1PSIDTS` is rotated automatically plus a 10-minute keepalive; each account is pinned to its own exit. The list shows redacted summaries only (cookie count / key entries / last 4 of SAPISID / failure count)
+- **`account_first` scheduling** (Settings toggle, off by default) — once on, the account↔exit binding becomes a hard constraint: when a bound exit hits the rate-limit line (concurrency/RPM/RPH, which already keep generous headroom below Google's real ban threshold), the account rests and the next account takes over through its own bound exit, so every account always shows one fixed IP to Google; only when every account's bound exit is at the line does the request 429. Off = old behaviour: availability first, the account drifts to another exit when its bound one is full.
 - **Settings** — runtime config form (saved settings take effect immediately), API key rotation, read-only view of deploy-time config
 
 The frontend is a single HTML file and Chart.js is embedded in the binary, **not loaded from a CDN**, so the panel also works on air-gapped or intranet deployments.
@@ -239,7 +241,7 @@ The frontend is a single HTML file and Chart.js is embedded in the binary, **not
 
 ## Models
 
-Gemini's backend only recognises three models (the list comes from `batchexecute?rpcids=otAQ7b`):
+Gemini's backend only recognises five models (the list comes from `batchexecute?rpcids=otAQ7b`):
 
 | Model | Description |
 |---|---|
@@ -247,6 +249,9 @@ Gemini's backend only recognises three models (the list comes from `batchexecute
 | `gemini-3.5-flash-lite` | Fast and lightweight |
 | `gemini-3.1-pro` | Most capable, **needs a cookie**; every reply carries a reasoning chain |
 | `gemini-3.8-flash` | Newer Flash, **needs a cookie from a PAID Gemini account** (free accounts get downgraded to 3.5 Flash-Lite). `gemini-3.7-flash` is an alias — Google bumped that same hex from 3.7 to 3.8 in place |
+| `gemini-4-argon` | The new flagship for complex tasks (issue #35); **needs a cookie** — the anonymous model list carries this entry without a hex, so anonymous requests can't get Argon. Live-verified: the backend reports `4 Argon` |
+| `gemini-4-argon-thinking` | 4 Argon at the **high** thinking level (the web UI's "most detailed"); **needs a cookie**. Reported upstream as `4 Argon High`, emits a reasoning chain |
+| `gemini-4-argon-thinking-medium` | 4 Argon at the **medium** thinking level (the web UI's "moderate depth"); **needs a cookie**. Reported upstream as `4 Argon Medium`; emits no reasoning chain (thinking happens server-side) |
 | `gemini-3.6-flash-thinking` | 3.6 Flash with extended thinking; **needs a cookie** |
 | `gemini-3.5-flash-lite-thinking` | 3.5 Flash-Lite with extended thinking; **needs a cookie** |
 | `gemini-3.1-pro-thinking` | 3.1 Pro with extended thinking; **needs a cookie** |
@@ -256,11 +261,18 @@ Gemini's backend only recognises three models (the list comes from `batchexecute
 | `gemini-canvas` | Canvas: generates an interactive HTML document (returned inline as a ```html block); **needs a cookie** |
 | `gemini-video` | Video generation (async, tens of seconds to a few minutes); base64 MP4 output; **needs a Pro/paid account** (free accounts are refused by the upstream content policy) |
 
-Without a cookie, `/v1/models` returns only the first two, and asking for `gemini-3.1-pro` fails with an explanation. An anonymous request for it is always silently downgraded to 3.5 Flash-Lite — better to fail at model selection than to hand back a reply that "succeeded" but isn't Pro.
+Without a cookie, `/v1/models` returns only the first two, and asking for `gemini-3.1-pro` (or `gemini-4-argon`) fails with an explanation. Anonymous requests for them are always silently downgraded — better to fail at model selection than to hand back a reply that "succeeded" but isn't the requested model.
 
 With a valid cookie it really is Pro: six consecutive calls all had the backend report `3.1 Pro` itself.
 
-Only those three are exposed. The old names `gemini-3.5-flash`, `gemini-3.5-flash-thinking`, `gemini-3.5-flash-thinking-lite`, `gemini-auto` and `gemini-flash-lite` were **removed** (they now return 400): the backend has no entries for them, and keeping them only suggested there were five distinct models to choose from.
+The `-thinking` variants toggle the web UI's "extended thinking" switch, which is orthogonal to the model — every model can have it; they are not extra models. The backend-reported name gains an `Extended` suffix (e.g. `3.6 Flash Extended`) and the reasoning chain gets much longer (measured 2467 / 1059 / 583 chars vs 0 / 0 / 268 for the plain versions). **Only works signed in**: anonymously the switch is silently ignored, so these are hidden without a cookie.
+
+`gemini-4-argon` maps the web UI's three thinking levels, all live-verified via the
+backend-reported `upstream_model`: the default sends **low** (fast, reported as `4 Argon`),
+`gemini-4-argon-thinking` sends **high** ("most detailed", wire value 2, reported as
+`4 Argon High`, with a reasoning chain), and `gemini-4-argon-thinking-medium` sends **medium**
+("moderate depth", wire value 4, reported as `4 Argon Medium`, no reasoning chain — the
+thinking happens server-side).
 
 > **`@think=N` is deprecated.** The suffix was written into `inner[17]` and long treated as "thinking depth", but captures show it is the **turn index within a conversation** (first turn `[[0]]`, the follow-up carrying a conversation id `[[1]]`, incrementing from there) — nothing to do with reasoning depth. We open a fresh conversation for every request, so the value is always 0 and the parameter never did anything. The suffix is still accepted and ignored, so existing client configs don't break.
 
@@ -293,11 +305,11 @@ you do want to bill for it.
 
 ### Known capability boundaries
 
-Anonymous calls (no cookie) only reach the two text models above plus Gemini's built-in web search. `gemini-3.1-pro` is silently downgraded to 3.5 Flash-Lite anonymously, which is why it isn't exposed at all in that case.
+Anonymous calls (no cookie) only reach the two text models above plus Gemini's built-in web search. `gemini-3.1-pro` is silently downgraded to 3.5 Flash-Lite anonymously (and the anonymous model list doesn't even carry a hex for `gemini-4-argon`), which is why they aren't exposed at all in that case.
 
-Attaching a cookie additionally unlocks `gemini-3.1-pro`, **extended thinking for all three models**, **image / video input**, **a longer context** (over-long conversations are sent as a text attachment, see below), and **image generation (`gemini-image`), music (`gemini-music`), canvas (`gemini-canvas`), video generation (`gemini-video`, needs a Pro account)**.
+Attaching a cookie additionally unlocks `gemini-3.1-pro`, `gemini-4-argon` (with its three thinking levels), **extended thinking on every model**, **image / video input**, **a longer context** (over-long conversations are sent as a text attachment, see below), and **image generation (`gemini-image`), music (`gemini-music`), canvas (`gemini-canvas`), video generation (`gemini-video`, needs a Pro account)**.
 
-Deep research is still **not implemented** (a multi-step async flow). The panel's "actual model" column always shows which model the backend really used, so any downgrade is visible.
+Deep research is still **not implemented** (a multi-step async flow). The panel's "actual model" column and the `upstream_model` response field always show which model the backend really used, so any downgrade is visible.
 
 ### Image & music
 
@@ -413,7 +425,7 @@ Note that "last success" only means a request involving this cookie succeeded; i
 
 > **Export cookies from Firefox.** Recent Chrome enables Device Bound Session Credentials, so a session exported from Chrome is bound to that machine and `*PSIDTS` cannot be rotated — it dies in about 30 minutes to a few hours. Firefox has no such binding, and the same keepalive will keep the session alive. If you must use Chrome: log in in a fresh private window, export immediately, and **close that window** so the browser does not rotate the same session out from under you.
 
-**Each account is pinned to its own exit.** If the cookie pool and proxy pool rotated independently, one Google account would emit requests from dozens of different IPs, which is exactly what account sharing looks like to Google. An account binds to the first exit it uses and stays there until that exit becomes unusable.
+**Each account is pinned to its own exit.** If the cookie pool and proxy pool rotated independently, one Google account would emit requests from dozens of different IPs, which is exactly what account sharing looks like to Google. An account binds to the first exit it uses and stays there until that exit becomes unusable. With `account_first` on (Settings), this becomes a hard rule: a full exit means the next ACCOUNT takes over through its own exit — the account never switches exits. New accounts prefer an exit no other enabled account is bound to (one account, one exit).
 
 **A dead account no longer kills the request** — the next account in the pool is tried instead. Otherwise a bigger pool would only mean more ways to hit a bad one.
 
@@ -596,7 +608,8 @@ spread requests across exits with the proxy pool rather than adding accounts.
 ### What do I get with a free account versus Pro / paid?
 
 Anonymous (no cookie): `gemini-3.6-flash` and `gemini-3.5-flash-lite`, web search included.
-A free account's cookie additionally unlocks `gemini-3.1-pro`, the `-thinking` variants of all three models,
+A free account's cookie additionally unlocks `gemini-3.1-pro`, `gemini-4-argon` (with its three
+thinking levels), the `-thinking` variants of every model,
 image / video input, image generation, music and canvas.
 Paid accounts only: `gemini-3.8-flash` (free accounts are downgraded to 3.5 Flash-Lite) and video generation
 (`gemini-video` / `/v1/videos`).

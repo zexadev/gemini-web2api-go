@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-const Version = "4.21.0"
+const Version = "4.22.0"
 
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	body, _ := json.Marshal(data)
@@ -359,6 +359,11 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		// 真流式已发出的不重发，只补尾巴；有 tools 时没走真流式，这里发全量。
 		// 思考链同理，且要在正文之前补——保持「先思考后回答」的顺序。
+		// 上游自报的模型名带出去：3.1 Pro / 4 Argon 这类登录态模型匿名时会被静默
+		// 降级，客户端只有对着这个字段才能发现「请求的 A、实际跑的是 B」。
+		if res != nil {
+			sse.SetUpstreamModel(res.UpstreamModel)
+		}
 		if res != nil && res.Reasoning != "" {
 			if rest := remainingOf(res.Reasoning, res.EmittedReasoning); rest != "" {
 				sse.SendReasoning(rest)
@@ -376,7 +381,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, 200, map[string]interface{}{
+	resp := map[string]interface{}{
 		"id":      cid,
 		"object":  "chat.completion",
 		"created": created,
@@ -387,7 +392,13 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			"finish_reason": finish,
 		}},
 		"usage": usageOf(prompt, text, res),
-	})
+	}
+	// 服务端自报的模型显示名（"3.6 Flash" / "4 Argon"）。跟请求名对不上就是被
+	// 静默降级了——管理面板的请求记录里也有一份，这里让调用方当场就能核对。
+	if res != nil && res.UpstreamModel != "" {
+		resp["upstream_model"] = res.UpstreamModel
+	}
+	writeJSON(w, 200, resp)
 }
 
 // usageOf 是 buildUsageWithReasoning 的便捷包装，res 可能为 nil。

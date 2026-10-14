@@ -18,6 +18,9 @@ type sseWriter struct {
 	created int64
 	model   string
 	started bool
+	// upstream 是服务端在响应帧里自报的模型显示名（如 "4 Argon"）。模型名帧通常
+	// 随尾部帧才到，所以只在收尾 chunk 里带上，供客户端核对有没有被静默降级。
+	upstream string
 }
 
 func newSSEWriter(w http.ResponseWriter, id string, created int64, model string) *sseWriter {
@@ -58,6 +61,11 @@ func (s *sseWriter) chunk(delta map[string]interface{}, finish interface{}, usag
 	}
 	if usage != nil {
 		c["usage"] = usage
+	}
+	// 自定义字段（OpenAI SDK 会忽略不认识的字段）。上游模型名在响应尾部帧才出现，
+	// 所以实际上只有收尾的 chunk 会带上它。
+	if s.upstream != "" {
+		c["upstream_model"] = s.upstream
 	}
 	b, _ := json.Marshal(c)
 	fmt.Fprintf(s.w, "data: %s\n\n", b)
@@ -104,6 +112,13 @@ func (s *sseWriter) SendToolCalls(tcs []ToolCall) {
 	s.chunk(map[string]interface{}{"tool_calls": out}, nil, nil)
 }
 
+// SetUpstreamModel 记下服务端自报的模型名，收尾 chunk 里带出。
+func (s *sseWriter) SetUpstreamModel(name string) {
+	if name != "" {
+		s.upstream = name
+	}
+}
+
 // Finish 收尾：空 delta + finish_reason，可选 usage chunk，最后 [DONE]。
 func (s *sseWriter) Finish(reason string, usage map[string]int) {
 	s.start()
@@ -115,6 +130,9 @@ func (s *sseWriter) Finish(reason string, usage map[string]int) {
 			"created": s.created, "model": s.model,
 			"choices": []map[string]interface{}{},
 			"usage":   usage,
+		}
+		if s.upstream != "" {
+			c["upstream_model"] = s.upstream
 		}
 		b, _ := json.Marshal(c)
 		fmt.Fprintf(s.w, "data: %s\n\n", b)

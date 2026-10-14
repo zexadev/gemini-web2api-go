@@ -3,10 +3,11 @@ package app
 import (
 	"encoding/json"
 	"errors"
+	"math"
+	"math/rand"
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -20,12 +21,86 @@ type Proxy struct {
 	LastUsed  int64  `json:"last_used"`
 	LastError string `json:"last_error"`
 	CreatedAt int64  `json:"created_at"`
+
+	// 置信度调度状态（key-pool 算法，见 proxyRate）。内存态，不入库也不出 API：
+	// 重启归零 = 全体出口回到「未探索」满权重，冷启动即可重新探索，符合该算法
+	// 无状态的设计初衷；三个浮点数不值得加列迁移。
+	Succ    float64   `json:"-"` // S：成功计数（读取时按半衰期衰减）
+	SoftF   float64   `json:"-"` // F_soft：有过成功之后的失败（限流/抖动类）
+	HardF   float64   `json:"-"` // F_hard：从未成功过的失败（被封/协议不兼容类）
+	LastOut time.Time `json:"-"` // 最后一次成败时刻（算 Δt）
+}
+
+// 自适应衰减置信度调度（Adaptive Decaying Confidence Scheduler）。
+// 算法来自 fastpkg/distance_matrix 的 docs/key-pool-algorithm.md，把「key」换成
+// 「代理出口」落地：每个出口维护 S / F_soft / F_hard 三个指数衰减计数，选择率 R
+// 由 Beta 后验 + 置信收缩 + 探测门控一条公式链算出——未探索的出口满权重、刚失败的
+// 立刻掉到 ~0、冷却中的出口按 2% 地板权重周期性探测，旧失败随半衰期自行洗掉。
+//
+// 跟 account_first 粘绑的配合：绑定时按 R 加权**一次性**选中稳定出口，之后粘住
+// 不动（高频流量自然集中在高 R 出口上）；出口劣化时 R 塌到 0，绑定号按
+// account_first 换号让它歇着，门重新打开（g 随时间回升）后再服务，绑定不丢。
+const (
+	confHalfLifeSec = 300.0 // KeyRecoverySec：计数半衰期，λ = ln2/300
+	confTau         = 2.0   // KeyConfidenceTau：置信质量爬升尺度
+	confProbeSec    = 30.0  // KeyProbeSec：探测间隔基数 T₀
+	confPhi         = 5.0   // 软硬失败回退指数 φ：T(F_b) = T₀·e^(F_b/φ)
+	confSoftWeight  = 0.3   // w_f：软失败权重（F_b = F_hard + w_f·F_soft）
+	confProbeFloor  = 0.02  // ρ_min：探测地板权重
+	confStarveK     = 4.0   // 反饥饿系数 k：ε(N)=e^(−N/k)，仅单出口池生效
+)
+
+// confDecay 指数衰减：X' = X·e^(−λΔt)，λ = ln2/半衰期。
+func confDecay(v, dtSec float64) float64 {
+	if dtSec <= 0 {
+		return v
+	}
+	return v * math.Exp(-math.Ln2/confHalfLifeSec*dtSec)
+}
+
+// proxyRate 出口在 now 时刻的选择率 R∈[0,1]。公式链逐条对齐 key-pool 文档：
+//
+//	ρ  = (S+2)/(S+F+3)            Beta 后验（a=2,b=1 → 未知出口乐观先验 ≈0.67）
+//	η  = S + 0.3·F；α = 1−e^(−η/τ)  置信质量与爬升
+//	R₀ = (1−α)·π + α·ρ             收缩；π=1 → 未探索出口满权重
+//	T(F_b) = 30s·e^(F_b/φ)；g = 1−e^(−Δt/T(F_b))  探测门，刚失败时关着
+//	g' = g + (1−g)·ε(N)            反饥饿：仅单出口池（N≤1）保底继续探测
+//	普通出口（S>0 或 F_hard<0.5）：R = R₀ + 0.02·g'·(1−R₀)
+//	纯探测出口（S=0 且 F_hard≥0.5）：R = 0.02·g'·(1−R₀)，门关着时为 0
+//
+// 文档里「F_hard 衰减到 1 以下回到普通」是离散计数语境；这里是连续衰减，F_hard=1
+// 在 Δt>0 的瞬间就小于 1，判据会立刻失真。改成 0.5：一次硬失败至少撑过一个半衰期
+// （5 分钟）才解除纯探测身份，语义等价于原文的「衰减到不到一次失败」。
+func proxyRate(p *Proxy, now time.Time, poolSize int) float64 {
+	dt := now.Sub(p.LastOut).Seconds()
+	s := confDecay(p.Succ, dt)
+	fs := confDecay(p.SoftF, dt)
+	fh := confDecay(p.HardF, dt)
+	f := s + fs + fh
+	fb := fh + confSoftWeight*fs
+
+	rho := (s + 2) / (f + 3)
+	eta := s + confSoftWeight*f
+	alpha := 1 - math.Exp(-eta/confTau)
+	r0 := (1-alpha)*1.0 + alpha*rho
+
+	tBackoff := confProbeSec * math.Exp(fb/confPhi)
+	g := 1 - math.Exp(-dt/tBackoff)
+	eps := 0.0
+	if poolSize <= 1 {
+		eps = math.Exp(-float64(poolSize) / confStarveK)
+	}
+	gp := g + (1-g)*eps
+
+	if s > 0 || fh < 0.5 {
+		return r0 + confProbeFloor*gp*(1-r0)
+	}
+	return confProbeFloor * gp * (1 - r0)
 }
 
 var (
-	proxyMu     sync.RWMutex
-	proxyCache  []Proxy
-	proxyCursor uint64
+	proxyMu    sync.RWMutex
+	proxyCache []Proxy
 )
 
 // loadProxies 从 DB 刷新内存里的代理列表。
@@ -62,7 +137,21 @@ func loadProxies() {
 		logf("[proxy] 遍历中断，保留上一次的代理池: %v", err)
 		return
 	}
+	// 置信度状态按 ID 平移到新列表上：这条路径每个请求后都会跑（recordProxyResult
+	// 结束就调），不平移的话每次刷新都把 S/F 清零，刚失败过的坏出口立刻满权重复活。
 	proxyMu.Lock()
+	if len(proxyCache) > 0 {
+		prev := make(map[int64]*Proxy, len(proxyCache))
+		for i := range proxyCache {
+			prev[proxyCache[i].ID] = &proxyCache[i]
+		}
+		for i := range list {
+			if old, ok := prev[list[i].ID]; ok {
+				list[i].Succ, list[i].SoftF, list[i].HardF, list[i].LastOut =
+					old.Succ, old.SoftF, old.HardF, old.LastOut
+			}
+		}
+	}
 	proxyCache = list
 	proxyMu.Unlock()
 }
@@ -233,6 +322,13 @@ func poolHasProxyURL(url string) bool {
 	return false
 }
 
+// proxyPoolEmpty 池子里还有没有任何出口记录（不管可用不可用）。
+func proxyPoolEmpty() bool {
+	proxyMu.RLock()
+	defer proxyMu.RUnlock()
+	return len(proxyCache) == 0
+}
+
 // pickProxyWithCapacity 找一个可用（enabled + 没熔断或已过冷却）且限流没满的代理。
 // 返回 (proxy, ok)。所有代理都不可用或都满时返回 ok=false。
 //
@@ -240,11 +336,100 @@ func poolHasProxyURL(url string) bool {
 // 调用方拿到的 slot 必须配套调 slotRelease(proxy.ID)。
 func pickProxyWithCapacity() (Proxy, bool) { return pickProxyPreferring(0) }
 
+// acquireBoundSlot 只尝试 id 指定的那一个出口：可用、置信门开着且有限流容量就占住
+// 返回，否则 (zero,false) —— **绝不退而求其次**。account_first 调度的地基：
+// 绑定的出口到了限流线或置信门关着（刚失败过、探测窗未开），调用方的正确反应是
+// 换下一个账号，而不是让这个号从别人的出口出去。绑定本身不动——门随时间重开
+// （g = 1−e^(−Δt/T(F_b))），出口恢复后这个号自然回到它自己的出口上。
+func acquireBoundSlot(proxyID int64) (Proxy, bool) {
+	proxyMu.RLock()
+	defer proxyMu.RUnlock()
+	now := time.Now()
+	for i := range proxyCache {
+		p := &proxyCache[i]
+		if p.ID != proxyID {
+			continue
+		}
+		if !proxyUsable(*p, now.Unix(), rtCfg().ProxyCooldownMin) {
+			return Proxy{}, false
+		}
+		// 置信门：R 低于探测地板 ρ_min = 门关着（纯探测态的出口恒低于地板）。
+		// 此时这个号歇着而不是换出口——门随时间重开：F_hard 半衰期衰减过半后回到
+		// 普通公式 R≈0.93，或某次探测成功攒下 S。绑定不动，号也不背锅。
+		if proxyRate(p, now, len(proxyCache)) < confProbeFloor {
+			return Proxy{}, false
+		}
+		if ok, _ := trySlotAcquire(proxyID); ok {
+			return *p, true
+		}
+		return Proxy{}, false
+	}
+	return Proxy{}, false // 绑定的出口已不在池子里（被删了）
+}
+
+// pickProxyForNewBinding 给还没绑定出口的账号挑一个新出口并占上 slot——
+// 这是「一号一出口」的唯一决策点，所以按置信度加权：稳定出口被绑定选中后，
+// 这个号的全部流量都固定在它上面（account_first 粘绑把一次高权重选择放大成
+// 持续的流量倾斜）。
+//
+// 三轮收敛：① 没被别的 enabled 账号占的、置信门开着的（首选）；② 门开着的（一号
+// 一出口让位于可用性）；③ 全部可用的，含门关着的探测出口（聊胜于无）。
+func pickProxyForNewBinding(taken map[int64]bool) (Proxy, bool) {
+	cooldown := rtCfg().ProxyCooldownMin
+	now := time.Now()
+	proxyMu.RLock()
+	var pool []Proxy
+	for _, p := range proxyCache {
+		if proxyUsable(p, now.Unix(), cooldown) {
+			pool = append(pool, p)
+		}
+	}
+	proxyMu.RUnlock()
+	if len(pool) == 0 {
+		return Proxy{}, false
+	}
+	good := make([]Proxy, 0, len(pool))
+	for _, p := range pool {
+		if proxyRate(&p, now, len(pool)) >= confProbeFloor { // 门开着的才值得绑
+			good = append(good, p)
+		}
+	}
+	for pass := 0; pass < 2; pass++ {
+		cand := good
+		if pass == 0 {
+			cand = make([]Proxy, 0, len(good))
+			for _, p := range good {
+				if !taken[p.ID] {
+					cand = append(cand, p)
+				}
+			}
+		}
+		if len(cand) == 0 {
+			continue
+		}
+		for _, p := range weightedOrder(cand, now) {
+			if ok, _ := trySlotAcquire(p.ID); ok {
+				return p, true
+			}
+		}
+	}
+	// 门关着的也在最后兜底（权重序）：池子只剩坏出口时，探测比拒绝强
+	for _, p := range weightedOrder(pool, now) {
+		if ok, _ := trySlotAcquire(p.ID); ok {
+			return p, true
+		}
+	}
+	return Proxy{}, false
+}
+
 // pickProxyPreferring 优先挑 preferID 那个出口，它不可用或没容量时才轮询别的。
 //
 // 为什么要粘住：cookie 池和代理池各自独立轮转的话，同一个 Google 账号会在几十个
 // 出口 IP 之间来回跳 —— 这在 Google 眼里正是账号共享的特征。粘不住时宁可换出口
 // 也不排队等，可用性优先。
+//
+// account_first 调度（见 acquireExitForAccount）下，带账号的请求不再走这里 ——
+// 绑定的出口满载时换的是账号；这里只剩匿名请求（preferID=0）和 fallback 路径在用。
 func pickProxyPreferring(preferID int64) (Proxy, bool) {
 	proxyMu.RLock()
 	defer proxyMu.RUnlock()
@@ -272,15 +457,47 @@ func pickProxyPreferring(preferID int64) (Proxy, bool) {
 			}
 		}
 	}
-	// 从轮询起点开始,找第一个 slot 没满的
-	start := atomic.AddUint64(&proxyCursor, 1) - 1
-	for i := 0; i < len(pool); i++ {
-		p := pool[(int(start)+i)%len(pool)]
+	// 加权不放回抽样：W = weight·R·1000。稳定出口吃到大流量，刚失败的 R≈0 基本
+	// 抽不到，冷却中的以 ~2% 地板权重被周期性探测。旧的纯轮询对好坏出口一视同仁，
+	// 坏出口会持续分走四分之一的请求。
+	for _, p := range weightedOrder(pool, time.Now()) {
 		if ok, _ := trySlotAcquire(p.ID); ok {
 			return p, true
 		}
 	}
 	return Proxy{}, false
+}
+
+// weightedOrder 按 W = weight·R·1000 做不放回加权抽样，返回抽取顺序（稳定出口在前，
+// 近零权重的最后才被试到）。权重全零时退回随机均匀序，保证不会卡死。
+func weightedOrder(pool []Proxy, now time.Time) []Proxy {
+	rest := make([]Proxy, len(pool))
+	copy(rest, pool)
+	out := make([]Proxy, 0, len(rest))
+	for len(rest) > 0 {
+		total := 0.0
+		ws := make([]float64, len(rest))
+		for i := range rest {
+			ws[i] = float64(rest[i].Weight) * proxyRate(&rest[i], now, len(pool)) * 1000
+			total += ws[i]
+		}
+		if total <= 0 {
+			rand.Shuffle(len(rest), func(i, j int) { rest[i], rest[j] = rest[j], rest[i] })
+			return append(out, rest...)
+		}
+		r := rand.Float64() * total
+		idx := len(rest) - 1
+		for i, w := range ws {
+			r -= w
+			if r <= 0 {
+				idx = i
+				break
+			}
+		}
+		out = append(out, rest[idx])
+		rest = append(rest[:idx], rest[idx+1:]...)
+	}
+	return out
 }
 
 // recordProxyResult 回写一次请求的结果，并同步更新内存里那一条。
@@ -295,29 +512,62 @@ func recordProxyResult(id int64, success bool, errStr string) {
 	if id == 0 {
 		return
 	}
-	now := time.Now().Unix()
+	now := time.Now()
+	nowUnix := now.Unix()
 	if success {
-		_, _ = getDB().Exec(`UPDATE proxies SET fail_count=0, last_used=?, last_error='' WHERE id=?`, now, id)
+		_, _ = getDB().Exec(`UPDATE proxies SET fail_count=0, last_used=?, last_error='' WHERE id=?`, nowUnix, id)
 	} else {
 		_, _ = getDB().Exec(`UPDATE proxies SET fail_count=fail_count+1, last_used=?, last_error=? WHERE id=?`,
-			now, errStr, id)
+			nowUnix, errStr, id)
 	}
 	proxyMu.Lock()
 	for i := range proxyCache {
 		if proxyCache[i].ID != id {
 			continue
 		}
-		proxyCache[i].LastUsed = now
+		p := &proxyCache[i]
+		p.LastUsed = nowUnix
+		// 置信度记账：先按 Δt 衰减旧计数，再按 key-pool 的分类规则累加——
+		// 有过成功（衰减后 S>0）→ 软失败（限流/抖动类）；从未成功 → 硬失败
+		// （IP 被封 / 协议不兼容）。成功清零软硬失败？不：算法靠衰减自然洗掉
+		// 历史失败，成功只加 S —— 让「偶尔抖一下的稳定出口」和「彻底坏死」的
+		// 分数路径不同。
+		dt := now.Sub(p.LastOut).Seconds()
+		p.Succ = confDecay(p.Succ, dt)
+		p.SoftF = confDecay(p.SoftF, dt)
+		p.HardF = confDecay(p.HardF, dt)
 		if success {
-			proxyCache[i].FailCount = 0
-			proxyCache[i].LastError = ""
+			p.Succ++
+		} else if p.Succ > 0 {
+			p.SoftF++
 		} else {
-			proxyCache[i].FailCount++
-			proxyCache[i].LastError = errStr
+			p.HardF++
+		}
+		p.LastOut = now
+		if success {
+			p.FailCount = 0
+			p.LastError = ""
+		} else {
+			p.FailCount++
+			p.LastError = errStr
 		}
 		break
 	}
 	proxyMu.Unlock()
+}
+
+// proxyConfidenceReset 面板「重置」时把置信度一并归零：让出口以「未探索」满权重
+// 重新接受考验，而不是带着半衰期没洗完的失败分数继续被探测门压着。
+func proxyConfidenceReset(id int64) {
+	proxyMu.Lock()
+	defer proxyMu.Unlock()
+	for i := range proxyCache {
+		if proxyCache[i].ID == id {
+			proxyCache[i].Succ, proxyCache[i].SoftF, proxyCache[i].HardF = 0, 0, 0
+			proxyCache[i].LastOut = time.Time{}
+			return
+		}
+	}
 }
 
 // CRUD ───────────────────────────────────────────────────────────────────────
@@ -403,6 +653,7 @@ func proxyDelete(id int64) error {
 
 func proxyResetFailures(id int64) error {
 	_, err := getDB().Exec(`UPDATE proxies SET fail_count=0, last_error='' WHERE id=?`, id)
+	proxyConfidenceReset(id) // 面板「重置」= 置信度一并归零，以未探索满权重重新考验
 	if err == nil {
 		loadProxies()
 	}
