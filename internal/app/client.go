@@ -40,7 +40,7 @@ func resolveProfile(name string) profiles.ClientProfile {
 		return profiles.Firefox_120
 	case "firefox_123":
 		return profiles.Firefox_123
-	case "firefox_147", "firefox147":
+	case "firefox", "firefox_147", "firefox147", "firefox_157", "zen":
 		return profiles.Firefox_147
 	case "safari_16_0":
 		return profiles.Safari_16_0
@@ -157,9 +157,38 @@ func makeSAPISIDHash(sapisid string) string {
 // ChromeUA 是给 stdlib 走代理时用的 Chrome 146 真实 UA 模板。
 const ChromeUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
 
-// applyChromeHeaders 给 stdlib 请求填上模拟 Chrome 146 的应用层 header。
-// utls 那层做 TLS/HTTP2 指纹我们做不到（走代理），但 header 一定要齐。
+// FirefoxUA 是给 stdlib / tls-client 走 Firefox/Zen 指纹时的 UA 模板（对齐 Linux x86_64 Zen/Firefox Gecko 157）。
+const FirefoxUA = "Mozilla/5.0 (X11; Linux x86_64; rv:157.0) Gecko/20100101 Firefox/157.0"
+
+func isFirefoxProfile() bool {
+	p := strings.ToLower(rtCfg().Impersonate)
+	return strings.HasPrefix(p, "firefox") || p == "zen"
+}
+
+func currentBrowserUA() string {
+	if isFirefoxProfile() {
+		return FirefoxUA
+	}
+	return ChromeUA
+}
+
+// applyChromeHeaders 给 stdlib 请求填上应用层 header（根据 impersonate 配置自动适配 Chrome 或 Firefox）。
 func applyChromeHeaders(req *http.Request) {
+	applyBrowserHeaders(req)
+}
+
+// applyBrowserHeaders 给 stdlib 请求填上对应 impersonate 配置的应用层 header。
+func applyBrowserHeaders(req *http.Request) {
+	if isFirefoxProfile() {
+		req.Header.Set("User-Agent", FirefoxUA)
+		req.Header.Del("Sec-CH-UA")
+		req.Header.Del("Sec-CH-UA-Mobile")
+		req.Header.Del("Sec-CH-UA-Platform")
+		req.Header.Set("Sec-Fetch-Dest", "empty")
+		req.Header.Set("Sec-Fetch-Mode", "cors")
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
+		return
+	}
 	req.Header.Set("User-Agent", ChromeUA)
 	req.Header.Set("Sec-CH-UA", `"Chromium";v="146", "Google Chrome";v="146", "Not?A_Brand";v="24"`)
 	req.Header.Set("Sec-CH-UA-Mobile", "?0")

@@ -205,7 +205,7 @@ func getAnonSession(proxyURL string) (string, error) {
 		if err != nil {
 			return nil, nil, nil, err
 		}
-		r.Header.Set("User-Agent", webUA)
+		r.Header.Set("User-Agent", currentBrowserUA())
 		resp, err := getTLSClient().Do(r)
 		if err != nil {
 			return nil, nil, nil, err
