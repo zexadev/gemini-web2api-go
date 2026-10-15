@@ -59,6 +59,9 @@ type RuntimeConfig struct {
 	// 取代 auto_delete_conversation（省掉删除 RPC）。只登录态有意义，与 multi_turn 冲突
 	// （multi_turn 开着时不发）。默认 false，见 temporaryChatEligible。
 	TemporaryChat bool `json:"temporary_chat"`
+	// 额度感知选号：优先挑还有额度的号，避免把请求发给已耗尽的号（上游会静默降级）。
+	// 默认 false；只在额度缓存可用时生效，且不阻塞请求。见 quota_pick.go。
+	QuotaAwarePick bool `json:"quota_aware_pick"`
 }
 
 const runtimeConfigKey = "runtime_config"
@@ -94,6 +97,7 @@ func initRuntimeConfig() {
 		AutoDeleteConversation: cfg.AutoDeleteConversation,
 		AnonFirst:              cfg.AnonFirst,
 		TemporaryChat:          cfg.TemporaryChat,
+		QuotaAwarePick:         cfg.QuotaAwarePick,
 	}
 	if raw := kvGet(runtimeConfigKey); raw != "" {
 		saved := base

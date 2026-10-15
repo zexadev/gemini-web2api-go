@@ -423,6 +423,10 @@ func pickCookieAccountExcept(skip map[int64]bool) (*CookieAccount, bool) {
 		return nil, false
 	}
 	defer rows.Close()
+
+	// 先把这一轮的候选全部收下来再挑：开了 quota_aware_pick 要在这一批里按额度
+	// 重排，只取第一条就没得比了。池子上限 100，全收没有性能问题。
+	candidates := make([]CookieAccount, 0, 4)
 	for rows.Next() {
 		var a CookieAccount
 		if err := rows.Scan(&a.ID, &a.Label, &a.Cookie, &a.Status, &a.Note,
@@ -432,10 +436,22 @@ func pickCookieAccountExcept(skip map[int64]bool) (*CookieAccount, bool) {
 		if skip[a.ID] {
 			continue
 		}
-		_, _ = getDB().Exec(`UPDATE accounts SET last_used_at=? WHERE id=?`, time.Now().Unix(), a.ID)
-		return &a, true
+		candidates = append(candidates, a)
 	}
-	return nil, false
+	if len(candidates) == 0 {
+		return nil, false
+	}
+
+	if rtCfg().QuotaAwarePick {
+		// 只读缓存 + 冷/过期的异步补一次（**不等它**），然后在候选内部按额度稳定重排：
+		// 组内保持上面那条 SQL 的最久未用顺序。见 quota_pick.go。
+		prepareQuotaWarmth(candidates)
+		candidates = orderAccountsByQuota(candidates, true)
+	}
+
+	chosen := candidates[0]
+	_, _ = getDB().Exec(`UPDATE accounts SET last_used_at=? WHERE id=?`, time.Now().Unix(), chosen.ID)
+	return &chosen, true
 }
 
 // markCookieByStatus 按上游返回回写 cookie 健康度。

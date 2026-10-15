@@ -233,6 +233,27 @@ a specific URL's content — is not implemented yet).
 - **Cookie pool** — import multiple signed-in Google accounts; requests rotate through them **least-recently-used first**. One-click "check" tells you whether an account is still signed in, and **dead accounts are flagged in red** so you know which to re-import; `__Secure-1PSIDTS` is rotated automatically plus a 10-minute keepalive; each account is pinned to its own exit. The list shows redacted summaries only (cookie count / key entries / last 4 of SAPISID / failure count)
 - **Settings** — runtime config form (saved settings take effect immediately), API key rotation, read-only view of deploy-time config
 
+### Usage quota endpoint
+
+`GET /admin/api/quota` (admin token required) — reads the **5-hour rolling window / weekly** usage limits
+from the Gemini web app:
+
+```json
+{"ok":true,"account":"my-account","account_id":1,
+ "five_hour":{"used_percent":63,"remain_percent":37,"reset_at":1792050755,"reset_in_sec":13504},
+ "weekly":{"used_percent":13,"remain_percent":87,"reset_at":1792486355,"reset_in_sec":503104}}
+```
+
+- The data comes from the batchexecute rpc `jSf9Qc` that `gemini.google.com/usage` itself uses. The
+  parser makes no assumption about fixed indices — it walks the payload looking for the
+  `[limit, fraction, period, [[resetEpoch, nanos]]]` shape — following the MIT project
+  [Nagi-ovo/voyager](https://github.com/Nagi-ovo/voyager) (`usageParsing.ts`);
+- Quota is **per account**: with no usable cookie in the pool it returns `ok:false` and says why;
+- `?account_id=N` queries one specific account (**regardless of enabled/disabled status**, so a
+  cooled-down account can still be inspected); omit it for the automatic pick;
+- `?refresh=1` skips the 20-second cache. The lookup is side-channel: it does not write
+  `last_used_at` and does not advance account rotation.
+
 The frontend is a single HTML file and Chart.js is embedded in the binary, **not loaded from a CDN**, so the panel also works on air-gapped or intranet deployments.
 
 **Serving it under a path prefix needs no extra configuration**: every URL in the panel is relative, so forwarding `https://example.com/gemini/` to this service's `/` is enough to open `https://example.com/gemini/admin`. (Requesting `/admin` without the trailing slash 301s to `admin/` — relative URLs resolve against the document URL's *directory*, and the two forms differ by one level, so they have to be normalised first.)
@@ -528,6 +549,7 @@ internal/app/              everything else
   runtime.go               runtime config snapshot (panel edits apply instantly)
   admin.go                 /admin/api/* auth + REST
   admin_cookies.go         cookie pool admin REST (redacted before returning)
+  quota.go                 /admin/api/quota: web-app usage limits (batchexecute rpc jSf9Qc)
   admin_ui.go              embeds admin_ui/
   admin_ui/                admin panel frontend (single page + Chart.js, embedded, no CDN)
   gemini_test.go           protocol-layer tests: payload slots, wrb.fr parsing, model gating, rate limits

@@ -35,6 +35,11 @@ type Config struct {
 	FallbackDirect bool `json:"fallback_direct"`
 	// cookie 失效时是否降级成匿名继续跑。默认 false。
 	FallbackAnon bool `json:"fallback_anon"`
+	// 额度感知选号：挑号时优先选还有额度的号，而不是只按"最久未用"轮转。
+	// 现有选号完全不看额度，轮到已耗尽的号时请求照样发出去，上游于是静默降级（#41）。
+	// 只在有额度缓存时生效、且绝不阻塞请求；全池都不足时退回原来的轮转。默认 false，
+	// 见 quota_pick.go。需要 /admin/api/quota 能取到额度（否则永远是"未知"，退化成原行为）。
+	QuotaAwarePick bool `json:"quota_aware_pick"`
 	// 是否自动从 /app 页面抓最新 bl 版本号。默认 true。
 	GeminiBLAuto bool `json:"gemini_bl_auto"`
 	// 单次请求 prompt 的 UTF-8 字节上限，0 = 不限。

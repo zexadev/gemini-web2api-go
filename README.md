@@ -227,6 +227,23 @@ Claude Code / Cursor 这类 MCP 客户端能「用 Gemini 去搜网」，返回*
 - **Cookie 池** — 导入多个 Google 登录态账号，请求按**最久未用优先**自动轮转。每个账号一键「检测」是否仍是登录态，**失效的账号标红提示重导**；自动换发 `__Secure-1PSIDTS` + 每 10 分钟保活；每个账号粘住自己的出口。列表只显示脱敏摘要（cookie 数 / 关键项 / SAPISID 末 4 位 / 失败次数）
 - **设置** — 运行时配置表单（保存即生效）+ API Key 轮换 + 部署期配置只读展示
 
+### 用量额度接口
+
+`GET /admin/api/quota`（需 admin token）——读 Gemini 网页端 **5 小时滚动窗口 / 每周**两档用量额度：
+
+```json
+{"ok":true,"account":"my-account","account_id":1,
+ "five_hour":{"used_percent":63,"remain_percent":37,"reset_at":1792050755,"reset_in_sec":13504},
+ "weekly":{"used_percent":13,"remain_percent":87,"reset_at":1792486355,"reset_in_sec":503104}}
+```
+
+- 数据源是 `gemini.google.com/usage` 页用的 batchexecute rpc `jSf9Qc`，解析判据（不假设固定下标，
+  遍历载荷找 `[limit, fraction, period, [[resetEpoch, nanos]]]` 形状的那一组）参考 MIT 项目
+  [Nagi-ovo/voyager](https://github.com/Nagi-ovo/voyager) 的 `usageParsing.ts`；
+- 额度是**账号级**的：池里没有可用 cookie 时返回 `ok:false` 并说明原因；
+- `?account_id=N` 按账号查（**不限启用状态**，被停用/冷却中的号也能看），不传则沿用自动选号；
+- `?refresh=1` 跳过 20 秒缓存。查询走旁路：不写 `last_used_at`、不推进账号轮转。
+
 面板前端是单个 HTML，Chart.js 随二进制 embed，**不走 CDN**——内网/离线部署也能开。
 
 **反代到子路径不用额外配置**：面板里的地址全是相对的，把 `https://example.com/gemini/`
@@ -598,6 +615,7 @@ internal/app/              全部实现
   runtime.go               运行时配置快照（面板改完即时生效）
   admin.go                 /admin/api/* 鉴权 + REST
   admin_cookies.go         Cookie 池的 admin REST（返回前脱敏）
+  quota.go                 /admin/api/quota：网页端用量额度（batchexecute rpc jSf9Qc）
   admin_ui.go              embed admin_ui/
   admin_ui/                管理面板前端（单页 + Chart.js，随二进制打包，不走 CDN）
   gemini_test.go           协议层单测：payload 槽位、wrb.fr 解析、模型门控、限流
