@@ -145,6 +145,8 @@ func Run() {
 		mux.HandleFunc("/admin/api/cookies", requireAuth(handleAdminCookies))
 		mux.HandleFunc("/admin/api/cookies/", requireAuth(handleAdminCookieItem))
 		mux.HandleFunc("/admin/api/test", requireAuth(handleAdminTest))
+		// 网页端「用量额度」（batchexecute rpc jSf9Qc），见 quota.go
+		mux.HandleFunc("/admin/api/quota", requireAuth(handleAdminQuota))
 	}
 
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
