@@ -35,6 +35,11 @@ type Config struct {
 	FallbackDirect bool `json:"fallback_direct"`
 	// cookie 失效时是否降级成匿名继续跑。默认 false。
 	FallbackAnon bool `json:"fallback_anon"`
+	// 严格模型校验（#41）：额度耗尽时上游会把请求**静默降级**成更弱的模型却照回 200，
+	// 客户端拿到的是一个"成功"的降级回答（agent 会据此宣称任务完成）。开启后，只要
+	// 服务端自报的模型和请求的不是同一个，就直接回 429 insufficient_quota，而不是把
+	// 降级后的正文当成成功发出去。判定见 strict_model.go。默认 false。
+	StrictModel bool `json:"strict_model"`
 	// 是否自动从 /app 页面抓最新 bl 版本号。默认 true。
 	GeminiBLAuto bool `json:"gemini_bl_auto"`
 	// 单次请求 prompt 的 UTF-8 字节上限，0 = 不限。

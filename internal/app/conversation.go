@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -245,7 +246,7 @@ const webUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
 // 整条会话绑定 conv.cookie / conv.proxyID，中途不换号不换出口。成功后回填 conv 的
 // cid/rid/rcid/tok26 和 turn+1，供下一轮续接。
 func streamGenerateConv(prompt string, mc ModelConfig, conv *convState,
-	onDelta, onReasoning func(string)) (*StreamResult, error) {
+	onDelta, onReasoning func(string), onModel func(string) error) (*StreamResult, error) {
 	p, slotOK, slotErr := acquireSlot(conv.proxyID)
 	if !slotOK {
 		return &StreamResult{}, slotErr
@@ -365,13 +366,19 @@ func streamGenerateConv(prompt string, mc ModelConfig, conv *convState,
 	t0 := time.Now()
 	var lastErr error
 	for attempt := 0; attempt < rtCfg().RetryAttempts; attempt++ {
-		statusCode, raw, ttfb, setCookie, err := doGeminiRequest(endpoint, body, geminiHeaders, proxyURL, lineCB)
+		statusCode, raw, ttfb, setCookie, err := doGeminiRequest(endpoint, body, geminiHeaders, proxyURL, lineCB, onModel)
 		if len(setCookie) > 0 && conv.cookie != "" {
 			if merged := mergeSetCookie(conv.cookie, setCookie); merged != conv.cookie {
 				conv.cookie = merged
 			}
 		}
 		if err != nil || statusCode != 200 || !hasContentFrame(string(raw)) {
+			// strict_model 提前判定命中降级：不重试，直接收工（理由见 gemini.go 同名分支）。
+			var sme *StrictModelError
+			if errors.As(err, &sme) {
+				lastErr = err
+				break
+			}
 			if err == nil && statusCode == 200 {
 				lastErr = fmt.Errorf("续接无内容帧（会话可能已失效，raw %d 字节）", len(raw))
 			} else if err != nil {
@@ -429,7 +436,7 @@ func streamGenerateConv(prompt string, mc ModelConfig, conv *convState,
 // 支持 tools（续接里也解析 ```tool_call``` 围栏）；图片走原单轮路径（callGemini）。
 func callGeminiConv(messages []map[string]interface{}, mc ModelConfig,
 	tools []map[string]interface{}, toolChoice interface{},
-	onDelta, onReasoning func(string)) (string, []ToolCall, *StreamResult, error) {
+	onDelta, onReasoning func(string), onModel func(string) error) (string, []ToolCall, *StreamResult, error) {
 	parentKey := convParentKey(messages)
 	conv := convGet(parentKey)
 	fresh := conv == nil
@@ -462,7 +469,7 @@ func callGeminiConv(messages []map[string]interface{}, mc ModelConfig,
 		logf("[conv] 续接命中 turn=%d，只发 %d 字节（历史留服务端）", conv.turn, len(prompt))
 	}
 
-	res, err := streamGenerateConv(prompt, mc, conv, onDelta, onReasoning)
+	res, err := streamGenerateConv(prompt, mc, conv, onDelta, onReasoning, onModel)
 	if err != nil {
 		if !fresh {
 			// 续接失败：这路会话作废，客户端重试时会当新会话全量重发。

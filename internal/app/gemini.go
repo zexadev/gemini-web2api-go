@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -311,7 +312,9 @@ func (d *deltaTracker) Push(fullText string) string {
 // 自己做。一旦已经吐过内容就不再重试——重试会让客户端收到重复文本。
 func streamGenerate(prompt, latest string, mc ModelConfig,
 	onDelta, onReasoning func(string)) (*StreamResult, error) {
-	return streamGenerateWithFiles(prompt, latest, mc, nil, onDelta, onReasoning)
+	// onModel 传 nil：这条是 MCP 工具通道，不走 strict_model 的提前判定
+	// （那个开关服务的是 /v1 聊天通道；响应读完后仍由 strictModelViolation 兜底判断）。
+	return streamGenerateWithFiles(prompt, latest, mc, nil, onDelta, onReasoning, nil)
 }
 
 // fileRef 是一个已上传附件的引用。
@@ -327,7 +330,7 @@ type fileRef struct {
 // 附件填 inner[0][3]，形状 [[[ref, 1], "文件名"], …]。附件只在登录态可用：
 // 匿名能把文件传上去，但对话里一引用就被服务端回 1100。
 func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pendingUpload,
-	onDelta, onReasoning func(string)) (*StreamResult, error) {
+	onDelta, onReasoning func(string), onModel func(string) error) (*StreamResult, error) {
 	var files []fileRef
 
 	// 先挑号，再按它上次绑的出口挑代理 —— 同一个账号要尽量固定从同一个 IP 出去，
@@ -621,7 +624,7 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 	}
 
 	for attempt := 0; attempt < rtCfg().RetryAttempts; attempt++ {
-		statusCode, raw, ttfb, setCookie, err := doGeminiRequest(endpoint, body, geminiHeaders, proxyURL, lineCB)
+		statusCode, raw, ttfb, setCookie, err := doGeminiRequest(endpoint, body, geminiHeaders, proxyURL, lineCB, onModel)
 		if len(setCookie) > 0 && cookieID > 0 {
 			if merged := mergeSetCookie(cookieStr, setCookie); merged != cookieStr {
 				cookieStr = merged
@@ -629,6 +632,13 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 			}
 		}
 		if err != nil {
+			// strict_model 提前判定命中降级：这不是上游故障 —— 重试只会把同样的降级
+			// 再等一遍（每次 45-55 秒），不仅慢还白烧额度。直接收工。
+			var sme *StrictModelError
+			if errors.As(err, &sme) {
+				lastErr = err
+				break
+			}
 			lastErr = err
 			if pickedOK {
 				recordProxyResult(picked.ID, false, err.Error())
@@ -747,7 +757,14 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 	if lastErr != nil {
 		markCookieByStatus(cookieID, lastStatus, lastErr.Error())
 	}
-	return attrib(lastErr)
+	res, err := attrib(lastErr)
+	// strict_model 提前中断时没读到完整响应，但"上游实际用了哪个模型"已经跟着错误回来了：
+	// 记进归属，否则管理面板的「请求 vs 实际」和插件的降级红灯都会失去证据。
+	var sme *StrictModelError
+	if errors.As(lastErr, &sme) && res != nil {
+		res.UpstreamModel = sme.Actual
+	}
+	return res, err
 }
 
 // upstreamModelRe 匹配响应帧里服务端自报的模型显示名（帧的 [42] 位）。
@@ -818,7 +835,7 @@ func buildGeminiHeaders(cookieStr, sapisid, hexID string) map[string]string {
 // __Secure-3PSIDCC，浏览器收下再带回去。一直发旧值的客户端会被判定为过期会话，
 // 实测号活一两小时就失效 —— 所以这些必须收下来并写回账号。
 func doGeminiRequest(endpoint, body string, headers map[string]string, proxyURL string,
-	onLine func(string)) (int, []byte, int64, []string, error) {
+	onLine func(string), onModel func(string) error) (int, []byte, int64, []string, error) {
 	sendAt := time.Now()
 	if proxyURL != "" {
 		// 走 stdlib 的 http.ProxyURL，已知能过 socks5/socks5h。
@@ -836,7 +853,7 @@ func doGeminiRequest(endpoint, body string, headers map[string]string, proxyURL 
 			return 0, nil, 0, nil, err
 		}
 		defer resp.Body.Close()
-		raw, ttfb, err := readBody(resp.Body, onLine, sendAt)
+		raw, ttfb, err := readBody(resp.Body, onLine, onModel, sendAt)
 		if err != nil {
 			return resp.StatusCode, nil, ttfb, resp.Header.Values("Set-Cookie"), err
 		}
@@ -857,7 +874,7 @@ func doGeminiRequest(endpoint, body string, headers map[string]string, proxyURL 
 		return 0, nil, 0, nil, err
 	}
 	defer resp.Body.Close()
-	raw, ttfb, err := readBody(resp.Body, onLine, sendAt)
+	raw, ttfb, err := readBody(resp.Body, onLine, onModel, sendAt)
 	if err != nil {
 		return resp.StatusCode, nil, ttfb, resp.Header.Values("Set-Cookie"), err
 	}
@@ -867,24 +884,48 @@ func doGeminiRequest(endpoint, body string, headers map[string]string, proxyURL 
 // readBody 读完整个响应体并原样返回；onLine 非 nil 时每读到一行就回调一次，
 // 让上层能在上游还没写完时就往客户端转发。
 //
+// onModel 非 nil 时，**逐行**盯着上游自报的模型名（帧的 [42] 位）：一旦拿到就回调，
+// 回调返回错误就立刻停止读取并把错误交上去。strict_model 靠这个把"发现被降级"
+// 从"整段生成完"（实测 45-55 秒）提前到"首帧到达"（3-4 秒）。
+// 只在还没拿到过模型名之前做这件事 —— 拿不到就退回读完再判（见 strictModelViolation）。
+//
 // 始终走逐行扫描（而不是 onLine==nil 时图省事用 io.ReadAll），因为要拿到
 // **第一行到达的时刻**当 TTFB。用 ReadAll 的话读完才返回，测出来的"首字节
 // 耗时"实际是完整耗时，跟总耗时永远一样。
 //
 // start 必须是**请求发出前**的时刻，由调用方传入。放在本函数里取 time.Now()
 // 是不对的：那时 client.Do 已经返回、响应头甚至部分 body 都到了，测出来恒为 0。
-func readBody(r io.Reader, onLine func(string), start time.Time) ([]byte, int64, error) {
+func readBody(r io.Reader, onLine func(string), onModel func(string) error, start time.Time) ([]byte, int64, error) {
 	var buf bytes.Buffer
 	sc := bufio.NewScanner(io.TeeReader(r, &buf))
 	// 单帧可能很大（实测见过 40 万字节的响应），默认 64KB 上限不够。
 	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	var ttfb int64 = -1
+	// modelSeen：拿到过模型名之后就不再逐行跑正则（大帧上没必要重复扫）。
+	// carry：把上一行的尾巴带上，防止模型名恰好被行边界切开。
+	var modelSeen bool
+	var carry string
 	for sc.Scan() {
+		line := sc.Text()
 		if ttfb < 0 {
 			ttfb = time.Since(start).Milliseconds()
 		}
 		if onLine != nil {
-			onLine(sc.Text())
+			onLine(line)
+		}
+		if onModel != nil && !modelSeen {
+			if name := extractUpstreamModel(carry + line); name != "" {
+				modelSeen = true
+				if err := onModel(name); err != nil {
+					// 立刻中断：不再读剩下的响应体。连接会随返回而关闭。
+					return buf.Bytes(), ttfb, err
+				}
+			}
+			if len(line) > 256 {
+				carry = line[len(line)-256:]
+			} else {
+				carry = line
+			}
 		}
 	}
 	if ttfb < 0 {

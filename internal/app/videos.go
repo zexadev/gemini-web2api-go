@@ -105,7 +105,7 @@ func runVideoJob(j *videoJob) {
 		finishVideoJob(j, nil, "", err.Error())
 		return
 	}
-	_, _, res, err := callGemini(j.Prompt, j.Prompt, mc, nil, nil, nil, nil)
+	_, _, res, err := callGemini(j.Prompt, j.Prompt, mc, nil, nil, nil, nil, nil)
 	if err != nil {
 		recordRequest("videos", j.Model, j.Prompt, "", res, 502, err.Error(), false)
 		finishVideoJob(j, nil, "", err.Error())

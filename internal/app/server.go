@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -130,8 +131,8 @@ func rejectUnsupported(req map[string]interface{}, messages []map[string]interfa
 }
 
 func callGemini(prompt, latest string, mc ModelConfig, tools []map[string]interface{},
-	images []pendingUpload, onDelta, onReasoning func(string)) (string, []ToolCall, *StreamResult, error) {
-	res, err := streamGenerateWithFiles(prompt, latest, mc, images, onDelta, onReasoning)
+	images []pendingUpload, onDelta, onReasoning func(string), onModel func(string) error) (string, []ToolCall, *StreamResult, error) {
+	res, err := streamGenerateWithFiles(prompt, latest, mc, images, onDelta, onReasoning, onModel)
 	if err != nil {
 		// res 非 nil：失败时它只带归属（哪个号 / 哪个出口），给 recordRequest 用
 		return "", nil, res, err
@@ -299,16 +300,31 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// strict_model 的**提前**判定钩子：帧里一看到模型名不对就中断底层读取，
+	// 不必等上游把整段回答生成完（实测 45-55 秒 → 3-4 秒）。开关关掉时是 nil。
+	onModel := strictModelHook(modelName)
 	var text string
 	var toolCalls []ToolCall
 	var res *StreamResult
 	if rtCfg().MultiTurn && len(images) == 0 && modelCfg.Tool == 0 {
 		// 多轮：按历史前缀识别续接，命中就只发新消息、历史留服务端。带 tools 也走这条。
-		text, toolCalls, res, err = callGeminiConv(messages, modelCfg, tools, req["tool_choice"], onDelta, onReasoning)
+		text, toolCalls, res, err = callGeminiConv(messages, modelCfg, tools, req["tool_choice"], onDelta, onReasoning, onModel)
 	} else {
-		text, toolCalls, res, err = callGemini(prompt, latest, modelCfg, tools, images, onDelta, onReasoning)
+		text, toolCalls, res, err = callGemini(prompt, latest, modelCfg, tools, images, onDelta, onReasoning, onModel)
 	}
 	if err != nil {
+		// 命中静默降级：这是**我们要的失败**，回 429 而不是当成上游故障报 502。
+		var sme *StrictModelError
+		if errors.As(err, &sme) {
+			recordRequest("chat.completions", modelName, prompt, "", res, 429, sme.Error(), stream)
+			if sse != nil && sse.Started() {
+				sse.Fail(sme)
+				return
+			}
+			writeJSON(w, 429, map[string]interface{}{"error": map[string]string{
+				"message": sme.Error(), "type": "insufficient_quota", "code": "model_downgraded"}})
+			return
+		}
 		recordRequest("chat.completions", modelName, prompt, "", res, 502, err.Error(), stream)
 		if sse != nil && sse.Started() {
 			sse.Fail(err) // 已经开流，HTTP 状态码改不了了
@@ -349,6 +365,25 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if len(toolCalls) > 0 {
 		msg["tool_calls"] = toolCalls
 		finish = "tool_calls"
+	}
+
+	// strict_model（#41）：上游额度耗尽时会静默换成更弱的模型却照回 200。开了这个
+	// 开关就不装看不见——宁可报错，也不把降级后的正文当成"你要的模型答的"发出去。
+	if violation := strictModelViolation(modelName, res); violation != "" {
+		recordRequest("chat.completions", modelName, prompt, "", res, 429, violation, stream)
+		if sse != nil && sse.Started() {
+			// 已经开流：HTTP 状态码改不了了，只能用错误帧中断，让客户端看到失败
+			// 而不是一段降级后的正文。之所以只能"事后"发现——模型名是上游在帧 [42]
+			// 自报的，等能判断时正文可能已经转发出去了。
+			sse.Fail(fmt.Errorf("%s", violation))
+			return
+		}
+		writeJSON(w, 429, map[string]interface{}{"error": map[string]string{
+			"message": violation,
+			"type":    "insufficient_quota",
+			"code":    "model_downgraded",
+		}})
+		return
 	}
 
 	recordRequest("chat.completions", modelName, prompt, text, res, 200, "", stream)
@@ -655,15 +690,41 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 
 	// onReasoning 传 nil：Responses API 有自己的 reasoning 事件形状，跟 chat 的
 	// reasoning_content 不通用，这条路目前不暴露思考链。
+	// strict_model 的提前判定钩子，与 chat 路径同一条（见那边的注释）。
+	onModel := strictModelHook(modelName)
 	var text string
 	var toolCalls []ToolCall
 	var res *StreamResult
 	if rtCfg().MultiTurn && len(images) == 0 && modelCfg.Tool == 0 {
-		text, toolCalls, res, err = callGeminiConv(messages, modelCfg, tools, req["tool_choice"], onDelta, nil)
+		text, toolCalls, res, err = callGeminiConv(messages, modelCfg, tools, req["tool_choice"], onDelta, nil, onModel)
 	} else {
-		text, toolCalls, res, err = callGemini(prompt, latest, modelCfg, tools, images, onDelta, nil)
+		text, toolCalls, res, err = callGemini(prompt, latest, modelCfg, tools, images, onDelta, nil, onModel)
 	}
 	if err != nil {
+		var sme *StrictModelError
+		if errors.As(err, &sme) {
+			recordRequest("responses", modelName, prompt, "", res, 429, sme.Error(), stream)
+			if stream {
+				writeEvent("response.failed", map[string]interface{}{
+					"type": "response.failed",
+					"response": map[string]interface{}{
+						"id":     rid,
+						"object": "response",
+						"status": "failed",
+						"model":  modelName,
+						"error": map[string]string{
+							"message": sme.Error(),
+							"type":    "insufficient_quota",
+							"code":    "model_downgraded",
+						},
+					},
+				})
+				return
+			}
+			writeJSON(w, 429, map[string]interface{}{"error": map[string]string{
+				"message": sme.Error(), "type": "insufficient_quota", "code": "model_downgraded"}})
+			return
+		}
 		recordRequest("responses", modelName, prompt, "", res, 502, err.Error(), stream)
 		if stream {
 			writeEvent("response.failed", map[string]interface{}{
@@ -721,6 +782,35 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 				"annotations": []interface{}{},
 			}},
 		})
+	}
+
+	// strict_model（#41）：与 chat 路径同一条判定，理由见那边的注释。
+	if violation := strictModelViolation(modelName, res); violation != "" {
+		recordRequest("responses", modelName, prompt, "", res, 429, violation, stream)
+		if stream {
+			// 这条路用 response.failed 事件表达失败，形状与上面的 502 分支一致。
+			writeEvent("response.failed", map[string]interface{}{
+				"type": "response.failed",
+				"response": map[string]interface{}{
+					"id":     rid,
+					"object": "response",
+					"status": "failed",
+					"model":  modelName,
+					"error": map[string]string{
+						"message": violation,
+						"type":    "insufficient_quota",
+						"code":    "model_downgraded",
+					},
+				},
+			})
+			return
+		}
+		writeJSON(w, 429, map[string]interface{}{"error": map[string]string{
+			"message": violation,
+			"type":    "insufficient_quota",
+			"code":    "model_downgraded",
+		}})
+		return
 	}
 
 	recordRequest("responses", modelName, prompt, text, res, 200, "", stream)
