@@ -90,8 +90,8 @@ This is not a wrapper around Google's official API ([generativelanguage.googleap
 **Operations**
 - Single binary, cross-compiled for 6 platforms; container image built on distroless
 - SQLite persistence: 30 days of per-request detail plus permanent aggregates (optional MySQL / PostgreSQL via `SQL_DSN`)
-- Admin panel: overview / requests / proxy pool / cookie pool / settings, with
-  config changes applied without a restart
+- Admin panel: overview / requests / proxy pool / cookie pool / settings / about, with
+  config changes applied without a restart and a top-bar notice when a new release is out
 - **Prompt and response bodies are never stored** — metadata only (length, latency,
   model, status)
 
@@ -313,6 +313,7 @@ URL's content) is not implemented yet.
 - **Proxy pool** — runtime CRUD, enable/disable, circuit breaker on repeated failures (each proxy is its own IP slot)
 - **Cookie pool** — import multiple signed-in Google accounts; requests rotate through them **least-recently-used first**. One-click "check" tells you whether an account is still signed in, and **dead accounts are flagged in red** so you know which to re-import; `__Secure-1PSIDTS` is rotated automatically plus a 10-minute keepalive; each account is pinned to its own exit. The list shows redacted summaries only (cookie count / key entries / last 4 of SAPISID / failure count)
 - **Settings** — runtime config form (saved settings take effect immediately), API key rotation, read-only view of deploy-time config
+- **About** — current and latest version plus a manual update check; when a newer release exists it shows the release notes, the Docker upgrade command and per-platform binary download links (the binary is never replaced automatically; upgrading is still up to you)
 
 The frontend is a single HTML file and Chart.js is embedded in the binary, **not loaded from a CDN**, so the panel also works on air-gapped or intranet deployments.
 
@@ -563,6 +564,7 @@ This does not change the blocking threshold, though: in a same-start comparison,
 - Legacy `prompt_preview` / `response_preview` columns are dropped automatically when migrating from older versions
 - Token counts are computed with the [tiktoken-go](https://github.com/pkoukk/tiktoken-go) cl100k_base BPE tokenizer (accurate for both English and Chinese), not a `len/4` estimate
 - Gemini's web app does not return real token counts (no token/usage field appears anywhere in the response), so local estimation is the only option
+- **The update check runs in your browser, not on the server**: opening the panel makes the browser request the latest release from `api.github.com` (cached for 6 hours), so a deployment with a proxy pool never reaches out from the host IP just to check versions. Automatic checking can be turned off on the About page
 
 ## OpenAI protocol coverage
 
