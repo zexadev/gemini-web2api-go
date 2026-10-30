@@ -311,7 +311,7 @@ URL's content) is not implemented yet.
 - **Overview** — 24h KPIs, request volume / P50 latency dual-axis chart, per-model and per-proxy breakdowns, IP rate-limit usage, one-click connectivity check
 - **Requests** — request log (metadata only, no prompt/response content), status/model filters, pagination
 - **Proxy pool** — runtime CRUD, enable/disable, circuit breaker on repeated failures (each proxy is its own IP slot)
-- **Cookie pool** — import multiple signed-in Google accounts; requests rotate through them **least-recently-used first**. One-click "check" tells you whether an account is still signed in, and **dead accounts are flagged in red** so you know which to re-import; `__Secure-1PSIDTS` is rotated automatically plus a 10-minute keepalive; each account is pinned to its own exit. The list shows redacted summaries only (cookie count / key entries / last 4 of SAPISID / failure count)
+- **Cookie pool** — import multiple signed-in Google accounts; requests rotate through them **least-recently-used first**. One-click "check" tells you whether an account is still signed in, and **dead accounts are flagged in red** so you know which to re-import; `__Secure-1PSIDTS` is rotated automatically plus a 10-minute keepalive; each account is pinned to its own exit; when several Google accounts are signed in to one browser, the "account index" picks which one to use. The list shows redacted summaries only (cookie count / key entries / last 4 of SAPISID / failure count)
 - **Settings** — runtime config form (saved settings take effect immediately), API key rotation, read-only view of deploy-time config
 - **About** — current and latest version plus a manual update check; when a newer release exists it shows the release notes, the Docker upgrade command and per-platform binary download links (the binary is never replaced automatically; upgrading is still up to you)
 
@@ -502,6 +502,13 @@ Note that "last success" only means a request involving this cookie succeeded; i
 
 **Each account is pinned to its own exit.** If the cookie pool and proxy pool rotated independently, one Google account would emit requests from dozens of different IPs, which is exactly what account sharing looks like to Google. An account binds to the first exit it uses and stays there until that exit becomes unusable.
 
+**Several Google accounts signed in to one browser? Set the "account index".** Accounts signed in to the same browser share one cookie jar, so the exported cookie string can act as any of them; which one a request uses is decided by the URL (`/u/1/` is the second account). If you leave it unset, every request lands on the **default account** (the one signed in first). If your subscription is on another account, paid models are silently downgraded to 3.5 Flash-Lite while "check" still says the session is valid.
+
+- In the browser, switch to the account you want and open Gemini. If the address bar shows `gemini.google.com/u/1/app`, enter `1`; no `/u/` means `0` (the default). Set it as "Account index" when importing or editing the cookie
+- To use one cookie string as several accounts, import it once per account, each with its own index
+- The index is the browser's sign-in order and can change if you sign out and back in; just update it if it does
+- Or skip this entirely: sign out of every account in the browser, sign in to the subscribed one first so it becomes the default, then export
+
 **A dead account no longer kills the request** — the next account in the pool is tried instead. Otherwise a bigger pool would only mean more ways to hit a bad one.
 
 ## Proxy pool (the core of running this for free)
@@ -646,6 +653,7 @@ docker-compose.yml         single container, pulls the ghcr image by default, sq
 | `gemini-3.1-pro` errors out immediately | It isn't exposed without a cookie, by design | Add an account on the Cookie pool page and it becomes available |
 | Every request returns 502 after attaching a cookie | The cookie expired, so the XSRF token can't be fetched | Re-export the cookie. Quick check: if `gemini-3.1-pro` reports 3.5 Flash-Lite, it's expired |
 | Cookie dies in about 30 minutes; keepalive does nothing | Chrome device-bound session; rotating `__Secure-1PSIDTS` returns 401 | Re-login in **Firefox** and export again. The panel Keep-alive button should report that `__Secure-1PSIDTS` was refreshed |
+| Cookie from a paid account, but paid models report 3.5 Flash-Lite and "check" says the session is valid | Several Google accounts are signed in to the browser and the subscription isn't on the default one, so requests land on the default account | Set the "account index" for that entry in the Cookie pool (`/u/1/` in that account's Gemini address bar means 1); see above |
 | Panel won't open / 401 | `--admin-token` (or `ADMIN_TOKEN`) doesn't match | An empty token disables auth, which is only acceptable when bound to 127.0.0.1 |
 
 With Docker's default bridge network, upstream may return empty content (Google rejects certain NAT ranges). We have **never reproduced it here**. If you hit it, try `network_mode: host` to confirm whether that is the cause.
@@ -719,7 +727,8 @@ If it does, the account is eligible (Google AI Pro / Ultra tier; a Pro plan that
 counts), so add its cookie in the admin dashboard and request `gemini-4-argon`.
 Requests from a free account, or from one without Argon, are **silently downgraded to 3.5 Flash-Lite** upstream with no
 error, which is why the model is not exposed when no cookie is configured and never runs anonymously. If you have a cookie
-and still get downgraded, check the web app first for "4 Argon" on that account.
+and still get downgraded, check the web app first for "4 Argon" on that account; if the browser has several accounts signed in,
+also check that the entry's "account index" in the Cookie pool is right.
 
 ### Which model does image generation use? Can it output 2K?
 
