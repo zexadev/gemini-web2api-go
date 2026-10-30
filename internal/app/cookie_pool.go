@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -542,7 +543,10 @@ func checkAccountCookie(a CookieAccount) CookieCheck {
 	_, err = getXSRF(a.Cookie, proxyURL)
 	took := time.Since(t0).Milliseconds()
 	if err != nil {
-		markAccountResult(a.ID, false, err.Error())
+		// 断网、被拦这类不是 cookie 的错，不动健康度（也不算成功）
+		if xsrfErrBlamesCookie(err) {
+			markAccountResult(a.ID, false, err.Error())
+		}
 		return CookieCheck{Detail: explainCookieFailure(err), ProxyName: name, TookMs: took}
 	}
 	markAccountResult(a.ID, true, "")
@@ -667,4 +671,30 @@ func updateAccountCookie(id int64, cookie string) {
 		}
 	}
 	_, _ = getDB().Exec(`UPDATE accounts SET cookie=? WHERE id=?`, cookie, id)
+}
+
+// xsrfErrBlamesCookie 判断取 XSRF（抓 /app）失败是不是 cookie 的错。
+//
+// 只有这几种算：页面打开了但没有 SNlM0e（被当匿名）、401/403、3xx 跳到
+// accounts.google.com（登录页）。网络层错误（EOF、超时、代理连不上）、跳
+// /sorry、429、5xx 都是出口或上游的问题，算进 fail_count 会让好号在断网或
+// 代理抖动时连续 3 次被自动停用。
+func xsrfErrBlamesCookie(err error) bool {
+	if err == nil {
+		return false
+	}
+	if strings.Contains(err.Error(), "no SNlM0e") {
+		return true
+	}
+	var se *appPageStatusError
+	if !errors.As(err, &se) {
+		return false
+	}
+	switch {
+	case se.Status == 401 || se.Status == 403:
+		return true
+	case se.Status >= 300 && se.Status < 400:
+		return strings.HasPrefix(se.Location, "accounts.google.com")
+	}
+	return false
 }

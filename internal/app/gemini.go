@@ -528,8 +528,11 @@ func streamGenerateOnce(prompt, latest string, mc ModelConfig, pending []pending
 				}
 			}
 		}
-		// 救不回来：记一次失败让面板上看得出是哪个号该换了，然后换下一个。
-		markCookieByStatus(acct.ID, 401, err.Error())
+		// 救不回来：是 cookie 的错就记一次失败，让面板上看得出是哪个号该换了；
+		// 断网、出口被拦不记（见 xsrfErrBlamesCookie）。然后换下一个。
+		if xsrfErrBlamesCookie(err) {
+			markCookieByStatus(acct.ID, 401, err.Error())
+		}
 		lastCookieErr = err
 		logf("[cookie] 账号 #%d 不可用，换下一个：%v", acct.ID, err)
 		if mc.PinAccountID > 0 {
