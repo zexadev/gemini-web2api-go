@@ -19,8 +19,8 @@ const uploadHost = "https://push.clients6.google.com/upload/"
 //
 // 匿名也能传成功，但传上去的文件在对话里引用会被回 1100，所以调用方要自己确保有 cookie。
 // proxyURL 必须跟正式请求同一出口，否则在 Google 眼里是两个会话共用文件。
-func uploadBytes(cookie, proxyURL string, data []byte, filename string) (string, error) {
-	pushID, pctx, err := getUploadTokens(cookie, proxyURL)
+func uploadBytes(cookie string, authuser int, proxyURL string, data []byte, filename string) (string, error) {
+	pushID, pctx, err := getUploadTokens(cookie, authuser, proxyURL)
 	if err != nil {
 		return "", fmt.Errorf("取上传页面参数失败: %w", err)
 	}
@@ -63,7 +63,7 @@ func uploadBytes(cookie, proxyURL string, data []byte, filename string) (string,
 		"X-Goog-Upload-Protocol":              "resumable",
 		"X-Goog-Upload-Header-Content-Length": strconv.Itoa(len(data)),
 	})
-	status, respHead, body, err := uploadPost(uploadHost, startHeaders,
+	status, respHead, body, err := uploadPost(uploadStartURL(authuser), startHeaders,
 		[]byte("File name: "+sanitizeUploadName(filename)), proxyURL)
 	if err != nil {
 		return "", fmt.Errorf("上传 start 失败: %w", err)
@@ -149,4 +149,15 @@ func uploadPost(url string, headers map[string]string, body []byte, proxyURL str
 		h[strings.ToLower(k)] = resp.Header.Get(k)
 	}
 	return resp.StatusCode, h, b, err
+}
+
+// uploadStartURL 是上传 start 那一步的地址。多号登录时要带 ?authuser=N，文件才记在
+// 第 N 个号名下；不带就记在默认号名下，第 N 个号在对话里引用它被回 1100。
+// 上传 host 不在 gemini.google.com 上，/u/N 路径用不了；实测 X-Goog-AuthUser 头、
+// 改 Referer 都不管用，只认这个 query。finalize 用的是 start 返回的地址，不用再带。
+func uploadStartURL(authuser int) string {
+	if authuser > 0 {
+		return uploadHost + "?authuser=" + strconv.Itoa(authuser)
+	}
+	return uploadHost
 }

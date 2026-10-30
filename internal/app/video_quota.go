@@ -93,7 +93,7 @@ func videoQuotaFor(a CookieAccount, now time.Time, lookback time.Duration) accou
 	sapisid := extractSAPISID(a.Cookie)
 	var xsrf string
 	err := viaSlot(a, func(proxyURL string) (err error) {
-		xsrf, err = getXSRF(a.Cookie, proxyURL)
+		xsrf, err = getXSRF(a.Cookie, a.AuthUser, proxyURL)
 		return err
 	})
 	if err != nil {
@@ -107,7 +107,7 @@ func videoQuotaFor(a CookieAccount, now time.Time, lookback time.Duration) accou
 	}
 	var convs []convSummary
 	err = viaSlot(a, func(proxyURL string) (err error) {
-		convs, err = listConversations(a.Cookie, sapisid, xsrf, proxyURL, 40)
+		convs, err = listConversations(a.Cookie, sapisid, xsrf, proxyURL, 40, a.AuthUser)
 		return err
 	})
 	if err != nil {
@@ -123,7 +123,7 @@ func videoQuotaFor(a CookieAccount, now time.Time, lookback time.Duration) accou
 		if !ok {
 			var body string
 			err := viaSlot(a, func(proxyURL string) (err error) {
-				body, err = pollHistoryRaw(c.CID, a.Cookie, sapisid, xsrf, proxyURL)
+				body, err = pollHistoryRaw(c.CID, a.Cookie, sapisid, xsrf, proxyURL, a.AuthUser)
 				return err
 			})
 			if err != nil {
@@ -228,12 +228,13 @@ type convSummary struct {
 }
 
 // listConversations calls MaZiqc (the sidebar list): [[cid, title, null×3, [sec,ns], …], …].
-func listConversations(cookie, sapisid, xsrf, proxyURL string, n int) ([]convSummary, error) {
+func listConversations(cookie, sapisid, xsrf, proxyURL string, n, authuser int) ([]convSummary, error) {
 	freq, _ := json.Marshal([]any{[]any{[]any{"MaZiqc", fmt.Sprintf(`[%d,null,[0,null,1]]`, n), nil, "generic"}}})
 	form := url.Values{"f.req": {string(freq)}, "at": {xsrf}}
-	ep := fmt.Sprintf("https://gemini.google.com/_/BardChatUi/data/batchexecute?rpcids=MaZiqc&bl=%s&hl=en&_reqid=%d&rt=c",
+	ep := fmt.Sprintf("%s/_/BardChatUi/data/batchexecute?rpcids=MaZiqc&bl=%s&hl=en&_reqid=%d&rt=c", geminiBase(authuser),
 		currentBL(proxyURL), time.Now().UnixNano()%1000000)
 	h := buildGeminiHeaders(cookie, sapisid, "")
+	setAuthUserHeaders(h, authuser)
 	delete(h, "x-goog-ext-525001261-jspb")
 	st, _, body, err := uploadPost(ep, h, []byte(form.Encode()), proxyURL)
 	if err != nil {

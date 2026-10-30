@@ -76,7 +76,7 @@ func contextFilePrompt(latest string, budget int) string {
 //
 // 上传失败**不静默回退到超长内联**：那样上游会把最新提问截掉，客户端拿到一个
 // 答非所问的 200 却看不出问题。
-func prepareContextFile(prompt, latest string, budget int, cookie, proxyURL string) (
+func prepareContextFile(prompt, latest string, budget int, cookie string, authuser int, proxyURL string) (
 	string, []fileRef, bool, error) {
 	if budget <= 0 || len(prompt) <= budget {
 		return prompt, nil, false, nil
@@ -84,7 +84,7 @@ func prepareContextFile(prompt, latest string, budget int, cookie, proxyURL stri
 	if cookie == "" {
 		return prompt, nil, false, nil // 匿名：引用会被回 1100，转了也没用
 	}
-	ref, err := uploadBytes(cookie, proxyURL, []byte(prompt), contextFileName)
+	ref, err := uploadBytes(cookie, authuser, proxyURL, []byte(prompt), contextFileName)
 	if err != nil {
 		return prompt, nil, false, fmt.Errorf("超长对话转附件失败: %w", err)
 	}

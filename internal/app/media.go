@@ -133,9 +133,9 @@ func filterDownloadCookies(cookie string) string {
 // (video extension) the history also holds earlier turns' videos, which must not be
 // mistaken for this one. Returns the turn's response-candidate id (rcid) as well,
 // which is needed to continue the conversation again.
-func fetchMediaArtifacts(tool int, raw, cid, rid, cookie, sapisid, xsrf, proxyURL, defaultMime string) ([]MediaArtifact, string, error) {
+func fetchMediaArtifacts(tool int, raw, cid, rid, cookie, sapisid, xsrf, proxyURL, defaultMime string, authuser int) ([]MediaArtifact, string, error) {
 	if tool == toolImage {
-		arts, err := fetchImageArtifacts(raw, cid, cookie, sapisid, xsrf, proxyURL, defaultMime)
+		arts, err := fetchImageArtifacts(raw, cid, cookie, sapisid, xsrf, proxyURL, defaultMime, authuser)
 		return arts, "", err
 	}
 	// 音乐几乎立刻就绪，视频要生成几十秒到几分钟，所以视频轮询给足预算。
@@ -143,7 +143,7 @@ func fetchMediaArtifacts(tool int, raw, cid, rid, cookie, sapisid, xsrf, proxyUR
 	if tool == toolVideo {
 		maxPolls, interval = 45, 8*time.Second // 约 6 分钟
 	}
-	arts, rcid, err := fetchDownloadArtifacts(cid, rid, cookie, sapisid, xsrf, proxyURL, defaultMime, tool, maxPolls, interval)
+	arts, rcid, err := fetchDownloadArtifacts(cid, rid, cookie, sapisid, xsrf, proxyURL, defaultMime, tool, maxPolls, interval, authuser)
 	if err != nil {
 		return arts, rcid, err
 	}
@@ -277,11 +277,11 @@ func mp4InProtobuf(b []byte, depth int) []byte {
 
 // fetchImageArtifacts 取回生成的图片。链在 StreamGenerate 响应里就有，抠不到再退回轮询
 // hNvQHb。下载走 mediaGetFollow（跟随 302 并每跳重发 cookie）。
-func fetchImageArtifacts(raw, cid, cookie, sapisid, xsrf, proxyURL, defaultMime string) ([]MediaArtifact, error) {
+func fetchImageArtifacts(raw, cid, cookie, sapisid, xsrf, proxyURL, defaultMime string, authuser int) ([]MediaArtifact, error) {
 	urls := collectImageURLs(raw)
 	if len(urls) == 0 {
 		for i := 0; i < 6; i++ {
-			if body, err := pollHistoryRaw(cid, cookie, sapisid, xsrf, proxyURL); err == nil {
+			if body, err := pollHistoryRaw(cid, cookie, sapisid, xsrf, proxyURL, authuser); err == nil {
 				if u := collectImageURLs(body); len(u) > 0 {
 					urls = u
 					break
@@ -330,14 +330,14 @@ func imageFullResURL(u string) string {
 // fetchDownloadArtifacts 取回音乐/视频：轮询 hNvQHb 等到 response_data 下载链，再下。
 // gg-dl（lh3）和 temp_data 那两种链是预览用的，只有 response_data 那条能下到真字节。
 func fetchDownloadArtifacts(cid, rid, cookie, sapisid, xsrf, proxyURL, defaultMime string, tool int,
-	maxPolls int, interval time.Duration) ([]MediaArtifact, string, error) {
+	maxPolls int, interval time.Duration, authuser int) ([]MediaArtifact, string, error) {
 	if cid == "" {
 		return nil, "", fmt.Errorf("没拿到会话 id，无法定位产物")
 	}
 	var dlURLs []string
 	rcid := ""
 	for i := 0; i < maxPolls; i++ {
-		if body, err := pollHistoryRaw(cid, cookie, sapisid, xsrf, proxyURL); err == nil {
+		if body, err := pollHistoryRaw(cid, cookie, sapisid, xsrf, proxyURL, authuser); err == nil {
 			if rid != "" && tool == toolVideo {
 				// Only this request's turn; skip polls where it hasn't shown up yet.
 				// Video only: the turn layout was verified on video histories, music wasn't.
@@ -495,7 +495,7 @@ func turnReplyText(body string) (string, bool) {
 }
 
 // pollHistoryRaw 调一次 hNvQHb 取会话历史，返回原始响应体。
-func pollHistoryRaw(cid, cookie, sapisid, xsrf, proxyURL string) (string, error) {
+func pollHistoryRaw(cid, cookie, sapisid, xsrf, proxyURL string, authuser int) (string, error) {
 	inner, _ := json.Marshal([]interface{}{cid, 10, nil, 1, []interface{}{0}, []interface{}{4}, nil, 1})
 	freq, _ := json.Marshal([]interface{}{[]interface{}{[]interface{}{"hNvQHb", string(inner), nil, "generic"}}})
 	form := url.Values{}
@@ -505,11 +505,12 @@ func pollHistoryRaw(cid, cookie, sapisid, xsrf, proxyURL string) (string, error)
 	}
 	reqid := time.Now().UnixNano() % 1000000
 	endpoint := fmt.Sprintf(
-		"https://gemini.google.com/_/BardChatUi/data/batchexecute?rpcids=hNvQHb&bl=%s&hl=en&_reqid=%d&rt=c",
+		"%s/_/BardChatUi/data/batchexecute?rpcids=hNvQHb&bl=%s&hl=en&_reqid=%d&rt=c", geminiBase(authuser),
 		currentBL(proxyURL), reqid)
 
 	// batchexecute 不带模型 header，其余（cookie / SAPISIDHASH / x-same-domain）跟主请求同款。
 	headers := buildGeminiHeaders(cookie, sapisid, "")
+	setAuthUserHeaders(headers, authuser)
 	delete(headers, "x-goog-ext-525001261-jspb")
 
 	status, _, body, err := uploadPost(endpoint, headers, []byte(form.Encode()), proxyURL)
@@ -525,10 +526,12 @@ func pollHistoryRaw(cid, cookie, sapisid, xsrf, proxyURL string) (string, error)
 // deleteConversation 删掉 gemini.google.com 上留下的一条会话（#19）。
 //
 // 协议逐字取自抓包：rpc GzXR5e，参数 ["<cid>"]，mode "generic"，带 at=XSRF。
-//   f.req=[[["GzXR5e","[\"c_xxx\"]",null,"generic"]]]&at=<xsrf>
+//
+//	f.req=[[["GzXR5e","[\"c_xxx\"]",null,"generic"]]]&at=<xsrf>
+//
 // 只登录态可用（匿名没有 XSRF、会话也没落到账号里）。best-effort：删失败只记日志，
 // 不影响已经返给客户端的响应。
-func deleteConversation(cid, cookie, sapisid, xsrf, proxyURL string) {
+func deleteConversation(cid, cookie, sapisid, xsrf, proxyURL string, authuser int) {
 	inner, _ := json.Marshal([]interface{}{cid})
 	freq, _ := json.Marshal([]interface{}{[]interface{}{[]interface{}{"GzXR5e", string(inner), nil, "generic"}}})
 	form := url.Values{}
@@ -536,9 +539,10 @@ func deleteConversation(cid, cookie, sapisid, xsrf, proxyURL string) {
 	form.Set("at", xsrf)
 	reqid := time.Now().UnixNano() % 1000000
 	endpoint := fmt.Sprintf(
-		"https://gemini.google.com/_/BardChatUi/data/batchexecute?rpcids=GzXR5e&bl=%s&hl=en&_reqid=%d&rt=c",
+		"%s/_/BardChatUi/data/batchexecute?rpcids=GzXR5e&bl=%s&hl=en&_reqid=%d&rt=c", geminiBase(authuser),
 		currentBL(proxyURL), reqid)
 	headers := buildGeminiHeaders(cookie, sapisid, "")
+	setAuthUserHeaders(headers, authuser)
 	delete(headers, "x-goog-ext-525001261-jspb")
 	status, _, body, err := uploadPost(endpoint, headers, []byte(form.Encode()), proxyURL)
 	if err != nil {

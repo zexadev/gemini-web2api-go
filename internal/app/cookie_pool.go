@@ -555,7 +555,7 @@ func checkAccountCookie(a CookieAccount) CookieCheck {
 
 	// 先作废缓存，否则可能拿到几分钟前的旧结论，检测就没意义了
 	invalidateXSRF(a.Cookie)
-	_, err = getXSRF(a.Cookie, proxyURL)
+	_, err = getXSRF(a.Cookie, a.AuthUser, proxyURL)
 	took := time.Since(t0).Milliseconds()
 	if err != nil {
 		// 断网、被拦这类不是 cookie 的错，不动健康度（也不算成功）

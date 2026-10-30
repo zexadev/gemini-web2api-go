@@ -14,7 +14,7 @@ func TestUploadProbe(t *testing.T) {
 		t.Skip("未设 GW2A_UPLOAD_PROBE")
 	}
 	text := "PANTE-UPLOAD-PROBE\n" + strings.Repeat("这是一段用于验证上传链路的文本。\n", 50)
-	ref, err := uploadBytes("", proxy, []byte(text), "context.txt")
+	ref, err := uploadBytes("", 0, proxy, []byte(text), "context.txt")
 	if err != nil {
 		t.Fatalf("上传失败: %v", err)
 	}

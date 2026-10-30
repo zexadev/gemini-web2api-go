@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -472,20 +473,13 @@ func streamGenerateOnce(prompt, latest string, mc ModelConfig, pending []pending
 	proxyURL := picked.URL
 	pickedOK := picked.ID > 0 // 是否真用了代理池里的代理
 
-	// endpoint 要等出口定下来才能拼：currentBL 可能顺手踢一次后台抓取，
-	// 那个抓取必须跟正式请求走同一个出口，否则配了代理池也会从本机 IP 漏一次。
-	reqid := time.Now().Unix() % 1000000
-	endpoint := fmt.Sprintf(
-		"https://gemini.google.com/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate?bl=%s&hl=en&_reqid=%d&rt=c",
-		currentBL(proxyURL), reqid,
-	)
-
 	// 取 XSRF token。一个 cookie 失效不该让整个请求失败：当前号取不到就换下一个，
 	// 最多试 maxCookieTries 个。不这么做的话，池子里 2 个号坏 1 个就会让大约一半
 	// 请求挂掉，而每次失败看起来都像上游的问题，用户只会觉得"成功率莫名很低"。
 	//
 	// 换号**不换出口**：出口已经按第一个号的绑定选定了，同一个请求里再换出口没道理。
 	cookieStr, sapisid, xsrfToken := "", "", ""
+	authUser := 0 // 最终用上的那个号的账号序号（/u/N），匿名为 0
 	var lastCookieErr error
 	tried := map[int64]bool{}
 	// 每个号只给一次「轮转后重试」的机会，避免在一个请求里反复打 accounts.google.com
@@ -494,9 +488,10 @@ func streamGenerateOnce(prompt, latest string, mc ModelConfig, pending []pending
 		tried[acct.ID] = true
 		// 归属先记上：这一轮失败了也留痕，面板上看得出是哪个号在坏
 		cookieID, cookieLabel = acct.ID, accountDisplayName(acct)
-		tok, err := getXSRF(acct.Cookie, proxyURL)
+		tok, err := getXSRF(acct.Cookie, acct.AuthUser, proxyURL)
 		if err == nil {
 			cookieStr, sapisid, xsrfToken = acct.Cookie, extractSAPISID(acct.Cookie), tok
+			authUser = acct.AuthUser
 			// 只在「还没绑过」或「绑的出口已经没了」时写绑定。
 			//
 			// 绝不因为"这次走的是别的出口"就覆盖：出口是按**本次第一个挑中的号**
@@ -518,10 +513,11 @@ func streamGenerateOnce(prompt, latest string, mc ModelConfig, pending []pending
 			rotatedOnce[acct.ID] = true
 			if _, _, rerr := rotateAccount(*acct); rerr == nil {
 				if fresh := accountByID(acct.ID); fresh != nil {
-					if tok2, err2 := getXSRF(fresh.Cookie, proxyURL); err2 == nil {
+					if tok2, err2 := getXSRF(fresh.Cookie, fresh.AuthUser, proxyURL); err2 == nil {
 						logf("[cookie] 账号 #%d 轮转后恢复可用", acct.ID)
 						acct = fresh
 						cookieStr, sapisid, xsrfToken = fresh.Cookie, extractSAPISID(fresh.Cookie), tok2
+						authUser = fresh.AuthUser
 						if fresh.ProxyID == 0 || !proxyUsableByID(fresh.ProxyID) {
 							bindAccountProxy(fresh.ID, picked.ID)
 						}
@@ -565,6 +561,17 @@ func streamGenerateOnce(prompt, latest string, mc ModelConfig, pending []pending
 		logf("[cookie] 试过的 %d 个账号都不可用，本次降级匿名（能力会退化到匿名档）", len(tried))
 		cookieID, cookieLabel = 0, ""
 	}
+
+	// endpoint 要等号和出口都定下来才能拼：
+	//   - 路径带 /u/N 才落到第 N 个号，而上面的循环可能换了号（序号跟着变）
+	//   - currentBL 可能顺手踢一次后台抓取，那个抓取必须跟正式请求走同一个出口，
+	//     否则配了代理池也会从本机 IP 漏一次
+	reqid := time.Now().Unix() % 1000000
+	endpoint := fmt.Sprintf(
+		"%s/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate?bl=%s&hl=en&_reqid=%d&rt=c",
+		geminiBase(authUser), currentBL(proxyURL), reqid,
+	)
+
 	// 图片附件：上传要 cookie，而且必须走跟正式请求同一个出口，所以排在这里。
 	if len(pending) > 0 {
 		if cookieStr == "" {
@@ -574,7 +581,7 @@ func streamGenerateOnce(prompt, latest string, mc ModelConfig, pending []pending
 		}
 		nImg, nVid := 0, 0
 		for _, u := range pending {
-			ref, uerr := uploadBytes(cookieStr, proxyURL, u.Data, u.Name)
+			ref, uerr := uploadBytes(cookieStr, authUser, proxyURL, u.Data, u.Name)
 			if uerr != nil {
 				return attrib(fmt.Errorf("上传附件 %s 失败: %w", u.Name, uerr))
 			}
@@ -591,7 +598,7 @@ func streamGenerateOnce(prompt, latest string, mc ModelConfig, pending []pending
 	// prompt 超长时转成文本附件。要等挑完号和出口才能做：上传要 cookie，
 	// 而且必须走跟正式请求同一个出口。
 	budget := rtCfg().MaxPromptBytes
-	if p, f, used, ferr := prepareContextFile(prompt, latest, budget, cookieStr, proxyURL); ferr != nil {
+	if p, f, used, ferr := prepareContextFile(prompt, latest, budget, cookieStr, authUser, proxyURL); ferr != nil {
 		return attrib(ferr)
 	} else if used {
 		prompt = p
@@ -709,6 +716,7 @@ func streamGenerateOnce(prompt, latest string, mc ModelConfig, pending []pending
 	sessionHeader := fmt.Sprintf(`["%s",1]`, reqUUID)
 
 	geminiHeaders := buildGeminiHeaders(cookieStr, sapisid, mc.HexID)
+	setAuthUserHeaders(geminiHeaders, authUser)
 	geminiHeaders["x-goog-ext-525001261-jspb"] = modelHeader
 	geminiHeaders["x-goog-ext-525005358-jspb"] = sessionHeader
 	var lastErr error
@@ -788,9 +796,10 @@ func streamGenerateOnce(prompt, latest string, mc ModelConfig, pending []pending
 			if statusCode == 400 && isXSRFError(string(raw)) && cookieStr != "" && !xsrfRetried {
 				xsrfRetried = true
 				invalidateXSRF(cookieStr)
-				if tok, e := getXSRF(cookieStr, proxyURL); e == nil {
+				if tok, e := getXSRF(cookieStr, authUser, proxyURL); e == nil {
 					body = buildBody(tok)
 					geminiHeaders = buildGeminiHeaders(cookieStr, sapisid, mc.HexID)
+					setAuthUserHeaders(geminiHeaders, authUser)
 					geminiHeaders["x-goog-ext-525001261-jspb"] = modelHeader
 					geminiHeaders["x-goog-ext-525005358-jspb"] = sessionHeader
 					attempt--
@@ -872,7 +881,7 @@ func streamGenerateOnce(prompt, latest string, mc ModelConfig, pending []pending
 			result.ConvCID, result.ConvRID = cid, rid
 			arts, rcid, aerr := fetchMediaArtifacts(
 				mc.Tool, string(raw), cid, rid,
-				cookieStr, sapisid, xsrfToken, proxyURL, mime)
+				cookieStr, sapisid, xsrfToken, proxyURL, mime, authUser)
 			result.ConvRCID = rcid
 			if aerr != nil {
 				logf("[media] 取回产物失败: %v", aerr)
@@ -889,7 +898,7 @@ func streamGenerateOnce(prompt, latest string, mc ModelConfig, pending []pending
 		// 这正是临时对话比 create-then-delete 省的那一次出站请求。
 		if rtCfg().AutoDeleteConversation && !temporaryChatEligible() && cookieStr != "" && xsrfToken != "" {
 			if cid := extractConversationID(string(raw)); cid != "" {
-				go deleteConversation(cid, cookieStr, sapisid, xsrfToken, proxyURL)
+				go deleteConversation(cid, cookieStr, sapisid, xsrfToken, proxyURL, authUser)
 			}
 		}
 		return result, nil
@@ -960,6 +969,17 @@ func buildGeminiHeaders(cookieStr, sapisid, hexID string) map[string]string {
 		h["Authorization"] = makeSAPISIDHash(sapisid)
 	}
 	return h
+}
+
+// setAuthUserHeaders 把请求头对齐到第 authuser 个号：Referer 换成 /u/N/app，
+// X-Goog-AuthUser 写 N。选号靠的是请求路径（见 geminiBase），这个头实测被忽略，
+// 写成 N 只是不让它跟路径自相矛盾。authuser=0 时保持原样。
+func setAuthUserHeaders(h map[string]string, authuser int) {
+	if authuser <= 0 {
+		return
+	}
+	h["Referer"] = geminiBase(authuser) + "/app"
+	h["X-Goog-AuthUser"] = strconv.Itoa(authuser)
 }
 
 // doGeminiRequest 发一次请求到 endpoint。proxyURL 非空走 stdlib（支持 socks5/http），
@@ -1276,7 +1296,7 @@ func probeGemini(prompt, proxyURL string) ProbeResult {
 	// probe 是旁路探测，不回写 cookie 健康度：它的失败原因跟 cookie 无关。
 	// 但 at 必须带——否则挂了 cookie 之后连通性探测会一直报 400，假报故障。
 	cookieStr, sapisid := loadCookie()
-	if tok, e := getXSRF(cookieStr, proxyURL); e == nil && tok != "" {
+	if tok, e := getXSRF(cookieStr, 0, proxyURL); e == nil && tok != "" {
 		form.Set("at", tok)
 		body = form.Encode()
 	}

@@ -77,7 +77,7 @@ func refreshBL(proxyURL string) {
 		blMu.Unlock()
 	}()
 
-	body, err := fetchAppPage("", proxyURL)
+	body, err := fetchAppPage("", 0, proxyURL)
 	if err != nil {
 		logf("[bl] 抓 /app 失败，继续用当前值: %v", err)
 		return
