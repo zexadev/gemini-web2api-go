@@ -238,18 +238,24 @@ func poolHasProxyURL(url string) bool {
 //
 // 跟旧的 pickProxy 区别：会问 trySlotAcquire 看 slot 是否有容量；
 // 调用方拿到的 slot 必须配套调 slotRelease(proxy.ID)。
-func pickProxyWithCapacity() (Proxy, bool) { return pickProxyPreferring(0) }
+func pickProxyWithCapacity() (Proxy, bool) {
+	p, ok, _ := pickProxyPreferring(0)
+	return p, ok
+}
 
 // pickProxyPreferring 优先挑 preferID 那个出口，它不可用或没容量时才轮询别的。
 //
 // 为什么要粘住：cookie 池和代理池各自独立轮转的话，同一个 Google 账号会在几十个
 // 出口 IP 之间来回跳 —— 这在 Google 眼里正是账号共享的特征。粘不住时宁可换出口
 // 也不排队等，可用性优先。
-func pickProxyPreferring(preferID int64) (Proxy, bool) {
+// When no route can be selected, reason is either a true slot limit
+// (concurrent/rpm/rph/mixed), or "unavailable" when all proxy circuits
+// are disabled or cooling down. Do not conflate those cases.
+func pickProxyPreferring(preferID int64) (Proxy, bool, string) {
 	proxyMu.RLock()
 	defer proxyMu.RUnlock()
 	if len(proxyCache) == 0 {
-		return Proxy{}, false
+		return Proxy{}, false, "unavailable"
 	}
 	now := time.Now().Unix()
 	cooldown := rtCfg().ProxyCooldownMin
@@ -260,13 +266,23 @@ func pickProxyPreferring(preferID int64) (Proxy, bool) {
 		}
 	}
 	if len(pool) == 0 {
-		return Proxy{}, false
+		return Proxy{}, false, "unavailable"
+	}
+	blockedReason := ""
+	addReason := func(reason string) {
+		if blockedReason == "" {
+			blockedReason = reason
+		} else if blockedReason != reason {
+			blockedReason = "mixed"
+		}
 	}
 	if preferID > 0 {
 		for _, p := range pool {
 			if p.ID == preferID {
-				if ok, _ := trySlotAcquire(p.ID); ok {
-					return p, true
+				if ok, reason := trySlotAcquire(p.ID); ok {
+					return p, true, ""
+				} else {
+					addReason(reason)
 				}
 				break // 绑的那个满了，往下走正常轮询
 			}
@@ -276,11 +292,13 @@ func pickProxyPreferring(preferID int64) (Proxy, bool) {
 	start := atomic.AddUint64(&proxyCursor, 1) - 1
 	for i := 0; i < len(pool); i++ {
 		p := pool[(int(start)+i)%len(pool)]
-		if ok, _ := trySlotAcquire(p.ID); ok {
-			return p, true
+		if ok, reason := trySlotAcquire(p.ID); ok {
+			return p, true, ""
+		} else {
+			addReason(reason)
 		}
 	}
-	return Proxy{}, false
+	return Proxy{}, false, blockedReason
 }
 
 // recordProxyResult 回写一次请求的结果，并同步更新内存里那一条。
