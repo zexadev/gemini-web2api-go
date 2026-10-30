@@ -706,7 +706,7 @@ const pages = {
             <tbody>${items.map(a => `
               <tr class="${a.health === 'dead' ? 'row-dead' : ''}">
                 <td class="num nw">${a.id}</td>
-                <td class="truncate" title="${escapeHtml(a.label || '')}">${a.label ? escapeHtml(a.label) : '<span class="badge muted">未命名</span>'}</td>
+                <td class="truncate" title="${escapeHtml(a.label || '')}">${a.label ? escapeHtml(a.label) : '<span class="badge muted">未命名</span>'}${a.authuser > 0 ? ` <span class="badge muted" title="${LANG === 'en' ? 'Account index: requests go to /u/' + a.authuser + '/' : '账号序号：请求走 /u/' + a.authuser + '/'}">/u/${a.authuser}</span>` : ''}</td>
                 <td class="nw">${
                   a.health === 'dead' ? '<span class="badge fail" title="鉴权在失败，多半 cookie 过期了，建议用 Firefox 重新导出">疑似失效</span>'
                   : a.health === 'disabled' ? '<span class="badge muted">禁用</span>'
@@ -726,7 +726,7 @@ const pages = {
                     <button class="btn muted" onclick="checkCookieAcct(${a.id}, this)">检测</button>
                     <button class="btn muted" onclick="rotateCookieAcct(${a.id}, this)">保活</button>
                     <button class="btn muted" onclick="toggleCookieAcct(${a.id})">${a.status === 'enabled' ? '禁用' : '启用'}</button>
-                    <button class="btn muted" onclick="editCookieAcct(${a.id}, ${JSON.stringify(a.label || '').replace(/"/g, '&quot;')}, ${JSON.stringify(a.note || '').replace(/"/g, '&quot;')})">编辑</button>
+                    <button class="btn muted" onclick="editCookieAcct(${a.id}, ${JSON.stringify(a.label || '').replace(/"/g, '&quot;')}, ${JSON.stringify(a.note || '').replace(/"/g, '&quot;')}, ${a.authuser || 0})">编辑</button>
                     <button class="btn danger" onclick="delCookieAcct(${a.id})">删除</button>
                   </span>
                 </td>
@@ -1287,6 +1287,12 @@ async function addCookieAcct() {
         <div class="hint">仅用于面板里区分账号，不参与请求。</div>
       </div>
 
+      <div class="field">
+        <label>账号序号</label>
+        <input data-name="authuser" type="text" inputmode="numeric" value="0" />
+        <div class="hint">浏览器里同时登了多个 Google 号才需要改：打开那个号的 Gemini，地址栏是 /u/1/ 就填 1，没有 /u/ 就是 0。同一串 cookie 想当几个号用，就导入几次、各填各的序号。</div>
+      </div>
+
       <div class="segbar" data-role="seg">
         <button type="button" data-mode="raw" class="on">整串粘贴（推荐）</button>
         <button type="button" data-mode="fields">逐项填写</button>
@@ -1370,7 +1376,9 @@ async function addCookieAcct() {
     onSubmit: (overlay) => {
       const label = (overlay.querySelector('[data-name=label]').value || '').trim();
       const note = (overlay.querySelector('[data-name=note]').value || '').trim();
-      const isRaw = overlay.querySelector('[data-role=seg] button.on').dataset.mode === 'raw';
+      const authuser = parseAuthUser(overlay.querySelector('[data-name=authuser]').value);
+      if (authuser === null) return { error: '账号序号要填 0 到 9 的整数' };
+      const isRaw =overlay.querySelector('[data-role=seg] button.on').dataset.mode === 'raw';
       let cookie;
       if (isRaw) {
         cookie = (overlay.querySelector('[data-name=cookie]').value || '').trim();
@@ -1383,7 +1391,7 @@ async function addCookieAcct() {
       }
       if (!cookie) return { error: 'Cookie 不能为空' };
       if (!cookie.includes('SAPISID')) return { error: 'cookie 里没有 SAPISID，多半没复制全' };
-      return { label, cookie, note };
+      return { label, cookie, note, authuser };
     },
   });
   if (!data) return;
@@ -1398,18 +1406,30 @@ async function addCookieAcct() {
   await refreshPage();
 }
 
-async function editCookieAcct(id, label, note) {
+// parseAuthUser 把账号序号输入框的值转成 0..9 的整数，不合法返回 null。空 = 0。
+function parseAuthUser(v) {
+  const s = String(v ?? '').trim();
+  if (s === '') return 0;
+  if (!/^\d$/.test(s)) return null;
+  return parseInt(s, 10);
+}
+
+async function editCookieAcct(id, label, note, authuser) {
   const data = await modalForm({
     title: '编辑 Cookie #' + id,
-    desc: '只改标签和备注，不动 cookie 本身。要换 cookie 请删掉重新导入。',
+    desc: '只改标签、备注和账号序号，不动 cookie 本身。要换 cookie 请删掉重新导入。',
     fields: [
       { name: 'label', label: '标签', value: label || '', placeholder: '账号邮箱' },
+      { name: 'authuser', label: '账号序号', value: String(authuser || 0),
+        hint: '浏览器里同时登了多个 Google 号时用：地址栏 /u/1/ 填 1，没有 /u/ 填 0。' },
       { name: 'note', label: '备注', value: note || '', placeholder: '可留空' },
     ],
   });
   if (!data) return;
+  const au = parseAuthUser(data.authuser);
+  if (au === null) return flash(t('账号序号要填 0 到 9 的整数'));
   const j = await api('api/cookies/' + id, {
-    method: 'PATCH', body: JSON.stringify({ label: data.label, note: data.note }),
+    method: 'PATCH', body: JSON.stringify({ label: data.label, note: data.note, authuser: au }),
   });
   if (j.error) return flash(t('保存失败：') + t(j.error));
   flash(t('已保存'));
@@ -2301,7 +2321,12 @@ const I18N_EN = {
   'Cookie 不能为空': 'Cookie cannot be empty',
   'cookie 里没有 SAPISID，多半没复制全': 'No SAPISID in the cookie — you probably did not copy it all',
   '导入': 'Import',
-  '只改标签和备注，不动 cookie 本身。要换 cookie 请删掉重新导入。': 'Edits only the label and note, not the cookie itself. To replace the cookie, delete and re-import.',
+  '只改标签、备注和账号序号，不动 cookie 本身。要换 cookie 请删掉重新导入。': 'Edits only the label, note and account index, not the cookie itself. To replace the cookie, delete and re-import.',
+  '账号序号': 'Account index',
+  '浏览器里同时登了多个 Google 号才需要改：打开那个号的 Gemini，地址栏是 /u/1/ 就填 1，没有 /u/ 就是 0。同一串 cookie 想当几个号用，就导入几次、各填各的序号。':
+    'Only needed when several Google accounts are signed in to the same browser: open Gemini as that account — if the address bar shows /u/1/, enter 1; no /u/ means 0. To use one cookie string as several accounts, import it once per account with its own index.',
+  '浏览器里同时登了多个 Google 号时用：地址栏 /u/1/ 填 1，没有 /u/ 填 0。': 'For browsers with several Google accounts signed in: /u/1/ in the address bar means 1; no /u/ means 0.',
+  '账号序号要填 0 到 9 的整数': 'Account index must be a whole number from 0 to 9',
   '账号邮箱': 'Account email',
   '可留空': 'Optional',
   '例如账号邮箱，可留空': 'e.g. account email, optional',
