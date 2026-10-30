@@ -133,3 +133,15 @@ func TestAppPageStatusErrorText(t *testing.T) {
 		t.Errorf("got %q", s)
 	}
 }
+
+// 跳 /sorry 也是 302，文案不能说成「重定向到登录页」。
+func TestExplainCookieFailureSorry(t *testing.T) {
+	got := explainCookieFailure(newAppPageStatusError(302, "https://www.google.com/sorry/index"))
+	if got != "出口被上游限流，换个代理再试（不是 cookie 的问题）" {
+		t.Errorf("sorry 302: got %q", got)
+	}
+	got = explainCookieFailure(newAppPageStatusError(302, "https://accounts.google.com/ServiceLogin"))
+	if got != "cookie 无效：被重定向到登录页" {
+		t.Errorf("login 302: got %q", got)
+	}
+}

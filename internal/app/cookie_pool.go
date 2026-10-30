@@ -563,10 +563,11 @@ func explainCookieFailure(err error) string {
 	switch {
 	case strings.Contains(msg, "no SNlM0e"):
 		return "cookie 已失效：页面能打开但没有登录态，请求会被当匿名处理"
-	case strings.Contains(msg, "HTTP 302"):
-		return "cookie 无效：被重定向到登录页"
+	// sorry 要排在 302 前面：跳 /sorry 也是 302，那是出口被拦不是 cookie 失效
 	case strings.Contains(msg, "HTTP 429"), strings.Contains(msg, "sorry"):
 		return "出口被上游限流，换个代理再试（不是 cookie 的问题）"
+	case strings.Contains(msg, "HTTP 302"):
+		return "cookie 无效：被重定向到登录页"
 	default:
 		return "检测失败：" + msg
 	}
