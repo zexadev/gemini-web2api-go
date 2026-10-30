@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -135,7 +136,7 @@ func fetchAppPage(cookie, proxyURL string) ([]byte, error) {
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode != 200 {
-			return nil, fmt.Errorf("fetch /app: HTTP %d", resp.StatusCode)
+			return nil, newAppPageStatusError(resp.StatusCode, resp.Header.Get("Location"))
 		}
 		body, err = io.ReadAll(resp.Body)
 		if err != nil {
@@ -155,7 +156,7 @@ func fetchAppPage(cookie, proxyURL string) ([]byte, error) {
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode != 200 {
-			return nil, fmt.Errorf("fetch /app: HTTP %d", resp.StatusCode)
+			return nil, newAppPageStatusError(resp.StatusCode, resp.Header.Get("Location"))
 		}
 		body, err = io.ReadAll(resp.Body)
 		if err != nil {
@@ -191,4 +192,34 @@ func fetchAppTokens(cookie, proxyURL string) (xsrfEntry, error) {
 // 响应体形如：[["er",null,...,400,...,[{"48448350":["xsrf","<新token>",...]}]]]
 func isXSRFError(raw string) bool {
 	return strings.Contains(raw, `"xsrf"`)
+}
+
+// appPageStatusError 是抓 /app 拿到非 200 时的错误，带上重定向目标。
+//
+// 两个 client 都不跟随重定向，所以 302 本身说明不了原因：跳 accounts.google.com
+// 是登录态没了，跳 www.google.com/sorry/ 是出口被 Google 拦，跟 cookie 无关。
+// 只留 host+path：/sorry 的 query 里有长串 continue/q 参数，进日志和面板没用。
+// 文本仍以 "fetch /app: HTTP <code>" 开头，按子串判 "HTTP 302" 的地方不受影响。
+type appPageStatusError struct {
+	Status   int
+	Location string // host+path，没有 Location 头时为空
+}
+
+func newAppPageStatusError(status int, location string) *appPageStatusError {
+	e := &appPageStatusError{Status: status}
+	if location != "" {
+		if u, err := url.Parse(location); err == nil {
+			e.Location = u.Host + u.Path
+		} else {
+			e.Location = location
+		}
+	}
+	return e
+}
+
+func (e *appPageStatusError) Error() string {
+	if e.Location != "" {
+		return fmt.Sprintf("fetch /app: HTTP %d -> %s", e.Status, e.Location)
+	}
+	return fmt.Sprintf("fetch /app: HTTP %d", e.Status)
 }
