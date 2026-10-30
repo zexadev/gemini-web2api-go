@@ -113,7 +113,8 @@ CREATE TABLE IF NOT EXISTS accounts (
     last_ok_at    INTEGER NOT NULL DEFAULT 0,     -- 上次请求成功的时刻
     last_error    TEXT NOT NULL DEFAULT '',
     fail_count    INTEGER NOT NULL DEFAULT 0,     -- 连续失败次数（成功归零）
-    proxy_id      INTEGER NOT NULL DEFAULT 0      -- 绑定的出口，0 = 还没绑
+    proxy_id      INTEGER NOT NULL DEFAULT 0,     -- 绑定的出口，0 = 还没绑
+    authuser      INTEGER NOT NULL DEFAULT 0      -- 浏览器多号登录时的账号序号（/u/N），0 = 默认号
 );
 CREATE INDEX IF NOT EXISTS idx_accounts_pick ON accounts(status, last_used_at);
 `
@@ -170,6 +171,9 @@ func getDB() *dbx {
 			_, _ = conn.Exec(`ALTER TABLE requests DROP COLUMN prompt_preview`)
 			_, _ = conn.Exec(`ALTER TABLE requests DROP COLUMN response_preview`)
 		}
+		// authuser 列三种库的老库都要补：缺这一列时查账号的 SELECT 整条失败、池子直接空掉。
+		// 这句语法三种库通用，已有该列时报错忽略。
+		_, _ = conn.Exec(`ALTER TABLE accounts ADD COLUMN authuser INTEGER NOT NULL DEFAULT 0`)
 		db = conn
 		dbw = &dbx{conn}
 		logf("[db] opened dialect=%d driver=%s", curDialect, driver)

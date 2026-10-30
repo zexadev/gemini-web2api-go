@@ -145,3 +145,30 @@ func TestExplainCookieFailureSorry(t *testing.T) {
 		t.Errorf("login 302: got %q", got)
 	}
 }
+
+// 账号序号要能存能读，越界要拒。
+func TestAccountAuthUser(t *testing.T) {
+	id, err := accountAdd("multi", "SAPISID=ggg; __Secure-1PSID=hhh", "")
+	if err != nil {
+		t.Fatalf("插账号失败: %v", err)
+	}
+	t.Cleanup(func() { _ = accountDelete(id) })
+
+	if a := accountByID(id); a == nil || a.AuthUser != 0 {
+		t.Fatalf("默认序号应为 0, got %+v", a)
+	}
+	if err := accountSetAuthUser(id, 1); err != nil {
+		t.Fatal(err)
+	}
+	if a := accountByID(id); a == nil || a.AuthUser != 1 {
+		t.Errorf("序号应为 1, got %+v", a)
+	}
+	for _, bad := range []int{-1, maxAuthUser + 1} {
+		if err := accountSetAuthUser(id, bad); err == nil {
+			t.Errorf("序号 %d 应被拒", bad)
+		}
+	}
+	if a := accountByID(id); a == nil || a.AuthUser != 1 {
+		t.Errorf("被拒后应保持 1, got %+v", a)
+	}
+}

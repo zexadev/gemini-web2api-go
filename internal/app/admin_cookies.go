@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -67,6 +68,7 @@ func cookieAcctView(a CookieAccount) map[string]interface{} {
 		"has_1psidts":  nameSet["__Secure-1PSIDTS"],
 		"proxy_id":     a.ProxyID,
 		"proxy_name":   proxyNameByID(a.ProxyID),
+		"authuser":     a.AuthUser,
 	}
 }
 
@@ -88,10 +90,17 @@ func handleAdminCookies(w http.ResponseWriter, r *http.Request) {
 			Label  string `json:"label"`
 			Cookie string `json:"cookie"`
 			Note   string `json:"note"`
+			// 浏览器多号登录时的账号序号（/u/N），不传 = 0
+			AuthUser int `json:"authuser"`
 		}
 		body, _ := io.ReadAll(r.Body)
 		if err := json.Unmarshal(body, &p); err != nil {
 			writeJSON(w, 400, map[string]string{"error": "bad json"})
+			return
+		}
+		// 先校验再插，免得插进去一条序号不合法的半成品
+		if p.AuthUser < 0 || p.AuthUser > maxAuthUser {
+			writeJSON(w, 400, map[string]string{"error": fmt.Sprintf("账号序号要在 0..%d 之间", maxAuthUser)})
 			return
 		}
 		id, err := accountAdd(p.Label, p.Cookie, p.Note)
@@ -99,7 +108,13 @@ func handleAdminCookies(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 400, map[string]string{"error": err.Error()})
 			return
 		}
-		logf("[cookies] 新增账号 #%d label=%q", id, strings.TrimSpace(p.Label))
+		if p.AuthUser != 0 {
+			if err := accountSetAuthUser(id, p.AuthUser); err != nil {
+				writeJSON(w, 500, map[string]string{"error": err.Error()})
+				return
+			}
+		}
+		logf("[cookies] 新增账号 #%d label=%q authuser=%d", id, strings.TrimSpace(p.Label), p.AuthUser)
 		writeJSON(w, 200, map[string]interface{}{"id": id})
 	default:
 		writeJSON(w, 405, map[string]string{"error": "method not allowed"})
@@ -189,14 +204,21 @@ func handleAdminCookieItem(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]interface{}{"status": next})
 	case http.MethodPatch:
 		var p struct {
-			Label  *string `json:"label"`
-			Note   *string `json:"note"`
-			Status *string `json:"status"`
+			Label    *string `json:"label"`
+			Note     *string `json:"note"`
+			Status   *string `json:"status"`
+			AuthUser *int    `json:"authuser"`
 		}
 		body, _ := io.ReadAll(r.Body)
 		if err := json.Unmarshal(body, &p); err != nil {
 			writeJSON(w, 400, map[string]string{"error": "bad json"})
 			return
+		}
+		if p.AuthUser != nil {
+			if err := accountSetAuthUser(id, *p.AuthUser); err != nil {
+				writeJSON(w, 400, map[string]string{"error": err.Error()})
+				return
+			}
 		}
 		if p.Status != nil {
 			if err := accountSetStatus(id, *p.Status); err != nil {
