@@ -70,3 +70,18 @@ func TestUploadStartURL(t *testing.T) {
 		t.Errorf("序号 3: %q", got)
 	}
 }
+
+// 产物下载链：默认号原样；第 N 个号追加 authuser=N，原有参数逐字不动。
+func TestWithAuthUserQuery(t *testing.T) {
+	const img = "https://lh3.googleusercontent.com/gg-dl/AHiVAbc=s0"
+	if got := withAuthUserQuery(img, 0); got != img {
+		t.Errorf("序号 0 不该改: %q", got)
+	}
+	if got := withAuthUserQuery(img, 1); got != img+"?authuser=1" {
+		t.Errorf("无 query: %q", got)
+	}
+	const dl = "https://contribution.usercontent.google.com/download?c=Q2l+ab%3D%3D&filename=a.mp3&opi=103135050"
+	if got := withAuthUserQuery(dl, 2); got != dl+"&authuser=2" {
+		t.Errorf("已有 query: %q", got)
+	}
+}

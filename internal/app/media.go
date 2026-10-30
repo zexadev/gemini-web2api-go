@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -295,7 +296,7 @@ func fetchImageArtifacts(raw, cid, cookie, sapisid, xsrf, proxyURL, defaultMime 
 	}
 	var arts []MediaArtifact
 	for _, u := range urls {
-		mime, data, err := downloadBytes(imageFullResURL(u), cookie, proxyURL, defaultMime)
+		mime, data, err := downloadBytes(imageFullResURL(u), cookie, proxyURL, defaultMime, authuser)
 		if err != nil {
 			return arts, err
 		}
@@ -397,7 +398,7 @@ func fetchDownloadArtifacts(cid, rid, cookie, sapisid, xsrf, proxyURL, defaultMi
 			}
 			u += sep + "filename=artifact&opi=" + downloadOPI
 		}
-		mime, data, err := downloadBytes(u, cookie, proxyURL, defaultMime)
+		mime, data, err := downloadBytes(u, cookie, proxyURL, defaultMime, authuser)
 		if err != nil {
 			return arts, rcid, err
 		}
@@ -662,7 +663,8 @@ func downloadIsResponseData(rawURL string) bool {
 
 // downloadBytes GET 一条产物链，跟随重定向并每跳重发 cookie 子集，返回 content-type
 // 和原始字节。图片链（会 302）和 contribution 链（单次 200）都走这个。
-func downloadBytes(rawURL, cookie, proxyURL, defaultMime string) (string, []byte, error) {
+func downloadBytes(rawURL, cookie, proxyURL, defaultMime string, authuser int) (string, []byte, error) {
+	rawURL = withAuthUserQuery(rawURL, authuser)
 	headers := map[string]string{
 		"Cookie":  filterDownloadCookies(cookie),
 		"Origin":  "https://gemini.google.com",
@@ -853,4 +855,22 @@ var dataURLRe = regexp.MustCompile(`data:([-\w.+/]+);base64,[A-Za-z0-9+/=]+`)
 // 二进制买单，下游 newapi 是按 output token 收钱的。产物本身照常在 content 里返回。
 func stripDataURLs(text string) string {
 	return dataURLRe.ReplaceAllString(text, "data:$1;base64,<omitted>")
+}
+
+// withAuthUserQuery 给产物下载链加 ?authuser=N（N>0 时）。
+//
+// 多号登录时第 N 个号生成的图，原样下载会在跳转链末端（lh3）回 403；第一跳带上
+// authuser=N 就是 200（实测同一条链：不带 403、带 200；加 X-Goog-AuthUser 头或改
+// Referer 都还是 403）。默认号不用带，链接保持原样。
+func withAuthUserQuery(rawURL string, authuser int) string {
+	if authuser <= 0 {
+		return rawURL
+	}
+	// 直接追加，不走 url.Values 重新编码：contribution 链的 c= 参数是长 token，
+	// 重编码会改动原有部分。
+	sep := "?"
+	if strings.Contains(rawURL, "?") {
+		sep = "&"
+	}
+	return rawURL + sep + "authuser=" + strconv.Itoa(authuser)
 }
