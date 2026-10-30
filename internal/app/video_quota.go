@@ -15,7 +15,6 @@ package app
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -97,13 +96,13 @@ func videoQuotaFor(a CookieAccount, now time.Time, lookback time.Duration) accou
 		xsrf, err = getXSRF(a.Cookie, proxyURL)
 		return err
 	})
-	var rl *RateLimitError
-	if errors.As(err, &rl) {
-		q.Status, q.Error = "error", err.Error()
-		return q
-	}
 	if err != nil {
-		q.Status, q.Error = "error", "not signed in: "+err.Error()
+		// 只有确实是登录态问题才说 "not signed in"；断网、出口被拦、代理池
+		// 无可用出口照原样报，免得让人去换一个其实没问题的号。
+		q.Status, q.Error = "error", err.Error()
+		if xsrfErrBlamesCookie(err) {
+			q.Error = "not signed in: " + err.Error()
+		}
 		return q
 	}
 	var convs []convSummary
