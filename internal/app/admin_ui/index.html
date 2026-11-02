@@ -1049,6 +1049,8 @@ const RT_GROUPS = [
         hint: '走网页端原生「临时对话」（inner[45]=1）：会话压根不进账号的会话列表、不用于训练，比「自动删网页会话」更干净，还省掉那次删除请求。只登录态有意义；开了「服务端多轮续接」时不生效（临时对话不留列表，多轮要靠服务端留会话）' },
       { k: 'multi_turn', label: '服务端多轮续接', type: 'bool',
         hint: '走 Gemini 原生服务端多轮：按历史前缀认出这是上一轮的续接，命中就只发最新一句、历史留在服务端，同一串对话复用同一个 gemini 会话（不再每发一条就新开一个）。匿名/登录都行，带图或带工具时不生效。首轮/重启/改历史会退回整段重发。默认关' },
+      { k: 'image_upscale', label: '生图下载原图/放大', type: 'bool',
+        hint: '出图后照网页「下载」按钮那样取图：Ultra 号的图会放大到宽高各 2 倍（1376×768 → 2752×1536），普通号拿到未重新压缩的原始文件（尺寸不变、画质更好）。每张图多一次请求，返回体积大几倍。只登录态生效，取不到就退回原来那张，不会重新生成。默认关' },
       { k: 'anon_first', label: '匿名优先', type: 'bool',
         hint: '这次请求不需要登录态能力时（纯文本、非思考、无工具、不带图）走匿名、不占用 cookie 账号，省账号额度；用到 3.1 Pro / 3.8 Flash / 扩展思考 / 生图 / 传文件这些才挑号。关掉则只要池里有号就一律用号（默认关）' },
     ],
@@ -2358,6 +2360,9 @@ const I18N_EN = {
   '服务端多轮续接': 'Server multi-turn resume',
   '走 Gemini 原生服务端多轮：按历史前缀认出这是上一轮的续接，命中就只发最新一句、历史留在服务端，同一串对话复用同一个 gemini 会话（不再每发一条就新开一个）。匿名/登录都行，带图或带工具时不生效。首轮/重启/改历史会退回整段重发。默认关':
     'Uses Gemini native server-side multi-turn: recognizes prior context by history prefix, sending only the latest turn while upstream maintains history. Reuses the same Gemini session across conversation turns. Works for anonymous and logged-in; inactive with images or tools. Falls back to full replay on first turn, restart, or edited history. Default off',
+  '生图下载原图/放大': 'Full-size image download',
+  '出图后照网页「下载」按钮那样取图：Ultra 号的图会放大到宽高各 2 倍（1376×768 → 2752×1536），普通号拿到未重新压缩的原始文件（尺寸不变、画质更好）。每张图多一次请求，返回体积大几倍。只登录态生效，取不到就退回原来那张，不会重新生成。默认关':
+    'Fetches generated images the way the web app\'s Download button does: on Ultra accounts the image is upscaled 2× in each dimension (1376×768 → 2752×1536); other accounts get the original file instead of the recompressed preview (same size, better quality). One extra request per image and a several-times larger response. Signed-in only; if it fails the regular image is returned, nothing is regenerated. Off by default',
   '匿名优先': 'Anonymous first',
   '这次请求不需要登录态能力时（纯文本、非思考、无工具、不带图）走匿名、不占用 cookie 账号，省账号额度；用到 3.1 Pro / 3.8 Flash / 扩展思考 / 生图 / 传文件这些才挑号。关掉则只要池里有号就一律用号（默认关）':
     'Routes requests that do not require account capabilities (plain text, non-thinking, no tools, no images) anonymously to save cookie account quota. Picks an account only when using 3.1 Pro, 3.8 Flash, extended thinking, image gen, or file uploads. When off, always uses an account if any are in the pool (default off)',
