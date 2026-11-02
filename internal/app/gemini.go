@@ -757,8 +757,25 @@ func streamGenerateOnce(prompt, latest string, mc ModelConfig, pending []pending
 		}
 	}
 
+	// 新协议（#43）：同一个 inner，只换传输层；返回的 raw 已包成老格式，下面的判断原样适用。
+	useWC := rtCfg().WebChannel
+	wcReq := wcRequest{
+		Inner: wcInnerWithoutPrompt(inner), Prompt: prompt,
+		HexID: mc.HexID, Mode: mc.Mode, Think: mc.thinkWire(),
+		Cookie: cookieStr, SAPISID: sapisid, AuthUser: authUser,
+	}
 	for attempt := 0; attempt < rtCfg().RetryAttempts; attempt++ {
-		statusCode, raw, ttfb, setCookie, err := doGeminiRequest(endpoint, body, geminiHeaders, proxyURL, lineCB)
+		var statusCode int
+		var raw []byte
+		var ttfb int64
+		var setCookie []string
+		var err error
+		if useWC {
+			wcReq.Cookie = cookieStr
+			statusCode, raw, ttfb, setCookie, err = doWebChannelRequest(wcReq, proxyURL, lineCB)
+		} else {
+			statusCode, raw, ttfb, setCookie, err = doGeminiRequest(endpoint, body, geminiHeaders, proxyURL, lineCB)
+		}
 		if len(setCookie) > 0 && cookieID > 0 {
 			if merged := mergeSetCookie(cookieStr, setCookie); merged != cookieStr {
 				cookieStr = merged

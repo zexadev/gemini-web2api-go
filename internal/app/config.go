@@ -55,6 +55,9 @@ type Config struct {
 	// 生成图放大（#62）：出图后照网页「下载原图」那样发 rpc c8o8Fe，返回放大版（实测宽高各
 	// 2 倍、JPEG）。要登录态；放大失败退回原来那张，不重新生成。默认 false。
 	ImageUpscale bool `json:"image_upscale"`
+	// 新协议（#43）：对话改走 processSession（WebChannel）而不是老的 StreamGenerate。后端是同一个，
+	// 只换传输层；老端点还能用，默认 false。多轮续接仍走老端点，见 webchannel.go。
+	WebChannel bool `json:"web_channel"`
 	// FirefoxFingerprint 是「浏览器指纹」实验开关（#40 之上）：开 → 强制走 Firefox/Zen 指纹
 	// （TLS profile Firefox_147 + Firefox UA + 去掉 Chromium 专有的 Sec-CH-UA）；关 → 用
 	// Impersonate（默认 Chrome）。直连才是完整 Firefox 指纹，走代理时 TLS 这层仍是 Go 标准库
@@ -108,6 +111,7 @@ func defaultConfig() Config {
 		AnonFirst:              false,
 		TemporaryChat:          false,
 		ImageUpscale:           false,
+		WebChannel:             false,
 		FirefoxFingerprint:     false,
 		StrictModel:            false,
 		StrictModelCooldownMin: 300,
