@@ -21,7 +21,7 @@ import (
 const (
 	hexFlash36   = "fbb127bbb056c959" // 3.6 Flash
 	hexFlashLite = "cf41b0e0dd7d53e5" // 3.5 Flash-Lite
-	hexPro31     = "9d8ca3786ebdfbea" // 3.1 Pro
+	hexPro31     = "e6fa609c3fa255c0" // 3.1 Pro（otAQ7b 权威清单主 hex；原 9d8ca3786ebdfbea 降为 compat）
 	// 3.7 Flash：按账号灰度放出。hex 是 otAQ7b 里 3.7 条目的**主 hex**（第一个元素），
 	// 两个独立已灰度账号的清单里都是它、且有 3.7 号的用户实测发它回报 "3.7 Flash"
 	// （issue #4 / PR #11）。注意别用 compat 列表里那个 797f3d0293f288ad —— 那是
