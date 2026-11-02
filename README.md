@@ -452,6 +452,7 @@ curl http://127.0.0.1:8083/v1/chat/completions \
 | 明细保留天数 | 过期只删明细，聚合数据永久保留 |
 | TLS 指纹 | `chrome_146`（默认）/ `chrome_144` / `chrome_133` / `firefox_147` / `safari_16_0` / `safari_ios_17_0` |
 | Gemini `bl` 版本 | 上游前端版本号，过期时改这里 |
+| 新协议（`web_channel`） | 默认关。开启后对话改走网页新版用的 processSession（WebChannel）接口，而不是老的 StreamGenerate。后端是同一个，只换传输方式；老接口目前仍正常，老接口出问题时再打开。文本、看图、生图、匿名都已实测；多轮续接仍走老接口；扩展思考在新协议上暂时不生效（回报普通档）。 |
 | 打印请求日志 | |
 
 所有值都在后端做范围校验（比如 `retry_attempts` 只接受 1-10、超时 5-600 秒），
@@ -678,6 +679,7 @@ internal/app/              全部实现
   config.go                配置加载 + 默认值
   client.go                tls-client (chrome146) + stdlib (走代理) 双 client
   gemini.go                模型表 + 80 槽 payload + 模型 header + StreamGenerate + wrb.fr 解析
+  webchannel.go            新协议 processSession（WebChannel）传输，开关 web_channel
   xsrf.go                  带 cookie 时必需的 XSRF token：抓取 + 按 cookie 缓存 + 过期自愈
   messages.go              OpenAI messages → prompt，tool_call 解析
   server.go                /v1/* + 限流入口 + 参数校验 + metrics 写入

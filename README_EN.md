@@ -426,6 +426,7 @@ Saving takes effect **immediately**, no restart. Values live in the database and
 | Detail retention days | only request details expire; aggregates are kept forever |
 | TLS fingerprint | `chrome_146` (default) / `chrome_144` / `chrome_133` / `firefox_147` / `safari_16_0` / `safari_ios_17_0` |
 | Gemini `bl` version | upstream frontend build id, change it here when it expires |
+| New protocol (`web_channel`) | off by default. When on, chats go through processSession (WebChannel), the interface the current web app uses, instead of the legacy StreamGenerate. Same backend, different transport. The legacy interface still works; turn this on if it breaks. Text, image input, image generation and anonymous use are tested; multi-turn resume still uses the legacy interface, and extended thinking does not take effect on the new protocol yet (the normal tier is reported). |
 | Static proxy | fallback when the proxy pool is empty; normally use the Proxy pool page |
 | Request logging | |
 
@@ -605,6 +606,7 @@ internal/app/              everything else
   config.go                config loading + defaults
   client.go                tls-client (chrome146) + stdlib (when proxied)
   gemini.go                model table + 80-slot payload + model header + StreamGenerate + wrb.fr parsing
+  webchannel.go            new-protocol transport, processSession (WebChannel), switch web_channel
   xsrf.go                  XSRF token required with a cookie: fetch + per-cookie cache + self-heal
   messages.go              OpenAI messages → prompt, tool_call parsing
   server.go                /v1/* + rate-limit entry + request validation + metrics
