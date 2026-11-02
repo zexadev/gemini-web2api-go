@@ -52,6 +52,9 @@ type Config struct {
 	// RPC）。只登录态有意义（匿名本就不落账号）。与 multi_turn 冲突：multi_turn 开着时不发，
 	// 见 temporaryChatEligible。默认 false。
 	TemporaryChat bool `json:"temporary_chat"`
+	// 生成图放大（#62）：出图后照网页「下载原图」那样发 rpc c8o8Fe，返回放大版（实测宽高各
+	// 2 倍、JPEG）。要登录态；放大失败退回原来那张，不重新生成。默认 false。
+	ImageUpscale bool `json:"image_upscale"`
 	// FirefoxFingerprint 是「浏览器指纹」实验开关（#40 之上）：开 → 强制走 Firefox/Zen 指纹
 	// （TLS profile Firefox_147 + Firefox UA + 去掉 Chromium 专有的 Sec-CH-UA）；关 → 用
 	// Impersonate（默认 Chrome）。直连才是完整 Firefox 指纹，走代理时 TLS 这层仍是 Go 标准库
@@ -104,6 +107,7 @@ func defaultConfig() Config {
 		AutoDeleteConversation: false,
 		AnonFirst:              false,
 		TemporaryChat:          false,
+		ImageUpscale:           false,
 		FirefoxFingerprint:     false,
 		StrictModel:            false,
 		StrictModelCooldownMin: 300,

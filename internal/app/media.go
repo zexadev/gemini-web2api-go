@@ -136,6 +136,14 @@ func filterDownloadCookies(cookie string) string {
 // which is needed to continue the conversation again.
 func fetchMediaArtifacts(tool int, raw, cid, rid, cookie, sapisid, xsrf, proxyURL, defaultMime string, authuser int) ([]MediaArtifact, string, error) {
 	if tool == toolImage {
+		// 放大（#62）失败一律退回原来的下载，不重新生成。
+		if rtCfg().ImageUpscale && xsrf != "" {
+			arts, err := fetchUpscaledImages(raw, cid, rid, cookie, sapisid, xsrf, proxyURL, defaultMime, authuser)
+			if err == nil && len(arts) > 0 {
+				return arts, "", nil
+			}
+			logf("[upscale] 放大失败，改下原图: %v", err)
+		}
 		arts, err := fetchImageArtifacts(raw, cid, cookie, sapisid, xsrf, proxyURL, defaultMime, authuser)
 		return arts, "", err
 	}
