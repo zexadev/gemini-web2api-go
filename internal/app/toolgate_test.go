@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -57,6 +58,18 @@ func TestToolFenceGate(t *testing.T) {
 			"看这段：\n```python\nprint(1)\n```\n就这样。",
 			"看这段：\n```python\nprint(1)\n```\n就这样。",
 		},
+		{
+			// 参数的字符串里带 ```：闭合围栏是 JSON 结束之后那个，不是第一个
+			"参数里带代码块",
+			"写文件。\n```tool_call\n" + fencedArgsCall + "\n```\n写好了。",
+			"写文件。\n\n写好了。",
+		},
+		{
+			// JSON 写坏了：退回第一个 ``` 当闭合
+			"围栏里 JSON 写坏了",
+			"a\n```tool_call\n{\"name\": f}\n```\nb",
+			"a\n\nb",
+		},
 	}
 
 	for _, c := range cases {
@@ -95,6 +108,34 @@ func TestToolFenceGateMatchesParse(t *testing.T) {
 	// 流式发出的可能比最终文本多首尾空白（parseToolCalls 收尾会 TrimSpace）。
 	if strings.TrimSpace(streamed) != final {
 		t.Errorf("流式发出 %q，最终文本 %q", strings.TrimSpace(streamed), final)
+	}
+}
+
+// fencedArgsCall 是一次写文件调用，content 里有两个 markdown 代码块（实测模型就这么吐：
+// ``` 原样出现在 JSON 字符串里，换行和引号正常转义）。
+const fencedArgsCall = `{"name": "write_file", "arguments": {"path": "README.md", "content": "# Foo\n\n` +
+	"```" + `bash\npip install foo\n` + "```" + `\n\n` + "```" + `python\nprint(\"hi\")\n` + "```" + `\n"}}`
+
+// 参数里的 ``` 不能把调用截断：要解析出完整参数，正文里不能漏出半截 JSON，
+// 流式发出的和最终文本要一致。
+func TestToolCallWithFencedArgs(t *testing.T) {
+	full := "写文件。\n```tool_call\n" + fencedArgsCall + "\n```\n写好了。"
+	final, calls := parseToolCalls(full)
+	if len(calls) != 1 || calls[0].Function.Name != "write_file" {
+		t.Fatalf("工具调用没解析出来: %+v，正文 %q", calls, final)
+	}
+	var args map[string]string
+	if err := json.Unmarshal([]byte(calls[0].Function.Arguments), &args); err != nil {
+		t.Fatalf("参数不是合法 JSON: %v", err)
+	}
+	if want := "# Foo\n\n```bash\npip install foo\n```\n\n```python\nprint(\"hi\")\n```\n"; args["content"] != want {
+		t.Errorf("content 得到 %q，期望 %q", args["content"], want)
+	}
+	if final != "写文件。\n\n写好了。" {
+		t.Errorf("最终正文 %q", final)
+	}
+	if streamed := feed(t, chars(full)); strings.TrimSpace(streamed) != final {
+		t.Errorf("流式发出 %q，最终文本 %q", streamed, final)
 	}
 }
 
