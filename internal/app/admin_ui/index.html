@@ -1038,6 +1038,8 @@ const RT_GROUPS = [
         hint: '上游前端版本号。请求大面积失败时先看这里是不是过期了' },
       { k: 'gemini_bl_auto', label: '自动跟随 bl 版本', type: 'bool',
         hint: '每 6 小时从 /app 页面抓一次最新版本号，抓到就用抓到的。抓不到或格式不对就继续用上面钉的值' },
+      { k: 'web_channel', label: '新协议（processSession）', type: 'bool',
+        hint: '对话改走网页新版用的 processSession（WebChannel）接口，而不是老的 StreamGenerate。后端是同一个，只换传输方式；老接口目前仍正常，老接口出问题时再打开。多轮续接仍走老接口；扩展思考在新协议上暂时不生效（回报普通档）。默认关' },
     ],
   },
   {
@@ -2275,6 +2277,9 @@ const I18N_EN = {
   '上游前端版本号。请求大面积失败时先看这里是不是过期了': 'Upstream frontend version number. When requests fail en masse, check here first for staleness',
   '每 6 小时从 /app 页面抓一次最新版本号，抓到就用抓到的。抓不到或格式不对就继续用上面钉的值':
     'Fetches the latest version number from the /app page every 6 hours and uses it if found. If nothing is fetched or the format is wrong, keeps using the pinned value above',
+  '新协议（processSession）': 'New protocol (processSession)',
+  '对话改走网页新版用的 processSession（WebChannel）接口，而不是老的 StreamGenerate。后端是同一个，只换传输方式；老接口目前仍正常，老接口出问题时再打开。多轮续接仍走老接口；扩展思考在新协议上暂时不生效（回报普通档）。默认关':
+    'Sends chats through processSession (WebChannel), the interface the current web app uses, instead of the legacy StreamGenerate. Same backend, different transport. The legacy interface still works; turn this on if it breaks. Multi-turn resume still uses the legacy interface, and extended thinking does not take effect on the new protocol yet (the normal tier is reported). Off by default',
   '代理连续失败 5 次后歇多久再放回池子。实测被拦的出口 106-121 分钟自恢复，默认 120；0=不恢复，要去代理池页面手动重置':
     'How long a proxy rests before returning to the pool after 5 consecutive failures. Blocked egresses were measured to self-recover in 106-121 minutes, so the default is 120. 0 = no auto-recovery, reset manually on the Proxy Pool page',
   '关：直接返回 429，本机 IP 不会暴露给上游（默认）。开：可用性优先，但上游会看到本机真实出口':
