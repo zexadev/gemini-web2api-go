@@ -92,7 +92,8 @@ The projects most often compared with this one are the Python [Sophomoresty/gemi
 **Models**
 - `gemini-3.6-flash` and `gemini-3.5-flash-lite` work anonymously, web search included
 - `gemini-3.1-pro` needs a cookie; every reply carries a reasoning chain
-- Each of the three models has a `-thinking` variant (extended thinking), available with a cookie
+- `gemini-3.8-flash` and `gemini-4-argon` need a cookie from a paid / Ultra account
+- Every model has a `-thinking` variant (extended thinking), available with a cookie
   (`reasoning_content`)
 - Every response records which model the backend **actually** used, so silent
   downgrades are visible
@@ -338,7 +339,8 @@ The frontend is a single HTML file and Chart.js is embedded in the binary, **not
 
 ## Models
 
-Gemini's backend only recognises three models (the list comes from `batchexecute?rpcids=otAQ7b`):
+Models follow the Gemini web app's model picker (the list comes from `batchexecute?rpcids=otAQ7b`): five base models,
+of which 3.6 Flash / 3.5 Flash-Lite / 3.1 Pro work with a free account and 3.8 Flash / 4 Argon need a paid one; the rest are their thinking tiers and the media tools.
 
 | Model | Description |
 |---|---|
@@ -362,16 +364,18 @@ Without a cookie, `/v1/models` returns only the first two, and asking for `gemin
 
 With a valid cookie it really is Pro: six consecutive calls all had the backend report `3.1 Pro` itself.
 
-Only those three are exposed. The old names `gemini-3.5-flash`, `gemini-3.5-flash-thinking`, `gemini-3.5-flash-thinking-lite`, `gemini-auto` and `gemini-flash-lite` were **removed** (they now return 400): the backend has no entries for them, and keeping them only suggested there were five distinct models to choose from.
+The `-thinking` variants are the web UI's "extended thinking" switch, orthogonal to the model, not extra models. The backend then reports a `High` suffix (e.g. `3.1 Pro High`; earlier upstream called it `Extended`). **Only effective when signed in**: anonymous requests have the switch silently ignored, so they aren't exposed without a cookie.
 
-> **`@think=N` is deprecated.** The suffix was written into `inner[17]` and long treated as "thinking depth", but captures show it is the **turn index within a conversation** (first turn `[[0]]`, the follow-up carrying a conversation id `[[1]]`, incrementing from there) — nothing to do with reasoning depth. We open a fresh conversation for every request, so the value is always 0 and the parameter never did anything. The suffix is still accepted and ignored, so existing client configs don't break.
+The old names `gemini-3.5-flash`, `gemini-3.5-flash-thinking`, `gemini-3.5-flash-thinking-lite`, `gemini-auto` and `gemini-flash-lite` were **removed** (they now return 400): the backend has no entries for them, and keeping them only suggested there were five distinct models to choose from.
+
+> **`@think=N` is deprecated.** The suffix was written into `inner[17]` and long treated as "thinking depth", but captures show it is the **turn index within a conversation** (first turn `[[0]]`, the follow-up carrying a conversation id `[[1]]`, incrementing from there) — nothing to do with reasoning depth, so the parameter never did anything. The suffix is still accepted and ignored, so existing client configs don't break.
 
 ### Reasoning chain (`reasoning_content`)
 
 `gemini-3.1-pro` emits its own reasoning before every answer. The project exposes it
 as `reasoning_content`, the de-facto standard field, so clients like newapi, Cherry
-Studio and ChatBox render it as a collapsible "thinking" panel. The other two models
-produce no reasoning chain and the field is then omitted entirely.
+Studio and ChatBox render it as a collapsible "thinking" panel. 3.6 Flash and 3.5 Flash-Lite
+at the normal tier produce no reasoning chain, and the field is then omitted entirely.
 
 Non-streaming:
 
@@ -397,7 +401,7 @@ you do want to bill for it.
 
 Anonymous calls (no cookie) only reach the two text models above plus Gemini's built-in web search. `gemini-3.1-pro` is silently downgraded to 3.5 Flash-Lite anonymously, which is why it isn't exposed at all in that case.
 
-Attaching a cookie additionally unlocks `gemini-3.1-pro`, **extended thinking for all three models**, **image / video input**, **a longer context** (over-long conversations are sent as a text attachment, see below), and **image generation (`gemini-image`), music (`gemini-music`), canvas (`gemini-canvas`), video generation (`gemini-video`, needs a Pro account)**.
+Attaching a cookie additionally unlocks `gemini-3.1-pro`, **the extended-thinking (`-thinking`) variants**, **image / video input**, **a longer context** (over-long conversations are sent as a text attachment, see below), and **image generation (`gemini-image`), music (`gemini-music`), canvas (`gemini-canvas`), video generation (`gemini-video`, needs a Pro account)**.
 
 Deep research is still **not implemented** (a multi-step async flow). The panel's "actual model" column always shows which model the backend really used, so any downgrade is visible.
 
@@ -600,7 +604,7 @@ This does not change the blocking threshold, though: in a same-start comparison,
 |---|---|---|
 | `POST /v1/chat/completions` | ✅ | Real streaming: every upstream frame is forwarded as a delta (a 400-character Chinese answer produced 40 chunks). Chunk sequence is `delta{role}` → `delta{content}`×N → empty `delta` + `finish_reason` → `[DONE]`. **Degrades to buffered when `tools` are present** — a tool_call block needs the complete text to parse |
 | `POST /v1/responses` | ✅ | OpenAI Responses API (used by Codex CLI). **Not incrementally streamed** — still buffered, then emitted as the event sequence |
-| `GET /v1/models` | ✅ | 2 models anonymously, the third appears once a cookie is set |
+| `GET /v1/models` | ✅ | Only the 2 text models anonymously; the login-only ones are listed once the pool has a cookie |
 | `GET /` | ✅ | Health check, unauthenticated, returns status/version/models |
 | `/v1beta/models/…` (Google native format) | ✅ | See [Gemini native API](#gemini-native-api) |
 | `/v1/embeddings`, `/v1/images/*`, `/v1/audio/*` | ❌ | Not implemented, return 404 |
@@ -714,7 +718,7 @@ spread requests across exits with the proxy pool rather than adding accounts.
 ### What do I get with a free account versus Pro / paid?
 
 Anonymous (no cookie): `gemini-3.6-flash` and `gemini-3.5-flash-lite`, web search included.
-A free account's cookie additionally unlocks `gemini-3.1-pro`, the `-thinking` variants of all three models,
+A free account's cookie additionally unlocks `gemini-3.1-pro`, the `-thinking` variants of 3.6 Flash / 3.5 Flash-Lite / 3.1 Pro,
 image / video input, image generation, music and canvas.
 Paid accounts only: `gemini-3.8-flash`, `gemini-4-argon` (and their `-thinking` variants; free accounts are
 downgraded to 3.5 Flash-Lite) and video generation (`gemini-video` / `/v1/videos`).

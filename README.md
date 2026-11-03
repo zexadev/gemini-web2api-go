@@ -91,7 +91,8 @@
 **模型**
 - `gemini-3.6-flash`、`gemini-3.5-flash-lite` 匿名可用，含联网搜索
 - `gemini-3.1-pro` 挂 cookie 后可用，每次回答带思考链（`reasoning_content`）
-- 三个模型都有 `-thinking` 版（扩展思考），挂 cookie 后可用
+- `gemini-3.8-flash`、`gemini-4-argon` 要付费 / Ultra 账号的 cookie
+- 各模型都有 `-thinking` 版（扩展思考），挂 cookie 后可用
 - 响应里记录服务端**实际**用了哪个模型，被静默降级一眼可见
 
 **不被拦 / 跑得久**
@@ -331,7 +332,8 @@ Claude Code / Cursor 这类 MCP 客户端直接调用。
 
 ## 模型
 
-Gemini 网页端服务端只认三个模型（清单来自 `batchexecute?rpcids=otAQ7b`）：
+模型跟着 Gemini 网页端的模型选择器走（清单来自 `batchexecute?rpcids=otAQ7b`）：基础模型 5 个，
+3.6 Flash / 3.5 Flash-Lite / 3.1 Pro 免费号就能用，3.8 Flash / 4 Argon 要付费号；其余是它们的思考档和媒体工具。
 
 | 模型 | 描述 |
 |---|---|
@@ -357,26 +359,25 @@ Gemini 网页端服务端只认三个模型（清单来自 `batchexecute?rpcids=
 
 配了有效 cookie 时它是**真的 Pro**：连打 6 次服务端回报的都是 `3.1 Pro` 本身。
 
-三个 `-thinking` 是网页 UI 上「扩展思考」的开关，跟模型正交——三个模型都能开，
-不是三个额外的模型。服务端回报的名字会带 `Extended`（如 `3.6 Flash Extended`），
-思考链明显变长（实测 2467 / 1059 / 583 字符，对应普通版 0 / 0 / 268）。
+`-thinking` 是网页 UI 上「扩展思考」的开关，跟模型正交——每个模型都能开，
+不是额外的模型。服务端回报的名字会带 `High`（如 `3.1 Pro High`，上游早期叫 `Extended`），
+思考链明显变长（3.6 Flash / 3.5 Flash-Lite / 3.1 Pro 实测 2467 / 1059 / 583 字符，对应普通版 0 / 0 / 268）。
 **只在登录态生效**：匿名请求带上这个开关会被服务端静默忽略，所以没 cookie 时不暴露。
 
-只暴露这三个基础模型。旧的 `gemini-3.5-flash`、`gemini-3.5-flash-thinking`、
+旧的 `gemini-3.5-flash`、`gemini-3.5-flash-thinking`、
 `gemini-3.5-flash-thinking-lite`、`gemini-auto`、`gemini-flash-lite` **已移除**
 （传了会返回 400）——它们在服务端没有对应条目，留着只会让人以为有五种不同
 的模型可选。
 
 > **`@think=N` 已废弃。** 该后缀写进请求的 `inner[17]`，一直被当作"思考深度"，
 > 但抓包证明它是**会话内的轮次索引**（首轮 `[[0]]`，带会话 id 的第二轮 `[[1]]`，
-> 逐轮递增），跟思考深度无关。我们每次都开新会话，该值恒为 0，所以这个参数
-> 从来没有生效过。后缀仍被接受但直接忽略，不影响路由。
+> 逐轮递增），跟思考深度无关，所以这个参数从来没有生效过。后缀仍被接受但直接忽略，不影响路由。
 
 ### 思考链（reasoning_content）
 
 `gemini-3.1-pro` 每次回答前会先输出一段自己的推理过程，本项目把它按事实标准的
 `reasoning_content` 字段暴露出来，newapi、Cherry Studio、ChatBox 等客户端会渲染成
-可折叠的「思考过程」。另外两个模型不产出思考链，此时不会出现这个字段。
+可折叠的「思考过程」。普通档的 3.6 Flash / 3.5 Flash-Lite 不产出思考链，此时不会出现这个字段。
 
 非流式：
 
@@ -403,7 +404,7 @@ I've successfully defined..."
 匿名调用（不挂 cookie）只能拿到上面两个文本模型 + Gemini 自带的联网搜索。
 `gemini-3.1-pro` 匿名时被静默降级成 3.5 Flash-Lite，所以干脆不暴露。
 
-挂上 cookie 额外解锁：`gemini-3.1-pro`、**三个模型的扩展思考版**、**读图 / 读视频**、
+挂上 cookie 额外解锁：`gemini-3.1-pro`、**扩展思考版（`-thinking`）**、**读图 / 读视频**、
 **更长的上下文**（超长对话自动转成文本附件发，见下文），以及 **生图（`gemini-image`）**、
 **音乐（`gemini-music`）**、**画布（`gemini-canvas`）**、**生视频（`gemini-video`，要 Pro 号）**。
 
@@ -673,7 +674,7 @@ Chrome 指纹得有别的理由（比如担心长期账号画像），不能指�
 |---|---|---|
 | `POST /v1/chat/completions` | ✅ | 真流式：上游每出一帧就转发增量（实测 400 字中文回答产生 40 个 chunk）。chunk 序列为 `delta{role}` → `delta{content}`×N → 空 `delta`+`finish_reason` → `[DONE]`。**带 `tools` 时退化为收完再发**——tool_call 块要完整文本才能解析 |
 | `POST /v1/responses` | ✅ | OpenAI Responses API（Codex CLI 用）。**未做真流式**，仍是收完再按事件序列发 |
-| `GET /v1/models` | ✅ | 匿名 2 个，挂了 cookie 才出第 3 个 |
+| `GET /v1/models` | ✅ | 匿名只列 2 个文本模型，池里有 cookie 时再列出要登录的那些 |
 | `GET /` | ✅ | 健康检查，不鉴权，返回 status/version/models |
 | `/v1beta/models/…`（Google 原生格式） | ✅ | 见 [Gemini 原生接口](#gemini-原生接口) |
 | `/v1/embeddings`、`/v1/images/*`、`/v1/audio/*` | ❌ | 未实现，返回 404 |
@@ -782,7 +783,7 @@ Docker 用默认 bridge 网络时上游可能返回空内容（Google 拒绝某�
 ### 免费账号和 Pro / 付费账号差在哪？
 
 匿名（不挂 cookie）：`gemini-3.6-flash`、`gemini-3.5-flash-lite`，含联网搜索。
-挂免费账号 cookie：额外解锁 `gemini-3.1-pro`、三个模型的思考版（`-thinking`）、读图 / 读视频、生图、音乐、画布。
+挂免费账号 cookie：额外解锁 `gemini-3.1-pro`、3.6 Flash / 3.5 Flash-Lite / 3.1 Pro 的思考版（`-thinking`）、读图 / 读视频、生图、音乐、画布。
 付费账号才有：`gemini-3.8-flash`、`gemini-4-argon`（及其 `-thinking`，免费号都会被降级成 3.5 Flash-Lite）和生视频（`gemini-video` / `/v1/videos`）。
 
 ### 为什么每发一条消息，gemini.google.com 里就多出一个会话？
