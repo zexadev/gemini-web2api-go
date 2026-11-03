@@ -84,7 +84,7 @@ The projects most often compared with this one are the Python [Sophomoresty/gemi
   - failed jobs say why at once: `video_quota_exhausted` (every account's video budget is used up, see below) and `video_refused: <Gemini's reply>` (Gemini answered with text instead of a video)
   - video quota routing: an account whose video budget runs out is skipped for new videos until it resets, and a job that lands on one moves to the next account inside the same job. When every account is cooling down, `POST /v1/videos` answers `429` with `code: video_quota_exhausted` and `Retry-After`, and a running job fails with `retry_after=N` (seconds until the first reset)
   - `GET /admin/api/video-quota` (admin): per-account video usage in the rolling 5-hour window, status and reset time, read from each account's own Gemini history (read-only; Google's own reset time when a refusal carries it, otherwise first video + 5 h). Each refresh costs about 2 + N upstream requests per account (N = conversations updated in the last few hours; unchanged ones are cached), sent through the proxy pool and counted against the per-IP budget, so don't poll it. With `temporary_chat` or `auto_delete_conversation` on, videos made through this proxy aren't in the history and are undercounted (the response carries a `history_incomplete` note)
-- Real incremental streaming for plain chat (requests with `tools`, and `/v1/responses`, are buffered then sent)
+- Real incremental streaming: every upstream frame is forwarded as a delta, on `/v1/chat/completions`, `/v1/responses` and requests with `tools` alike (a tool-call block is sent once complete)
 - Bearer token / `x-api-key` / `x-goog-api-key` auth; the key can be rotated from the panel
 - `usage` computed with tiktoken; `reasoning_tokens` counted separately, not folded
   into `completion_tokens`
@@ -237,7 +237,7 @@ Every OpenAI-compatible client (Cherry Studio / ChatBox / Open WebUI / dify / Cu
 
 **newapi / one-api channel**: pick the OpenAI type, set the base URL to `http://localhost:8083` (use `http://host.docker.internal:8083` or the container name if newapi runs in Docker too), paste the API key, and list the models as `gemini-3.6-flash,gemini-3.5-flash-lite`.
 
-**Codex CLI** uses `/v1/responses` — point its base URL at `http://localhost:8083/v1`. The endpoint is implemented, but it is not incrementally streamed (see the protocol coverage table).
+**Codex CLI** uses `/v1/responses` — point its base URL at `http://localhost:8083/v1`.
 
 **Google-format clients** (the `google-genai` SDK, gateways' Google providers) use `/v1beta`; see [Gemini native API](#gemini-native-api) below. Gemini CLI has not been tested.
 
@@ -602,8 +602,8 @@ This does not change the blocking threshold, though: in a same-start comparison,
 
 | Endpoint | Status | Notes |
 |---|---|---|
-| `POST /v1/chat/completions` | ✅ | Real streaming: every upstream frame is forwarded as a delta (a 400-character Chinese answer produced 40 chunks). Chunk sequence is `delta{role}` → `delta{content}`×N → empty `delta` + `finish_reason` → `[DONE]`. **Degrades to buffered when `tools` are present** — a tool_call block needs the complete text to parse |
-| `POST /v1/responses` | ✅ | OpenAI Responses API (used by Codex CLI). **Not incrementally streamed** — still buffered, then emitted as the event sequence |
+| `POST /v1/chat/completions` | ✅ | Real streaming: every upstream frame is forwarded as a delta (a 400-character Chinese answer produced 40 chunks). Chunk sequence is `delta{role}` → `delta{content}`×N → empty `delta` + `finish_reason` → `[DONE]`. With `tools`, text still streams as it arrives; only the tool_call block is held back, parsed once complete, then sent |
+| `POST /v1/responses` | ✅ | OpenAI Responses API (used by Codex CLI). Real streaming, events emitted as they arrive; tool calls handled as above |
 | `GET /v1/models` | ✅ | Only the 2 text models anonymously; the login-only ones are listed once the pool has a cookie |
 | `GET /` | ✅ | Health check, unauthenticated, returns status/version/models |
 | `/v1beta/models/…` (Google native format) | ✅ | See [Gemini native API](#gemini-native-api) |
@@ -665,7 +665,6 @@ docker-compose.yml         single container, pulls the ghcr image by default, sq
 - **Token counts**: tiktoken estimates (Gemini's real tokenizer is not public), within about ±20% of the true value
 - **Cookie pool never auto-removes a bad account**: outcomes are written back (only 401/403 count as the cookie's fault — network errors and 302 blocks don't), but failures never trigger an automatic disable, so you have to do it from the panel. Also `last_ok_at` only means "a request using this cookie succeeded", not that the cookie is still valid — an expired cookie doesn't error, Gemini just treats you as anonymous and plain text requests still return 200
 - **Cookies exported from Chrome may not renew**: recent Chrome Device Bound Session Credentials bind the session to the machine, and rotating `__Secure-1PSIDTS` then returns 401. Export from Firefox for a session that can be kept alive
-- **Streaming is only half real**: `/v1/responses` and chat requests carrying `tools` are buffered; only plain chat streams incrementally
 
 ## Troubleshooting
 
@@ -764,8 +763,8 @@ roughly one megapixel; there is no 2K.
 
 ### Why does streaming turn into a single response behind Dify / a reverse proxy?
 
-Plain chat streams for real (every upstream frame is forwarded as it arrives); requests carrying `tools`, and
-`/v1/responses`, are buffered and sent whole. Responses already carry `X-Accel-Buffering: no`; if output still
+This project streams for real (every upstream frame is forwarded as it arrives), including requests carrying `tools`
+and `/v1/responses`; only a tool-call block is held until it is complete. Responses already carry `X-Accel-Buffering: no`; if output still
 arrives in one piece behind Nginx or similar, check the reverse proxy's own buffering — connected directly, the
 proxy streams chunk by chunk.
 

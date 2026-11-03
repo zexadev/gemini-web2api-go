@@ -84,7 +84,7 @@
   - 失败立即给出原因：`video_quota_exhausted`（所有账号的视频额度都用完了，见下）、`video_refused: <Gemini 的回复>`（Gemini 用文字回答而不是生成视频）
   - 视频额度换号：某个账号视频额度用完后，新视频会跳过它直到额度重置；任务落到这样的账号时会在同一个任务里换下一个账号。所有账号都在冷却时，`POST /v1/videos` 直接回 `429`（`code: video_quota_exhausted`，带 `Retry-After`），进行中的任务以 `retry_after=N`（距最早重置的秒数）失败
   - `GET /admin/api/video-quota`（管理接口）：每个账号滚动 5 小时窗口内的视频用量、状态和重置时间，读取各账号自己的 Gemini 历史（只读；拒绝消息里带 Google 的重置时间时用它，否则按首个视频 + 5 小时估算）。每次刷新每个号约 2 + N 次上游请求（N = 近几小时有更新的会话数，没变的走缓存），走代理池、计入单 IP 预算，别频繁轮询。开着 `temporary_chat` 或 `auto_delete_conversation` 时本服务生成的视频不在历史里，计数会偏少（响应里有 `history_incomplete` 提示）
-- 普通对话真流式：上游每出一帧就转发增量（带 `tools` 的请求和 `/v1/responses` 是收完再发）
+- 真流式：上游每出一帧就转发增量，`/v1/chat/completions`、`/v1/responses`、带 `tools` 的请求都是（工具调用块收完整再发）
 - Bearer token / `x-api-key` / `x-goog-api-key` 鉴权，key 可在面板轮换
 - `usage` 用 tiktoken 算，`reasoning_tokens` 单列不计入 `completion_tokens`
 
@@ -232,8 +232,7 @@ curl.exe --% http://127.0.0.1:8083/v1/chat/completions -H "Content-Type: applica
 docker 里就写 `http://host.docker.internal:8083` 或容器名），密钥填 API key，模型填
 `gemini-3.6-flash,gemini-3.5-flash-lite`。
 
-**Codex CLI** 走 `/v1/responses`，把 base url 指到 `http://localhost:8083/v1` 即可（该端点已实现，
-但不是增量流式，见下面的协议覆盖表）。
+**Codex CLI** 走 `/v1/responses`，把 base url 指到 `http://localhost:8083/v1` 即可。
 
 **Google 格式的客户端**（`google-genai` SDK、网关的 Google provider）走 `/v1beta`，见下面的
 [Gemini 原生接口](#gemini-原生接口)。Gemini CLI 没实测过。
@@ -672,8 +671,8 @@ Chrome 指纹得有别的理由（比如担心长期账号画像），不能指�
 
 | 路径 | 状态 | 备注 |
 |---|---|---|
-| `POST /v1/chat/completions` | ✅ | 真流式：上游每出一帧就转发增量（实测 400 字中文回答产生 40 个 chunk）。chunk 序列为 `delta{role}` → `delta{content}`×N → 空 `delta`+`finish_reason` → `[DONE]`。**带 `tools` 时退化为收完再发**——tool_call 块要完整文本才能解析 |
-| `POST /v1/responses` | ✅ | OpenAI Responses API（Codex CLI 用）。**未做真流式**，仍是收完再按事件序列发 |
+| `POST /v1/chat/completions` | ✅ | 真流式：上游每出一帧就转发增量（实测 400 字中文回答产生 40 个 chunk）。chunk 序列为 `delta{role}` → `delta{content}`×N → 空 `delta`+`finish_reason` → `[DONE]`。带 `tools` 时正文照样逐段推，只把 tool_call 块扣住、收完整解析后再发 |
+| `POST /v1/responses` | ✅ | OpenAI Responses API（Codex CLI 用）。真流式，事件序列逐段推；工具调用同上 |
 | `GET /v1/models` | ✅ | 匿名只列 2 个文本模型，池里有 cookie 时再列出要登录的那些 |
 | `GET /` | ✅ | 健康检查，不鉴权，返回 status/version/models |
 | `/v1beta/models/…`（Google 原生格式） | ✅ | 见 [Gemini 原生接口](#gemini-原生接口) |
@@ -735,7 +734,6 @@ docker-compose.yml         单容器，默认拉 ghcr 镜像，sqlite 挂 volume
 - **token 数**：用 tiktoken 估算（Gemini 真 tokenizer 未公开），跟真值偏差 ±20% 以内
 - **Cookie 池不自动摘除坏号**：请求成败会回写（只把 401/403 算作 cookie 的错，网络错误和 302 拦截不算），但失败到一定次数不会自动禁用，得看面板手动停。另外 `last_ok_at` 只说明"这个 cookie 参与的请求成功过"，不等于它仍然有效——cookie 过期后 Gemini 不报错，只是把你当匿名用户，纯文本请求照样 200
 - **Chrome 导出的 cookie 可能续不了**：新版 Chrome 的 Device Bound Session Credentials 把会话绑在设备上，`__Secure-1PSIDTS` 换发会 401。用 Firefox 导出即可长期续命
-- **假流式的那一半**：`/v1/responses` 和带 `tools` 的 chat 请求都是收完再发，只有普通 chat 流式是真增量
 
 ## 故障排查
 
@@ -819,7 +817,7 @@ Function calling 是 prompt 级实现，模型不一定每次都按格式返回�
 
 ### 为什么在 Dify / 反向代理后面流式变成了一次性输出？
 
-普通对话是真流式（上游每出一帧就转发）；带 `tools` 的请求和 `/v1/responses` 是收完再发。
+本项目是真流式（上游每出一帧就转发），带 `tools` 的请求和 `/v1/responses` 也是，只有工具调用块会收完整再发。
 响应已带 `X-Accel-Buffering: no`，如果经过 Nginx 等反代仍被缓冲，检查反代自己的缓冲设置；本项目直连时是逐段输出的。
 
 ### 支持 MySQL / PostgreSQL 吗？
