@@ -446,7 +446,12 @@ Saving takes effect **immediately**, no restart. Values live in the database and
 | Retry attempts / retry delay / upstream timeout | |
 | Detail retention days | only request details expire; aggregates are kept forever |
 | TLS fingerprint | `chrome_146` (default) / `chrome_144` / `chrome_133` / `firefox_147` / `safari_16_0` / `safari_ios_17_0` |
+| Firefox fingerprint (`firefox_fingerprint`) | experimental, off by default. When on, requests pose as Firefox: on direct connections the TLS handshake uses a Firefox fingerprint, the UA becomes Firefox, and Chrome-only `Sec-CH-UA` headers are dropped. Recommended together with cookies exported from Firefox. Through a proxy the TLS layer can't change (see [Fingerprint simulation](#fingerprint-simulation)), only the headers do |
 | Gemini `bl` version | upstream frontend build id, change it here when it expires |
+| Follow `bl` automatically (`gemini_bl_auto`) | fetches the latest build id from the `/app` page every 6 hours; if that fails or looks wrong, the pinned value above is used |
+| Breaker cooldown (`proxy_cooldown_min`) | how long a proxy rests after 5 consecutive failures before it returns to the pool, default 120 minutes (blocked exits were measured to recover in 106-121 minutes). 0 = never auto-recover; reset it on the Proxy pool page |
+| Fall back to direct when no proxy is available (`fallback_direct`) | off by default: when every proxy is full or tripped, return an error so the host IP is never exposed upstream. On: availability first, but the upstream sees the host's real exit |
+| Fall back to anonymous when the cookie is dead (`fallback_anon`) | off by default: return an error so you notice right away that the account needs replacing. On: keep going, but 3.1 Pro is silently downgraded to 3.5 Flash-Lite and the reasoning chain disappears |
 | New protocol (`web_channel`) | off by default. When on, chats go through processSession (WebChannel), the interface the current web app uses, instead of the legacy StreamGenerate. Same backend, different transport. The legacy interface still works; turn this on if it breaks. Text, image input, image generation and anonymous use are tested; multi-turn resume still uses the legacy interface, and extended thinking does not take effect on the new protocol yet (the normal tier is reported). |
 | Static proxy | fallback when the proxy pool is empty; normally use the Proxy pool page |
 | Request logging | |
@@ -572,9 +577,10 @@ Supported proxy schemes:
 - `socks5h://user:pass@host:port` (remote DNS resolution, avoids local DNS poisoning)
 
 **Scheduling rules**:
-- Once any proxy is configured, requests **never fall back to a direct connection** (so a full pool can't end up burning the host IP)
-- 5 failures trip the circuit breaker (resettable from the panel)
+- Once any proxy is configured, requests **never fall back to a direct connection** (so a full pool can't end up burning the host IP; turn on `fallback_direct` if availability matters more)
+- 5 consecutive failures trip the circuit breaker; the proxy returns automatically after `proxy_cooldown_min` (default 120 minutes), or reset it from the panel
 - All proxies full → HTTP 429 (no Google quota consumed; retry once a slot frees up)
+- All proxies disabled or cooling down → HTTP 502 `proxy_unavailable` (not a rate limit; wait for the cooldown or check the proxies)
 
 **Environment variables `HTTPS_PROXY` / `ALL_PROXY` are ignored.** Proxies come only from the proxy pool (`--proxy` / `config.json` merely seed the pool at startup). Otherwise a stray `export` on the host would silently change the exit IP while the panel still showed a direct connection, which makes troubleshooting misleading.
 

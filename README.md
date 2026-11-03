@@ -468,7 +468,12 @@ curl http://127.0.0.1:8083/v1/chat/completions \
 | 重试次数 / 重试间隔 / 上游超时 | |
 | 明细保留天数 | 过期只删明细，聚合数据永久保留 |
 | TLS 指纹 | `chrome_146`（默认）/ `chrome_144` / `chrome_133` / `firefox_147` / `safari_16_0` / `safari_ios_17_0` |
+| Firefox 指纹（`firefox_fingerprint`） | 实验，默认关。开启后请求伪装成 Firefox：直连时 TLS 握手走 Firefox 指纹、UA 换成 Firefox、去掉 Chrome 专有的 `Sec-CH-UA`。cookie 从 Firefox 导出时建议配套打开。走代理时 TLS 这层改不了（见[指纹模拟](#指纹模拟)），只有 header 变 |
 | Gemini `bl` 版本 | 上游前端版本号，过期时改这里 |
+| 自动跟随 bl 版本（`gemini_bl_auto`） | 每 6 小时从 `/app` 页面抓一次最新版本号，抓不到或格式不对就用上面钉的值 |
+| 熔断冷却（`proxy_cooldown_min`） | 代理连续失败 5 次后歇多久再自动放回池子，默认 120 分钟（实测被拦的出口 106-121 分钟自恢复）。0 = 不自动恢复，要去代理池页手动重置 |
+| 无可用代理时退回直连（`fallback_direct`） | 默认关：代理全满或全熔断时直接报错，本机 IP 不暴露给上游。开：可用性优先，但上游会看到本机出口 |
+| cookie 失效时降级匿名（`fallback_anon`） | 默认关：直接报错，能立刻发现该换号了。开：继续跑，但 3.1 Pro 会被静默降级成 3.5 Flash-Lite、思考链消失 |
 | 新协议（`web_channel`） | 默认关。开启后对话改走网页新版用的 processSession（WebChannel）接口，而不是老的 StreamGenerate。后端是同一个，只换传输方式；老接口目前仍正常，老接口出问题时再打开。文本、看图、生图、匿名都已实测；多轮续接仍走老接口；扩展思考在新协议上暂时不生效（回报普通档）。 |
 | 打印请求日志 | |
 
@@ -635,9 +640,10 @@ JSON 形式 `{"cookie": "SID=...; ...", "sapisid": "..."}` 也吃。带 `SAPISID
 - `socks5h://user:pass@host:port`（远程 DNS 解析，绕开本地 DNS 污染）
 
 **自动调度规则**：
-- 配了代理后，**不会再退回直连**（避免代理满了把主机 IP 也打爆）
-- 失败 5 次自动熔断（管理面板可手动重置）
+- 配了代理后，**不会再退回直连**（避免代理满了把主机 IP 也打爆；要可用性优先可打开 `fallback_direct`）
+- 连续失败 5 次自动熔断，冷却 `proxy_cooldown_min`（默认 120 分钟）后自动放回，管理面板也可手动重置
 - 全部代理满 → 返回 HTTP 429（不消耗 Google 配额，等空位再重试）
+- 全部代理被停用或在熔断冷却中 → 返回 HTTP 502 `proxy_unavailable`（这时不是限流，等冷却或检查代理）
 
 **不读 `HTTPS_PROXY` / `ALL_PROXY` 环境变量。** 代理只从代理池里取
 （`--proxy` / `config.json` 只是启动时往池子里播种）——否则宿主机上一个随手 export 的变量会悄悄改变
