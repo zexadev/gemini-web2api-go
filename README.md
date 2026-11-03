@@ -480,7 +480,7 @@ curl http://127.0.0.1:8083/v1/chat/completions \
 | 项 | 说明 |
 |---|---|
 | API Key | 首次启动自动生成，面板里可轮换或自定义 |
-| Google Cookie | 面板「设置」页直接粘贴，保存即生效。挂上之后 `gemini-3.1-pro` 才会出现在模型列表里 |
+| Google Cookie | 面板「Cookie 池」页导入，保存即生效，可以导入多个账号。池里有账号后 `gemini-3.1-pro` 等要登录的模型才会出现在模型列表里 |
 
 两者都存在数据库里。已保存的值不回显（cookie 只显示识别到几个、关键项齐不齐）。
 
@@ -549,9 +549,10 @@ JSON 形式 `{"cookie": "SID=...; ...", "sapisid": "..."}` 也吃。带 `SAPISID
 **cookie 只有「Cookie 池」这一个入口**：每个请求按最久未用优先挑一个 enabled 账号，
 挑中即推进轮转。池子里有 enabled 账号，`gemini-3.1-pro` 就会出现在模型列表里。
 
-账号的「失败次数 / 最近成功」会随请求自动更新。判据是**只把 401/403 算作 cookie 的错**：
-网络错误、代理失败、被 Google 拦（302）一律不计——住宅代理的出口退化率很高，把这些算
-进去会让失败次数变成代理噪音，好 cookie 反而被记成失败最多的那个。
+账号的「失败次数 / 最近成功」会随请求自动更新。判据是**只把确实是 cookie 的问题算作失败**：
+401/403、页面没有登录态、被跳到 Google 登录页。网络错误、超时、代理失败、被 Google 拦（跳 `/sorry`）
+一律不计——住宅代理的出口退化率很高，把这些算进去会让失败次数变成代理噪音，好 cookie 反而被记成
+失败最多的那个。**连续 3 次鉴权失败的账号会被自动停用**（不删除，面板上标红，重导后再启用）。
 
 注意「最近成功」只说明这个 cookie 参与的请求成功过，**不等于 cookie 仍然有效**：cookie
 过期后 Gemini 不报错，只是把你当匿名用户。要确认有效性点列表里的「检测」按钮，它区分
@@ -732,7 +733,7 @@ docker-compose.yml         单容器，默认拉 ghcr 镜像，sqlite 挂 volume
 - **多模态**：读图/读视频要挂 cookie；生图/音乐/画布/生视频挂 cookie 可用，其中生视频还要 Pro/付费号
 - **长上下文有两堵墙**：请求体约 13 万字节、附件约 16 万字节（后者是模型能看到的内容**总量**，切成多份附件不涨额度）。挂 cookie 只能把可用长度从 13 万提到约 16 万，真正的长对话仍需客户端自己压缩
 - **token 数**：用 tiktoken 估算（Gemini 真 tokenizer 未公开），跟真值偏差 ±20% 以内
-- **Cookie 池不自动摘除坏号**：请求成败会回写（只把 401/403 算作 cookie 的错，网络错误和 302 拦截不算），但失败到一定次数不会自动禁用，得看面板手动停。另外 `last_ok_at` 只说明"这个 cookie 参与的请求成功过"，不等于它仍然有效——cookie 过期后 Gemini 不报错，只是把你当匿名用户，纯文本请求照样 200
+- **Cookie 有效性靠鉴权失败判断**：连续 3 次鉴权失败才自动停用（网络错误和 `/sorry` 拦截不算）。`last_ok_at` 只说明"这个 cookie 参与的请求成功过"，不等于它仍然有效——cookie 过期后 Gemini 不报错，只是把你当匿名用户，纯文本请求照样 200
 - **Chrome 导出的 cookie 可能续不了**：新版 Chrome 的 Device Bound Session Credentials 把会话绑在设备上，`__Secure-1PSIDTS` 换发会 401。用 Firefox 导出即可长期续命
 
 ## 故障排查
@@ -744,7 +745,7 @@ docker-compose.yml         单容器，默认拉 ghcr 镜像，sqlite 挂 volume
 | 偶发空响应、面板记为上游拒绝 | 上游瞬时拒绝（`1155`），没有可预测阈值，跟频率/并发/累积次数都无关 | 重发一次通常就好。**降 RPM 解决不了**，实测跟频率无关 |
 | 请求全部超时 | 本机到 `gemini.google.com` 不通 | 配代理（面板「代理池」或 `--proxy`）。注意**不读 `HTTPS_PROXY` 环境变量** |
 | 启动即退出，报 `unable to open database file (14)` | 容器以 nonroot(uid 65532) 运行，而 bind mount 的宿主目录属主是 root，写不进去 | 改用具名卷（compose 默认已是），或 `sudo chown -R 65532:65532 ./data` |
-| 选 `gemini-3.1-pro` 直接报错 | 没配 cookie 时它不暴露，这是故意的 | 挂 cookie（面板「设置」或「Cookie 池」）后即可用 |
+| 选 `gemini-3.1-pro` 直接报错 | 没配 cookie 时它不暴露，这是故意的 | 在面板「Cookie 池」导入 cookie 后即可用 |
 | 挂了 cookie 后请求全部 502 | cookie 已失效，取不到 XSRF token | 重新导出 cookie。判据：请求 `gemini-3.1-pro` 若回报 3.5 Flash-Lite 就是失效了 |
 | cookie 大约半小时就失效，保活没用 | Chrome 设备绑定会话，`__Secure-1PSIDTS` 换发 401 | 用 **Firefox** 重新登录再导出；点面板「保活」应能看到刷新了 `__Secure-1PSIDTS` |
 | 付费号的 cookie，付费模型却回报 3.5 Flash-Lite，「检测」显示登录态有效 | 浏览器里登了多个 Google 号，订阅不在默认号上，请求落到了默认号 | 在 Cookie 池给这条填「账号序号」（那个号的 Gemini 地址栏 `/u/1/` 就填 1），见上文 |

@@ -458,7 +458,7 @@ Every value is range-checked on the server (for example `retry_attempts` accepts
 | Item | Notes |
 |---|---|
 | API key | generated on first boot, rotatable or replaceable from the panel |
-| Google cookie | paste it on the Settings page, effective on save. Once set, `gemini-3.1-pro` appears in the model list |
+| Google cookie | import it on the Cookie pool page, effective on save; several accounts can be imported. Once the pool has an account, `gemini-3.1-pro` and the other login-only models appear in the model list |
 
 Both live in the database. Saved values are never echoed back (the cookie only reports how many cookies were recognised and whether the key ones are present).
 
@@ -514,7 +514,7 @@ The JSON form `{"cookie": "SID=...; ...", "sapisid": "..."}` is also accepted. R
 
 **The Cookie pool page is the only place cookies live.** Each request picks an enabled account least-recently-used first and advances the rotation. As soon as the pool holds an enabled account, `gemini-3.1-pro` appears in the model list.
 
-An account's "failure count" and "last success" columns update automatically. Only **401/403 counts as the cookie's fault** — network errors, proxy failures and Google blocks (302) are excluded, because residential exits degrade often enough that counting them would turn the failure count into proxy noise and make healthy cookies look like the worst offenders.
+An account's "failure count" and "last success" columns update automatically. Only **failures that really are the cookie's fault** count: 401/403, a page with no signed-in session, or a redirect to the Google sign-in page. Network errors, timeouts, proxy failures and Google blocks (redirects to `/sorry`) are excluded, because residential exits degrade often enough that counting them would turn the failure count into proxy noise and make healthy cookies look like the worst offenders. **An account with 3 consecutive auth failures is disabled automatically** (not deleted: it is flagged red in the panel, re-import and enable it again).
 
 Note that "last success" only means a request involving this cookie succeeded; it does **not** prove the cookie is still valid. An expired cookie doesn't error — Gemini just treats you as anonymous. Use the **Check** button in the list to tell "still signed in" from "expired/invalid" without spending a real conversation on it.
 
@@ -663,7 +663,7 @@ docker-compose.yml         single container, pulls the ghcr image by default, sq
 - **Multimodal**: image/video input needs a cookie. Image, music, canvas and video generation work with a cookie; video generation additionally needs a Pro/paid account
 - **Long context hits two walls**: ~130,000 bytes for the request body and ~160,000 bytes for attachments (the latter is the **total** amount of content the model can see — splitting it across several attachments does not raise the budget). A cookie only takes the usable length from 130K to ~160K; genuinely long conversations still have to be compacted by the client
 - **Token counts**: tiktoken estimates (Gemini's real tokenizer is not public), within about ±20% of the true value
-- **Cookie pool never auto-removes a bad account**: outcomes are written back (only 401/403 count as the cookie's fault — network errors and 302 blocks don't), but failures never trigger an automatic disable, so you have to do it from the panel. Also `last_ok_at` only means "a request using this cookie succeeded", not that the cookie is still valid — an expired cookie doesn't error, Gemini just treats you as anonymous and plain text requests still return 200
+- **Cookie validity is judged by auth failures**: an account is disabled automatically only after 3 consecutive auth failures (network errors and `/sorry` blocks don't count). `last_ok_at` only means "a request using this cookie succeeded", not that the cookie is still valid — an expired cookie doesn't error, Gemini just treats you as anonymous and plain text requests still return 200
 - **Cookies exported from Chrome may not renew**: recent Chrome Device Bound Session Credentials bind the session to the machine, and rotating `__Secure-1PSIDTS` then returns 401. Export from Firefox for a session that can be kept alive
 
 ## Troubleshooting
