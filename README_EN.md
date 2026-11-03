@@ -13,6 +13,8 @@
 
 [中文文档](README.md) | English
 
+> Official repository: **[github.com/zexadev/gemini-web2api-go](https://github.com/zexadev/gemini-web2api-go)** — releases, issues and docs live here; forks are not maintained by this project.
+
 Turn the Google Gemini web app into an OpenAI-compatible API. **Single binary**, **no account needed** (anonymous works), **real Chrome 146 fingerprint**, **SQLite persistence**, ships with an **admin dashboard**.
 
 ---
