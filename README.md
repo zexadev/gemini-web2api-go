@@ -15,7 +15,7 @@
 
 > 官方仓库：**[github.com/zexadev/gemini-web2api-go](https://github.com/zexadev/gemini-web2api-go)** —— 发版、issue、文档都在这里；各 fork 不由本仓维护。
 
-把 Google Gemini 网页端反代成 OpenAI 兼容 API。**单二进制**，**零账号**（匿名可跑），**Chrome 146 真指纹**，**SQLite / MySQL / PostgreSQL**，自带**中文管理面板**。
+把 Google Gemini 网页端反代成 OpenAI 兼容 API，同一端口还提供 Gemini 原生接口和 MCP 工具。**单二进制**，**零账号**（匿名可跑），**Chrome 146 真指纹**，**SQLite / MySQL / PostgreSQL**，自带**中文管理面板**。
 
 ---
 
