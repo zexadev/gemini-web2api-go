@@ -24,7 +24,7 @@ cx = W / 2
 p = [
     f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" '
     f'viewBox="0 0 {W} {H}" role="img" '
-    f'aria-label="gemini-web2api-go — the Gemini web protocol, spoken as OpenAI">',
+    f'aria-label="gemini-web2api-go — Gemini web to OpenAI-compatible, native Gemini API and MCP">',
     '<defs><linearGradient id="sweep" x1="0" y1="0" x2="1" y2="0">'
     '<stop offset="0" stop-color="#4285F4"/>'
     '<stop offset="0.55" stop-color="#9B72CB"/>'
@@ -34,7 +34,7 @@ p = [
     f'letter-spacing="-1.2" fill="#E9EEF6" text-anchor="middle">gemini-web2api-go</text>',
     f'<rect x="{cx - 190}" y="136" width="380" height="2.5" rx="1.25" fill="url(#sweep)"/>',
     f'<text x="{cx}" y="174" font-family="{MONO}" font-size="15" fill="#8695AE" '
-    f'text-anchor="middle">gemini.google.com &#8594; OpenAI-compatible /v1</text>',
+    f'text-anchor="middle">gemini.google.com &#8594; OpenAI &#183; Gemini API &#183; MCP</text>',
 ]
 
 # 一行胶囊，手工居中排版（SVG 没有 flex）

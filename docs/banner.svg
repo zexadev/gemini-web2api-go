@@ -1,9 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="260" viewBox="0 0 1280 260" role="img" aria-label="gemini-web2api-go — the Gemini web protocol, spoken as OpenAI">
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="260" viewBox="0 0 1280 260" role="img" aria-label="gemini-web2api-go — Gemini web to OpenAI-compatible, native Gemini API and MCP">
 <defs><linearGradient id="sweep" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#4285F4"/><stop offset="0.55" stop-color="#9B72CB"/><stop offset="1" stop-color="#D96570"/></linearGradient></defs>
 <rect width="1280" height="260" fill="#0D1117"/>
 <text x="640.0" y="112" font-family="ui-monospace,SFMono-Regular,SF Mono,Menlo,Consolas,Liberation Mono,monospace" font-size="46" font-weight="600" letter-spacing="-1.2" fill="#E9EEF6" text-anchor="middle">gemini-web2api-go</text>
 <rect x="450.0" y="136" width="380" height="2.5" rx="1.25" fill="url(#sweep)"/>
-<text x="640.0" y="174" font-family="ui-monospace,SFMono-Regular,SF Mono,Menlo,Consolas,Liberation Mono,monospace" font-size="15" fill="#8695AE" text-anchor="middle">gemini.google.com &#8594; OpenAI-compatible /v1</text>
+<text x="640.0" y="174" font-family="ui-monospace,SFMono-Regular,SF Mono,Menlo,Consolas,Liberation Mono,monospace" font-size="15" fill="#8695AE" text-anchor="middle">gemini.google.com &#8594; OpenAI &#183; Gemini API &#183; MCP</text>
 <rect x="396.6" y="200" width="101.0" height="27" rx="13.5" fill="#161C26" stroke="#242C3A"/>
 <text x="447.1" y="218" font-family="ui-monospace,SFMono-Regular,SF Mono,Menlo,Consolas,Liberation Mono,monospace" font-size="12" fill="#7D8CA6" text-anchor="middle">no account</text>
 <rect x="508.6" y="200" width="101.0" height="27" rx="13.5" fill="#161C26" stroke="#242C3A"/>
