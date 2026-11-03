@@ -758,8 +758,10 @@ also check that the entry's "account index" in the Cookie pool is right.
 ### Which model does image generation use? Can it output 2K?
 
 `gemini-image` uses the web app's image-generation tool slot rather than a pinned model: whatever backend the web
-app currently uses (e.g. Nano Banana 2) is what you get, automatically. Resolution is capped by the web app at
-roughly one megapixel; there is no 2K.
+app currently uses (e.g. Nano Banana 2) is what you get, automatically. By default you get about one
+megapixel (e.g. 1376×768). On an Ultra account, turn on **Full-size image download** (`image_upscale`) in Settings to
+get the 2× upscale, 2752×1536 (about 2K); other accounts don't get the upscale, but they get the original file instead
+of the recompressed one.
 
 ### Why does streaming turn into a single response behind Dify / a reverse proxy?
 
