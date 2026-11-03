@@ -15,7 +15,7 @@
 
 > 官方仓库：**[github.com/zexadev/gemini-web2api-go](https://github.com/zexadev/gemini-web2api-go)** —— 发版、issue、文档都在这里；各 fork 不由本仓维护。
 
-把 Google Gemini 网页端反代成 OpenAI 兼容 API。**单二进制**，**零账号**（匿名可跑），**Chrome 146 真指纹**，**SQLite 持久化**，自带**中文管理面板**。
+把 Google Gemini 网页端反代成 OpenAI 兼容 API。**单二进制**，**零账号**（匿名可跑），**Chrome 146 真指纹**，**SQLite / MySQL / PostgreSQL**，自带**中文管理面板**。
 
 ---
 
@@ -165,7 +165,7 @@ go build -o gemini-web2api-go .
 启动后会看到 banner：
 
 ```
-gemini-web2api-go v4.0.0
+gemini-web2api-go v4.27.0
   Listening:   http://0.0.0.0:8083
   Base URL:    http://localhost:8083/v1
   API key:     sk-gemini-XX...XXXX  (mutable in admin UI)
@@ -173,7 +173,7 @@ gemini-web2api-go v4.0.0
   DB:          ./data/gemini.db
   Models:      [gemini-3.5-flash-lite gemini-3.6-flash]
   Cookie:      none (anonymous)
-  Proxy:       none
+  Proxy:       none (direct)
   Impersonate: chrome_146
   Tokenizer:   tiktoken cl100k_base
   Per-IP 限流: 并发=5 / RPM=30 / RPH=80
@@ -704,14 +704,26 @@ internal/app/              全部实现
   client.go                tls-client (chrome146) + stdlib (走代理) 双 client
   gemini.go                模型表 + 80 槽 payload + 模型 header + StreamGenerate + wrb.fr 解析
   webchannel.go            新协议 processSession（WebChannel）传输，开关 web_channel
+  conversation.go          服务端多轮续接（multi_turn）：按历史前缀认续接，只发最新一句
+  media.go                 生图 / 音乐 / 画布 / 视频：工具位 + 产物抽取与下载
+  image_upscale.go         生图下载原图/放大（rpc c8o8Fe，开关 image_upscale）
+  search.go                联网搜索引用来源抽取
+  strict_model.go          严格模型校验：识别静默降级、按（账号, 模型）冷却
   xsrf.go                  带 cookie 时必需的 XSRF token：抓取 + 按 cookie 缓存 + 过期自愈
   messages.go              OpenAI messages → prompt，tool_call 解析
   server.go                /v1/* + 限流入口 + 参数校验 + metrics 写入
+  gemini_api.go            Gemini 原生接口 /v1beta/models/…（翻成同一条对话链）
+  videos.go                /v1/videos 异步视频任务
+  video_cooldown.go        视频额度用完的账号冷却 + 任务内换号
+  video_quota.go           /admin/api/video-quota：按账号读历史统计视频用量
+  mcp.go                   MCP server（/mcp）：web_search 等工具
+  mcp_media.go             MCP 媒体工具：生图 / 音乐 / 视频
   sse.go                   SSE 写出器（懒发 header，失败仍能返回 502 JSON）
   ratelimit.go             每 IP slot 独立并发 / RPM / RPH 限流
   tokenizer.go             tiktoken cl100k_base 单例
   apikey.go                API key（启动参数锁定 / 面板可轮换 双轨）
-  db.go                    SQLite schema：sessions / requests / accounts / kv
+  db.go                    数据库 schema（SQLite / MySQL / PostgreSQL 共用）：sessions / requests / accounts / kv
+  dbdialect.go             多数据库方言：SQL_DSN 选 MySQL / PostgreSQL，占位符改写
   proxy.go                 代理池 CRUD + 容量调度 + 熔断
   cookie_pool.go           Cookie 池数据层（CRUD + 最久未用优先挑选 + 健康度回写 + 刷新项合并）
   rotate.go                会话保活（RotateCookies：1PSIDTS 哨兵 + SIDCC iframe，间隔由服务端指定）

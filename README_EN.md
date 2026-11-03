@@ -15,7 +15,7 @@
 
 > Official repository: **[github.com/zexadev/gemini-web2api-go](https://github.com/zexadev/gemini-web2api-go)** — releases, issues and docs live here; forks are not maintained by this project.
 
-Turn the Google Gemini web app into an OpenAI-compatible API. **Single binary**, **no account needed** (anonymous works), **real Chrome 146 fingerprint**, **SQLite persistence**, ships with an **admin dashboard**.
+Turn the Google Gemini web app into an OpenAI-compatible API. **Single binary**, **no account needed** (anonymous works), **real Chrome 146 fingerprint**, **SQLite / MySQL / PostgreSQL**, ships with an **admin dashboard**.
 
 ---
 
@@ -173,7 +173,7 @@ Changed the code and want it in a container? Uncomment the two `build:` lines in
 The startup banner:
 
 ```
-gemini-web2api-go v4.0.0
+gemini-web2api-go v4.27.0
   Listening:   http://0.0.0.0:8083
   Base URL:    http://localhost:8083/v1
   API key:     sk-gemini-XX...XXXX  (mutable in admin UI)
@@ -181,7 +181,7 @@ gemini-web2api-go v4.0.0
   DB:          ./data/gemini.db
   Models:      [gemini-3.5-flash-lite gemini-3.6-flash]
   Cookie:      none (anonymous)
-  Proxy:       none
+  Proxy:       none (direct)
   Impersonate: chrome_146
   Tokenizer:   tiktoken cl100k_base
   Per-IP 限流: 并发=5 / RPM=30 / RPH=80
@@ -634,14 +634,26 @@ internal/app/              everything else
   client.go                tls-client (chrome146) + stdlib (when proxied)
   gemini.go                model table + 80-slot payload + model header + StreamGenerate + wrb.fr parsing
   webchannel.go            new-protocol transport, processSession (WebChannel), switch web_channel
+  conversation.go          server-side multi-turn (multi_turn): matches the history prefix, sends only the latest message
+  media.go                 image / music / canvas / video: tool slot, artifact extraction and download
+  image_upscale.go         full-size / upscaled image download (rpc c8o8Fe, switch image_upscale)
+  search.go                web-search source extraction
+  strict_model.go          strict model check: detects silent downgrades, cools down per (account, model)
   xsrf.go                  XSRF token required with a cookie: fetch + per-cookie cache + self-heal
   messages.go              OpenAI messages → prompt, tool_call parsing
   server.go                /v1/* + rate-limit entry + request validation + metrics
+  gemini_api.go            native Gemini API /v1beta/models/… (translated onto the same chat path)
+  videos.go                /v1/videos async video jobs
+  video_cooldown.go        cooldown for accounts out of video quota + switching accounts within a job
+  video_quota.go           /admin/api/video-quota: per-account video usage read from history
+  mcp.go                   MCP server (/mcp): web_search and other tools
+  mcp_media.go             MCP media tools: image / music / video
   sse.go                   SSE writer (lazy header, so early failures still return 502 JSON)
   ratelimit.go             per-IP-slot concurrency / RPM / RPH
   tokenizer.go             tiktoken cl100k_base singleton
   apikey.go                API key (locked by flag / rotatable from the panel)
-  db.go                    SQLite schema: sessions / requests / accounts / kv
+  db.go                    database schema (shared by SQLite / MySQL / PostgreSQL): sessions / requests / accounts / kv
+  dbdialect.go             multi-database dialects: SQL_DSN selects MySQL / PostgreSQL, placeholder rewriting
   proxy.go                 proxy pool CRUD + capacity scheduling + circuit breaker
   cookie_pool.go           cookie pool data layer (CRUD + least-recently-used pick + health writeback + refresh merge)
   rotate.go                session keepalive (RotateCookies: 1PSIDTS sentinel + SIDCC iframe, server-dictated interval)
