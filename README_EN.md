@@ -57,6 +57,21 @@ It turns a call like this:
 
 This is not a wrapper around Google's official API ([generativelanguage.googleapis.com](https://generativelanguage.googleapis.com)) — it proxies **the browser protocol directly**, so **no Google API key and no paid quota are required**.
 
+### Compared with similar projects
+
+The projects most often compared with this one are the Python [Sophomoresty/gemini-web2api](https://github.com/Sophomoresty/gemini-web2api), the Python library [HanaokaYuzu/Gemini-API](https://github.com/HanaokaYuzu/Gemini-API) and [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI). Going by their READMEs (2026-11-03), listing only what those READMEs let us verify:
+
+| | gemini-web2api-go (this repo) | Sophomoresty/gemini-web2api | HanaokaYuzu/Gemini-API | CLIProxyAPI |
+|---|---|---|---|---|
+| Upstream | gemini.google.com web protocol, no API key | Same | Same | Accounts on official channels: Gemini API / AI Studio / Gemini CLI / Antigravity (OAuth / API key) |
+| Form | Single Go binary, distroless container image | Single Python file | Python library (imported in code) + CLI | Go service |
+| API surface | OpenAI-compatible + native Gemini + `/v1/videos` + MCP tools | OpenAI-compatible + native Gemini | Python API, no HTTP server | OpenAI / Gemini / Claude compatible |
+| Multiple accounts | Cookie pool with rotation, automatic renewal, each account pinned to its own exit | One cookie file (`cookie_file` + `auth_user`) | One cookie set, refreshed in the background | Multi-account load balancing |
+| Exit IPs | Proxy pool: circuit breaker, rotation, each proxy its own rate-limit slot | One proxy | One proxy | — (official API quota) |
+| Silent downgrade | `strict_model`: a downgraded answer does not count, retry on the next account, `429` when the whole pool is downgraded | README notes that a free account asking for Pro gets Flash | Not mentioned in README | — (official API quota) |
+| Admin panel | Built in | Not mentioned in README | Not mentioned in README | Companion project CPAMC, installed separately |
+| Gemini 4 Argon | With a paid-account cookie, two thinking tiers | Not mentioned in README | Models discovered per account, not named in README | Yes, depending on channel |
+
 ## Features
 
 **API**

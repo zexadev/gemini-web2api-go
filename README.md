@@ -57,6 +57,21 @@
 
 不是 Google 官方 API（[generativelanguage.googleapis.com](https://generativelanguage.googleapis.com)）的二次封装——**直接反代浏览器协议**，所以**不需要 Google API Key、不需要付费配额**。
 
+### 和同类项目的区别
+
+常被拿来比较的是 Python 版 [Sophomoresty/gemini-web2api](https://github.com/Sophomoresty/gemini-web2api)、Python 库 [HanaokaYuzu/Gemini-API](https://github.com/HanaokaYuzu/Gemini-API) 和 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)。按各自 README（2026-11-03）对照，只列能从 README 核实的差异：
+
+| | gemini-web2api-go（本仓） | Sophomoresty/gemini-web2api | HanaokaYuzu/Gemini-API | CLIProxyAPI |
+|---|---|---|---|---|
+| 上游 | gemini.google.com 网页协议，不要 API key | 同左 | 同左 | 官方 Gemini API / AI Studio / Gemini CLI / Antigravity 等渠道的账号（OAuth / API key） |
+| 形态 | Go 单二进制，distroless 容器镜像 | Python 单文件 | Python 库（在代码里 import）+ CLI | Go 服务 |
+| 对外接口 | OpenAI 兼容 + Gemini 原生 + `/v1/videos` + MCP 工具 | OpenAI 兼容 + Gemini 原生 | Python API，不提供 HTTP 服务 | OpenAI / Gemini / Claude 兼容 |
+| 多账号 | Cookie 池轮转、自动续期、每个账号粘住自己的出口 | 单个 cookie 文件（`cookie_file` + `auth_user`） | 单组 cookie，后台自动续期 | 多账号负载均衡 |
+| 出口 IP | 代理池：熔断、轮转，每个代理是独立限流槽 | 单个代理 | 单个代理 | —（走官方 API 额度） |
+| 静默降级 | `strict_model`：降级回答不算成功，换号重试，全池降级回 `429` | README 注明免费号请求 Pro 会落到 Flash | README 未提 | —（走官方 API 额度） |
+| 管理面板 | 内置 | README 未提 | README 未提 | 配套项目 CPAMC，另装 |
+| Gemini 4 Argon | 付费号 cookie 可用，含两档 thinking | README 未提 | 模型按账号动态发现，README 未点名 | 有，取决于渠道 |
+
 ## 功能
 
 **接口**
