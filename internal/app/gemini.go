@@ -737,6 +737,10 @@ func streamGenerateOnce(prompt, latest string, mc ModelConfig, pending []pending
 					return err
 				}
 			}
+			// 出错话术在吐给客户端之前拦下，中断读取走下面的重试。
+			if failureReplyInLine(line) {
+				return errUpstreamFailureReply
+			}
 			// 思考链先推完才轮到正文，所以先处理它，客户端拿到的顺序才对。
 			if onReasoning != nil {
 				if r := reasoningInLine(line); r != "" {
@@ -794,7 +798,8 @@ func streamGenerateOnce(prompt, latest string, mc ModelConfig, pending []pending
 		}
 		if err != nil {
 			lastErr = err
-			if pickedOK {
+			// 出错话术不记进代理健康度：匿名直连也一样出，跟出口无关，算进去会误熔断。
+			if pickedOK && !errors.Is(err, errUpstreamFailureReply) {
 				recordProxyResult(picked.ID, false, err.Error())
 			}
 			// 已经往客户端吐过内容就不能重试，否则会重复（思考链也算吐过）。
@@ -860,6 +865,18 @@ func streamGenerateOnce(prompt, latest string, mc ModelConfig, pending []pending
 			}
 			if attempt < rtCfg().RetryAttempts-1 {
 				logf("retry %d/%d: 空响应（无内容帧，%d 字节）", attempt+1, rtCfg().RetryAttempts, len(raw))
+				time.Sleep(time.Duration(rtCfg().RetryDelaySec) * time.Second)
+			}
+			continue
+		}
+		// 非流式没有 lineCB，在这里补判出错话术。重试跟空响应同理：重发通常就好。
+		if hasFailureReply(string(raw)) {
+			lastErr = errUpstreamFailureReply
+			if tracker.emitted != "" || rtracker.emitted != "" {
+				break
+			}
+			if attempt < rtCfg().RetryAttempts-1 {
+				logf("retry %d/%d: %v", attempt+1, rtCfg().RetryAttempts, lastErr)
 				time.Sleep(time.Duration(rtCfg().RetryDelaySec) * time.Second)
 			}
 			continue
@@ -1193,6 +1210,55 @@ func textsInLine(line string) []string {
 		}
 	}
 	return texts
+}
+
+// errUpstreamFailureReply 是上游「出错话术」回复：HTTP 200、有正文，但正文是
+// "I seem to be encountering an error" / "Sorry, something went wrong" 这类固定句子，
+// 不是模型真回答（#68）。
+var errUpstreamFailureReply = errors.New("upstream returned a failure reply (inner[31] set)")
+
+// failureReplyInLine 判断这一帧是不是上游的出错话术回复。
+//
+// 判据是 inner[31] 为真（老协议 true、新协议 JSPB 里是 1）。实测（2026-11-05，匿名 +
+// Ultra 号、新老协议）6/6 条出错话术都带它，36 条正常回答和 3 条内容政策拒答（"I cannot
+// …"）都不带。不按文案匹配：文案至少 4 种、随语言变。这一位在第一个内容帧就有，所以
+// 流式也能在吐给客户端之前拦下。
+func failureReplyInLine(line string) bool {
+	if !strings.Contains(line, `"wrb.fr"`) || len(line) < 200 {
+		return false
+	}
+	var arr []interface{}
+	if err := json.Unmarshal([]byte(line), &arr); err != nil || len(arr) == 0 {
+		return false
+	}
+	first, ok := arr[0].([]interface{})
+	if !ok || len(first) < 3 {
+		return false
+	}
+	innerStr, ok := first[2].(string)
+	if !ok || len(innerStr) < 50 {
+		return false
+	}
+	var inner []interface{}
+	if err := json.Unmarshal([]byte(innerStr), &inner); err != nil || len(inner) <= 31 {
+		return false
+	}
+	switch v := inner[31].(type) {
+	case bool:
+		return v
+	case float64:
+		return v != 0
+	}
+	return false
+}
+
+func hasFailureReply(raw string) bool {
+	for _, line := range strings.Split(raw, "\n") {
+		if failureReplyInLine(line) {
+			return true
+		}
+	}
+	return false
 }
 
 // videoAccepted reports whether a video StreamGenerate response shows the job was

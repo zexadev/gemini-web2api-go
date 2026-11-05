@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -436,4 +437,29 @@ func mustPrompt(t *testing.T, msgs []map[string]interface{}, tools []map[string]
 	t.Helper()
 	p, _ := messagesToPrompt(msgs, tools, toolChoice)
 	return p
+}
+
+// #68：inner[31] 为真 = 上游出错话术。帧形状按实测抓的最小骨架拼。
+func TestFailureReplyInLine(t *testing.T) {
+	mk := func(v31 interface{}) string {
+		inner := make([]interface{}, 32)
+		inner[4] = []interface{}{[]interface{}{"rc_x", []interface{}{"I seem to be encountering an error. Can I try something else for you?"}}}
+		inner[31] = v31
+		ib, _ := json.Marshal(inner)
+		line, _ := json.Marshal([]interface{}{[]interface{}{"wrb.fr", nil, string(ib)}})
+		return string(line)
+	}
+	cases := []struct {
+		v    interface{}
+		want bool
+	}{{true, true}, {1, true}, {nil, false}, {false, false}, {0, false}}
+	for _, c := range cases {
+		if got := failureReplyInLine(mk(c.v)); got != c.want {
+			t.Errorf("inner[31]=%v: got %v want %v", c.v, got, c.want)
+		}
+	}
+	// 短 inner（不到 32 槽）不能越界
+	if failureReplyInLine(`[["wrb.fr",null,"[null,null,null,null,[[\"rc_x\",[\"hello world hello world hello world hello world hello world\"]]]]"]]` + strings.Repeat(" ", 200)) {
+		t.Error("short inner misdetected")
+	}
 }

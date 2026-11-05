@@ -667,7 +667,7 @@ func classifyError(errStr string) string {
 	switch {
 	case errStr == "":
 		return ""
-	case strings.Contains(errStr, "no content frame"):
+	case strings.Contains(errStr, "no content frame"), strings.Contains(errStr, "failure reply"):
 		// 上游返回 200 但一个内容帧都没有。实测是瞬时拒绝，隔几分钟自行恢复，
 		// 跟频率/并发/累积次数都无关，重试即可。
 		return "upstream_rejected"
