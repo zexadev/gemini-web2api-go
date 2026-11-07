@@ -349,6 +349,10 @@ func streamGenerateConv(prompt string, mc ModelConfig, conv *convState,
 					return err
 				}
 			}
+			// 出错话术在吐给客户端之前拦下，中断读取走重试（见 gemini.go 同一处）。
+			if failureReplyInLine(line) {
+				return errUpstreamFailureReply
+			}
 			if onReasoning != nil {
 				if r := reasoningInLine(line); r != "" {
 					if d := rtracker.Push(r); d != "" {
@@ -392,13 +396,29 @@ func streamGenerateConv(prompt string, mc ModelConfig, conv *convState,
 			} else {
 				lastErr = fmt.Errorf("upstream HTTP %d: %s", statusCode, truncate(string(raw), 160))
 			}
-			if pickedOK {
+			// 出错话术跟出口无关，不记进代理健康度
+			if pickedOK && !errors.Is(err, errUpstreamFailureReply) {
 				recordProxyResult(p.ID, false, lastErr.Error())
 			}
 			if tracker.emitted != "" || rtracker.emitted != "" {
 				break
 			}
 			if attempt < rtCfg().RetryAttempts-1 {
+				if errors.Is(err, errUpstreamFailureReply) {
+					logf("retry %d/%d: %v", attempt+1, rtCfg().RetryAttempts, err)
+				}
+				time.Sleep(time.Duration(rtCfg().RetryDelaySec) * time.Second)
+			}
+			continue
+		}
+		// 非流式没有 lineCB，在这里补判出错话术。续接状态还没回填，重发仍接在上一轮后面。
+		if hasFailureReply(string(raw)) {
+			lastErr = errUpstreamFailureReply
+			if tracker.emitted != "" || rtracker.emitted != "" {
+				break
+			}
+			if attempt < rtCfg().RetryAttempts-1 {
+				logf("retry %d/%d: %v", attempt+1, rtCfg().RetryAttempts, lastErr)
 				time.Sleep(time.Duration(rtCfg().RetryDelaySec) * time.Second)
 			}
 			continue
