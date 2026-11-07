@@ -2,6 +2,23 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 4.27.1
+
+### 修复
+
+- **回答偶尔是一句固定的出错话术（#68）**。上游有时回 HTTP 200，正文却是「I seem to be encountering an error…」
+  「Sorry, something went wrong…」「我只是一个语言模型…」这类固定句子，之前被当正常回答返回。这是上游偶发失败，
+  跟账号、模型、新老协议都无关；现在能识别出来并自动重试，流式在吐字之前就拦下。多轮续接（`multi_turn`）也一样。
+- **工具调用的参数变成 `null`（#69）**。模型没写 `arguments`、把参数写在 `parameters` / `input` 里或平铺在外层、
+  或者把参数写成一段 JSON 字符串时，之前会发出 `"arguments": "null"`（客户端报「must be a JSON object」中断），
+  或者整个调用被丢掉、只剩正文。现在参数一律整理成 JSON 对象，取不到就给 `{}`；没写工具名的调用不再发出。
+  `/v1beta` 原生接口的 `functionCall.args` 随之修好。
+- **回答里夹着 `<ElicitationsGroup>`、`<Sequence>`、`<Carousel>` 等标签**。上游近期开始在正文里直接写网页端的
+  卡片组件，匿名和登录态都有。现在转成 Markdown：步骤卡片变成带序号的小标题，视频轮播变成视频链接列表，
+  清单变成任务列表，追问建议变成列表。流式同样处理，代码块里的标签不动。
+- **生图回复里多一行打不开的 `http://googleusercontent.com/image_generation_content/0_N`**。这是网页上放图片的占位，
+  现在去掉了，图片照旧附在末尾。
+
 ## 4.27.0
 
 ### 新增
