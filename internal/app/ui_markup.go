@@ -357,7 +357,7 @@ func dedent(lines []string) string {
 	return strings.Join(out, "\n")
 }
 
-// renderedTextsInLine 是 textsInLine 加组件渲染。视频数据只在正文里有轮播时才去解析。
+// renderedTextsInLine 是 textsInLine 加组件渲染、去生图占位链。视频数据只在正文里有轮播时才去解析。
 func renderedTextsInLine(line string, final bool) []string {
 	ts := textsInLine(line)
 	var videos [][]uiVideo
@@ -365,7 +365,33 @@ func renderedTextsInLine(line string, final bool) []string {
 		if videos == nil && strings.Contains(t, "<Carousel") {
 			videos = videosInLine(line)
 		}
-		ts[i] = renderUIMarkup(t, videos, final)
+		ts[i] = stripImagePlaceholders(renderUIMarkup(t, videos, final), final)
 	}
 	return ts
+}
+
+// 生图回复的正文里带一行 http://googleusercontent.com/image_generation_content/0_N，
+// 是网页前端放图片的占位，打不开。真图我们另行下载附在末尾，这行对客户端只是噪音。
+var imagePlaceholderRe = regexp.MustCompile(regexp.QuoteMeta(imageGenPlaceholderPrefix) + `\d+(?:_\d+)?[ \t]*\n?`)
+
+// stripImagePlaceholders 去掉正文里的生图占位链，位置不限。
+// final=false 时末尾若是占位链的半截前缀先扣住，免得流式把半条链吐出去。
+func stripImagePlaceholders(text string, final bool) string {
+	if !final {
+		// 占位链一直延伸到末尾时还可能在长（0_ → 0_480），整段扣住
+		if i := strings.LastIndex(text, imageGenPlaceholderPrefix); i >= 0 &&
+			strings.Trim(text[i+len(imageGenPlaceholderPrefix):], "0123456789_") == "" {
+			text = text[:i]
+		}
+	}
+	if strings.Contains(text, imageGenPlaceholderPrefix) {
+		text = imagePlaceholderRe.ReplaceAllString(text, "")
+	}
+	if !final {
+		tail := text[strings.LastIndexAny(text, " \t\n")+1:]
+		if tail != "" && strings.HasPrefix(imageGenPlaceholderPrefix, tail) {
+			text = text[:len(text)-len(tail)]
+		}
+	}
+	return text
 }

@@ -137,3 +137,27 @@ func TestVideosInLine(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 }
+
+// 生图占位链在任何位置都去掉；流式逐字喂时不吐出半条链，且每步都是最终输出的前缀。
+func TestStripImagePlaceholders(t *testing.T) {
+	in := "Here you go:\n\nhttp://googleusercontent.com/image_generation_content/0_480\n\nand another http://googleusercontent.com/image_generation_content/1 done\nhttp://googleusercontent.com/image_generation_content/2_7"
+	want := "Here you go:\n\n\nand another done\n"
+	final := stripImagePlaceholders(in, true)
+	if final != want {
+		t.Fatalf("got %q", final)
+	}
+	for i := 1; i <= len(in); i++ {
+		got := stripImagePlaceholders(in[:i], false)
+		if !strings.HasPrefix(final, got) {
+			t.Fatalf("前 %d 字节的输出不是最终输出的前缀: %q", i, got)
+		}
+		if strings.Contains(got, "googleusercontent") || strings.HasSuffix(got, "http") {
+			t.Fatalf("前 %d 字节漏出半条占位链: %q", i, got)
+		}
+	}
+	// 普通链接不动
+	plain := "see http://example.com/x"
+	if got := stripImagePlaceholders(plain, true); got != plain {
+		t.Fatalf("got %q", got)
+	}
+}
