@@ -176,3 +176,48 @@ func TestPartialPrefixLen(t *testing.T) {
 		}
 	}
 }
+
+// 围栏里 arguments 缺失、为 null、换了键名、平铺、二次编码时，参数都要整理成 JSON 对象，
+// 绝不能是 "null"（OpenAI 客户端会拒收）；没有工具名的围栏丢弃，不发半个调用（#69）。
+func TestParseToolCallsArgsShapes(t *testing.T) {
+	cases := []struct {
+		fence    string
+		wantName string // 空 = 期望丢弃
+		wantArgs string
+	}{
+		{`{"name":"pwsh","arguments":{"command":"Get-Date"}}`, "pwsh", `{"command":"Get-Date"}`},
+		{`{"name":"pwsh"}`, "pwsh", `{}`},
+		{`{"name":"pwsh","arguments":null}`, "pwsh", `{}`},
+		{`{"name":"pwsh","parameters":{"command":"ls"}}`, "pwsh", `{"command":"ls"}`},
+		{`{"name":"pwsh","command":"pwd"}`, "pwsh", `{"command":"pwd"}`},
+		{`{"name":"pwsh","arguments":"{\"command\":\"echo hi\"}"}`, "pwsh", `{"command":"echo hi"}`},
+		{`{"tool":"read_file","input":{"path":"/a"}}`, "read_file", `{"path":"/a"}`},
+		{`{"type":"function","function":{"name":"f","arguments":"{\"a\":1}"}}`, "f", `{"a":1}`},
+		{`{"name":"pwsh","arguments":{"command":"ls"},"input":{"x":1}}`, "pwsh", `{"command":"ls"}`},
+		{`{"arguments":{"command":"x"}}`, "", ""},
+		{`null`, "", ""},
+	}
+	for _, c := range cases {
+		text, calls := parseToolCalls("前文\n```tool_call\n" + c.fence + "\n```")
+		if text != "前文" {
+			t.Errorf("%s: 正文 = %q", c.fence, text)
+		}
+		if c.wantName == "" {
+			if len(calls) != 0 {
+				t.Errorf("%s: 应丢弃，得到 %+v", c.fence, calls)
+			}
+			continue
+		}
+		if len(calls) != 1 {
+			t.Fatalf("%s: 得到 %d 个调用", c.fence, len(calls))
+		}
+		f := calls[0].Function
+		if f.Name != c.wantName || f.Arguments != c.wantArgs {
+			t.Errorf("%s: 得到 name=%q args=%s，期望 name=%q args=%s", c.fence, f.Name, f.Arguments, c.wantName, c.wantArgs)
+		}
+		var m map[string]interface{}
+		if err := json.Unmarshal([]byte(f.Arguments), &m); err != nil || m == nil {
+			t.Errorf("%s: args 不是 JSON 对象：%s", c.fence, f.Arguments)
+		}
+	}
+}

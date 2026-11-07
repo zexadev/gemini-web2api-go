@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -419,25 +420,95 @@ func parseToolCalls(text string) (string, []ToolCall) {
 		}
 		clean.WriteString(rest[:i])
 		rest = after[next:]
-		var data struct {
-			Name      string                 `json:"name"`
-			Arguments map[string]interface{} `json:"arguments"`
-		}
-		if err := json.Unmarshal([]byte(strings.TrimSpace(after[:body])), &data); err != nil {
+		var raw map[string]interface{}
+		if err := json.Unmarshal([]byte(strings.TrimSpace(after[:body])), &raw); err != nil || raw == nil {
 			continue
 		}
-		argsJSON, _ := json.Marshal(data.Arguments)
+		name := toolCallName(raw)
+		if name == "" {
+			continue
+		}
 		toolCalls = append(toolCalls, ToolCall{
 			ID:   "call_" + randHex(8),
 			Type: "function",
 			Function: ToolCallFunction{
-				Name:      data.Name,
-				Arguments: string(argsJSON),
+				Name:      name,
+				Arguments: toolCallArgs(raw),
 			},
 		})
 	}
 	clean.WriteString(rest)
 	return strings.TrimSpace(clean.String()), toolCalls
+}
+
+// toolCallNameKeys 是模型写工具名时用过的键。
+var toolCallNameKeys = []string{"name", "tool", "tool_name", "function_name"}
+
+// toolCallArgKeys 是模型写参数时用过的容器键，按优先级排：有多个时只取第一个能用的，不合并。
+var toolCallArgKeys = []string{"arguments", "parameters", "input", "args"}
+
+// toolCallMetaKeys 是平铺兜底时要跳过的非参数键。
+var toolCallMetaKeys = []string{"function", "type", "id", "thought"}
+
+// toolCallName 取围栏里的工具名，也认 {"function":{"name":…}} 嵌套。取不到返回空串。
+func toolCallName(raw map[string]interface{}) string {
+	for _, k := range toolCallNameKeys {
+		if s, ok := raw[k].(string); ok && strings.TrimSpace(s) != "" {
+			return strings.TrimSpace(s)
+		}
+	}
+	if fn, ok := raw["function"].(map[string]interface{}); ok {
+		if s, ok := fn["name"].(string); ok && strings.TrimSpace(s) != "" {
+			return strings.TrimSpace(s)
+		}
+	}
+	return ""
+}
+
+// toolCallArgs 把围栏里的参数整理成 JSON 对象字符串，保证不是 "null"（OpenAI 客户端只收对象）。
+// 依次认：容器键里的对象、容器键里二次编码的对象字符串、平铺在顶层的其余键；都没有给 "{}"。
+func toolCallArgs(raw map[string]interface{}) string {
+	if fn, ok := raw["function"].(map[string]interface{}); ok {
+		if a, ok := argsObject(fn["arguments"]); ok {
+			return a
+		}
+	}
+	for _, k := range toolCallArgKeys {
+		if a, ok := argsObject(raw[k]); ok {
+			return a
+		}
+	}
+	flat := map[string]interface{}{}
+	for k, v := range raw {
+		if slices.Contains(toolCallNameKeys, k) || slices.Contains(toolCallArgKeys, k) || slices.Contains(toolCallMetaKeys, k) {
+			continue
+		}
+		flat[k] = v
+	}
+	if b, err := json.Marshal(flat); err == nil {
+		return string(b)
+	}
+	return "{}"
+}
+
+// argsObject 接受对象，或内容是 JSON 对象的字符串；缺失、null、数组、标量都返回 false。
+func argsObject(v interface{}) (string, bool) {
+	var m map[string]interface{}
+	switch t := v.(type) {
+	case map[string]interface{}:
+		m = t
+	case string:
+		if json.Unmarshal([]byte(strings.TrimSpace(t)), &m) != nil || m == nil {
+			return "", false
+		}
+	default:
+		return "", false
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return "", false
+	}
+	return string(b), true
 }
 
 // parseToolChoice 解析 OpenAI 的 tool_choice。
