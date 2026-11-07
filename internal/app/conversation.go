@@ -359,7 +359,7 @@ func streamGenerateConv(prompt string, mc ModelConfig, conv *convState,
 			if onDelta == nil {
 				return nil
 			}
-			for _, t := range textsInLine(line) {
+			for _, t := range renderedTextsInLine(line, false) {
 				if d := tracker.Push(t); d != "" {
 					onDelta(d)
 				}

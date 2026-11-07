@@ -752,7 +752,7 @@ func streamGenerateOnce(prompt, latest string, mc ModelConfig, pending []pending
 			if onDelta == nil {
 				return nil
 			}
-			for _, t := range textsInLine(line) {
+			for _, t := range renderedTextsInLine(line, false) {
 				if d := tracker.Push(t); d != "" {
 					onDelta(d)
 				}
@@ -1286,7 +1286,7 @@ func hasContentFrame(raw string) bool {
 func extractResponseText(raw string) string {
 	var texts []string
 	for _, line := range strings.Split(raw, "\n") {
-		texts = append(texts, textsInLine(line)...)
+		texts = append(texts, renderedTextsInLine(line, true)...)
 	}
 	for i := len(texts) - 1; i >= 0; i-- {
 		if strings.TrimSpace(texts[i]) != "" {
