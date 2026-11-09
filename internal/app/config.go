@@ -69,6 +69,8 @@ type Config struct {
 	StrictModel bool `json:"strict_model"`
 	// 被降级的号在该模型上冷却多久（分钟），0 = 不记。网页端用量按 5 小时滚动窗算，默认 300。
 	StrictModelCooldownMin int `json:"strict_model_cooldown_min"`
+	// 流式保活间隔（秒），0 = 关（默认）。见 keepalive.go。
+	StreamKeepaliveSec int `json:"stream_keepalive_sec"`
 }
 
 var (

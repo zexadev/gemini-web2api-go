@@ -142,3 +142,13 @@ func (s *sseWriter) Fail(err error) {
 		s.flusher.Flush()
 	}
 }
+
+// Ping 发一行 SSE 注释（": ping"）保活，见 keepalive.go。按 SSE 规范冒号开头的行
+// 客户端一律忽略；还没开流时先开流（发响应头和 role chunk）。
+func (s *sseWriter) Ping() {
+	s.start()
+	fmt.Fprint(s.w, ": ping\n\n")
+	if s.flusher != nil {
+		s.flusher.Flush()
+	}
+}

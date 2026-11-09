@@ -615,6 +615,13 @@ func (s *geminiStream) text(d string) {
 	s.chunk([]interface{}{map[string]interface{}{"text": d}}, "", nil)
 }
 
+// ping 保活（见 keepalive.go）：发一块空正文。不用 SSE 注释行，因为这条路还有
+// JSON 数组写法，而且 Google 的 SDK 按行 json 解析 data，注释行会让它解析失败；
+// 空 text 块是合法的 Gemini 响应块，客户端拼接正文时等于没有。
+func (s *geminiStream) ping() {
+	s.text("")
+}
+
 func (s *geminiStream) thought(d string) {
 	s.chunk([]interface{}{map[string]interface{}{"text": d, "thought": true}}, "", nil)
 }
@@ -653,8 +660,11 @@ func handleStreamGenerateContent(w http.ResponseWriter, r *http.Request, model s
 	if includeThoughts {
 		onReasoning = st.thought
 	}
+	ka := startKeepalive(st.ping)
+	onDelta, onReasoning = ka.guard(onDelta), ka.guard(onReasoning)
 
 	text, calls, res, err := runGeminiCall(g, onDelta, onReasoning)
+	ka.Stop() // 之后的收尾回到单 goroutine 写；Started() 也要在保活停下后再看
 	if err != nil {
 		status := 502
 		if _, ok := err.(*ModelDowngradedError); ok {

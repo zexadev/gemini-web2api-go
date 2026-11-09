@@ -75,6 +75,9 @@ type RuntimeConfig struct {
 	// RetryOnTimeout 决定上游超时（等满 request_timeout_sec）后还重不重试（#70）。
 	// 默认 true 保持原行为；关掉时超时直接报错，不再按 retry_attempts 再等几轮。
 	RetryOnTimeout bool `json:"retry_on_timeout"`
+	// StreamKeepaliveSec 是流式请求连续空闲多少秒就发一次保活（#70），0 = 关（默认）。
+	// 开了之后慢请求会先开流，失败只能在流里报错、HTTP 状态码锁成 200，见 keepalive.go。
+	StreamKeepaliveSec int `json:"stream_keepalive_sec"`
 }
 
 const runtimeConfigKey = "runtime_config"
@@ -116,6 +119,7 @@ func initRuntimeConfig() {
 		FirefoxFingerprint:     cfg.FirefoxFingerprint,
 		StrictModel:            cfg.StrictModel,
 		StrictModelCooldownMin: cfg.StrictModelCooldownMin,
+		StreamKeepaliveSec:     cfg.StreamKeepaliveSec,
 	}
 	if raw := kvGet(runtimeConfigKey); raw != "" {
 		saved := base
@@ -161,6 +165,7 @@ func validateRuntimeConfig(c RuntimeConfig) error {
 		{"proxy_cooldown_min", c.ProxyCooldownMin, 0, 10080},
 		{"max_prompt_bytes", c.MaxPromptBytes, 0, 10000000},
 		{"strict_model_cooldown_min", c.StrictModelCooldownMin, 0, 10080},
+		{"stream_keepalive_sec", c.StreamKeepaliveSec, 0, 300},
 	} {
 		if r.v < r.min || r.v > r.max {
 			return fmt.Errorf("%s=%d 超出允许范围 [%d, %d]", r.name, r.v, r.min, r.max)
