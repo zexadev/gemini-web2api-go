@@ -173,7 +173,7 @@ Changed the code and want it in a container? Uncomment the two `build:` lines in
 The startup banner:
 
 ```
-gemini-web2api-go v4.27.1
+gemini-web2api-go v4.28.0
   Listening:   http://0.0.0.0:8083
   Base URL:    http://localhost:8083/v1
   API key:     sk-gemini-XX...XXXX  (mutable in admin UI)
