@@ -121,6 +121,7 @@ func Run() {
 	// 和网关的 Google provider 用。翻译层在 gemini_api.go，底下跟 OpenAI 接口同一条链。
 	mux.HandleFunc("/v1beta/models", requireAPIKey(handleGeminiModels))
 	mux.HandleFunc("/v1beta/models/", requireAPIKey(handleGeminiModelItem))
+	mux.HandleFunc("/v1/models/", requireAPIKey(handleV1GeminiAction)) // google-genai 3.x 默认走 v1
 	// MCP over HTTP（Streamable HTTP）：跟 OpenAI 接口同进程同端口，暴露 web_search。
 	// 用同一把 API key 鉴权，客户端配 Authorization: Bearer <key> 连这个 URL。
 	mux.HandleFunc("/mcp", requireAPIKey(handleMCPHTTP))

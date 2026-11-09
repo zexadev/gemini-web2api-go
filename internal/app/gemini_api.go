@@ -327,13 +327,25 @@ func handleGeminiModels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]interface{}{"models": models})
 }
 
-// handleGeminiModelItem 分发 /v1beta/models/{model}[:action]。
+// handleV1GeminiAction 把 /v1/models/{model}:{action} 交给 Gemini 接口。google-genai 3.0.0
+// 起，自定义 base_url 时默认 api_version 是 v1，请求打到 /v1/models/…:generateContent
+// 而不是 /v1beta。只接带冒号的动作：不带冒号的 GET /v1/models/{id} 是 OpenAI 的
+// 「查单个模型」形状，两边响应体不同，不混用，照旧 404。
+func handleV1GeminiAction(w http.ResponseWriter, r *http.Request) {
+	if !strings.Contains(strings.TrimPrefix(r.URL.Path, "/v1/models/"), ":") {
+		writeJSON(w, 404, map[string]string{"error": "not found"})
+		return
+	}
+	handleGeminiModelItem(w, r)
+}
+
+// handleGeminiModelItem 分发 /v1beta/models/{model}[:action]（以及 /v1/models/{model}:action）。
 func handleGeminiModelItem(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "OPTIONS" {
 		handleOptions(w, r)
 		return
 	}
-	rest := strings.TrimPrefix(r.URL.Path, "/v1beta/models/")
+	rest := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/v1beta/models/"), "/v1/models/")
 	model, action := rest, ""
 	if i := strings.LastIndex(rest, ":"); i >= 0 {
 		model, action = rest[:i], rest[i+1:]

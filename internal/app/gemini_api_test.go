@@ -342,3 +342,20 @@ func TestStreamGenerateContentErrors(t *testing.T) {
 		t.Fatalf("after start: %d %s", w.Code, w.Body)
 	}
 }
+
+// google-genai 3.x 默认打 /v1/models/{model}:action，要跟 /v1beta 一样处理；
+// 不带冒号的 /v1/models/{id} 不归 Gemini 接口，照旧 404。
+func TestV1GeminiAction(t *testing.T) {
+	stubGeminiCall(t, "hi", nil, &StreamResult{}, nil)
+	body := `{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`
+	w := httptest.NewRecorder()
+	handleV1GeminiAction(w, httptest.NewRequest("POST", "/v1/models/gemini-3.6-flash:generateContent", strings.NewReader(body)))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"candidates"`) {
+		t.Fatalf("generateContent: %d %s", w.Code, w.Body)
+	}
+	w = httptest.NewRecorder()
+	handleV1GeminiAction(w, httptest.NewRequest("GET", "/v1/models/gemini-3.6-flash", nil))
+	if w.Code != 404 {
+		t.Fatalf("不带冒号应 404: %d %s", w.Code, w.Body)
+	}
+}

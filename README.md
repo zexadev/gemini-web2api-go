@@ -250,6 +250,7 @@ Bifrost 等网关的 Google provider）：
 | `POST /v1beta/models/{model}:streamGenerateContent` | 真流式；带 `?alt=sse`（SDK 默认）回 SSE，不带回 JSON 数组 |
 | `POST /v1beta/models/{model}:countTokens` | 本地 tiktoken 估算 |
 | `GET /v1beta/models`、`GET /v1beta/models/{model}` | 模型清单，跟 `/v1/models` 同一份 |
+| `POST /v1/models/{model}:generateContent` 等 | 上面三个动作的 `/v1` 写法，同一套处理。`google-genai` 3.x 配自定义 `base_url` 时默认走 `/v1` |
 
 - **鉴权**：API key 放 `x-goog-api-key` 头或 `?key=` 参数（SDK 默认这么带），`Authorization: Bearer` 也认。
 - **模型名**用本项目的（`gemini-3.6-flash`、`gemini-3.1-pro` 等，见[模型](#模型)），不是官方 API 的 `gemini-2.5-flash` 那些。

@@ -254,6 +254,7 @@ The same port also speaks the Google Gemini API format, for clients that only ta
 | `POST /v1beta/models/{model}:streamGenerateContent` | Real streaming; SSE with `?alt=sse` (the SDK default), a JSON array without it |
 | `POST /v1beta/models/{model}:countTokens` | Local tiktoken estimate |
 | `GET /v1beta/models`, `GET /v1beta/models/{model}` | Model list, same as `/v1/models` |
+| `POST /v1/models/{model}:generateContent` etc. | The `/v1` form of the three actions above, handled the same way. `google-genai` 3.x uses `/v1` by default when given a custom `base_url` |
 
 - **Auth**: send the API key as the `x-goog-api-key` header or the `?key=` query parameter (what the SDKs do);
   `Authorization: Bearer` works too.
