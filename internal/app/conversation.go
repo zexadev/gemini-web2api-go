@@ -403,6 +403,10 @@ func streamGenerateConv(prompt string, mc ModelConfig, conv *convState,
 			if tracker.emitted != "" || rtracker.emitted != "" {
 				break
 			}
+			if !retryAfterTimeout(err) {
+				logf("上游超时，retry_on_timeout 关着，不再重试: %v", err)
+				break
+			}
 			if attempt < rtCfg().RetryAttempts-1 {
 				if errors.Is(err, errUpstreamFailureReply) {
 					logf("retry %d/%d: %v", attempt+1, rtCfg().RetryAttempts, err)

@@ -72,6 +72,9 @@ type RuntimeConfig struct {
 	StrictModel bool `json:"strict_model"`
 	// 被降级的号在该模型上冷却多久（分钟），0 = 不记。默认 300（用量窗口 5 小时）。
 	StrictModelCooldownMin int `json:"strict_model_cooldown_min"`
+	// RetryOnTimeout 决定上游超时（等满 request_timeout_sec）后还重不重试（#70）。
+	// 默认 true 保持原行为；关掉时超时直接报错，不再按 retry_attempts 再等几轮。
+	RetryOnTimeout bool `json:"retry_on_timeout"`
 }
 
 const runtimeConfigKey = "runtime_config"
@@ -88,6 +91,7 @@ func initRuntimeConfig() {
 		RetryAttempts:   cfg.RetryAttempts,
 		RetryDelaySec:   cfg.RetryDelaySec,
 		RequestTimeout:  cfg.RequestTimeout,
+		RetryOnTimeout:  cfg.RetryOnTimeout,
 		DefaultModel:    cfg.DefaultModel,
 		PerIPConcurrent: cfg.PerIPConcurrent,
 		PerIPRPM:        cfg.PerIPRPM,

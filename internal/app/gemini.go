@@ -3,10 +3,12 @@ package app
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -806,6 +808,10 @@ func streamGenerateOnce(prompt, latest string, mc ModelConfig, pending []pending
 			if tracker.emitted != "" || rtracker.emitted != "" {
 				break
 			}
+			if !retryAfterTimeout(err) {
+				logf("上游超时，retry_on_timeout 关着，不再重试: %v", err)
+				break
+			}
 			if attempt < rtCfg().RetryAttempts-1 {
 				logf("retry %d/%d: %v", attempt+1, rtCfg().RetryAttempts, err)
 				time.Sleep(time.Duration(rtCfg().RetryDelaySec) * time.Second)
@@ -1216,6 +1222,30 @@ func textsInLine(line string) []string {
 // "I seem to be encountering an error" / "Sorry, something went wrong" 这类固定句子，
 // 不是模型真回答（#68）。
 var errUpstreamFailureReply = errors.New("upstream returned a failure reply (inner[31] set)")
+
+// errUpstreamTimeout 标记新协议（processSession）等满 request_timeout_sec 的超时；
+// 老协议的超时由 http 客户端报出，靠 net.Error.Timeout() 认（见 isUpstreamTimeout）。
+var errUpstreamTimeout = errors.New("upstream timeout")
+
+// isUpstreamTimeout 判断这次失败是不是上游超时（等满 request_timeout_sec 没收完）。
+// 两种 http 客户端（stdlib、tls-client 的 fhttp）超时都返回 Timeout()=true 的错误，
+// 连接建立超时也算在内：同一次重试仍走同一个出口，重发多半照样超时。
+func isUpstreamTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, errUpstreamTimeout) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
+}
+
+// retryAfterTimeout 返回超时后还要不要再发（retry_on_timeout，#70）。上游等满
+// request_timeout_sec 都没回完时，重发通常还是超时，关掉可省下几轮等待、尽快报错。
+func retryAfterTimeout(err error) bool {
+	return rtCfg().RetryOnTimeout || !isUpstreamTimeout(err)
+}
 
 // failureReplyInLine 判断这一帧是不是上游的出错话术回复。
 //

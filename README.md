@@ -466,6 +466,7 @@ curl http://127.0.0.1:8083/v1/chat/completions \
 | 严格模型校验（`strict_model`） | 默认关。账号某一档额度用完时，上游不报错，而是静默换成更弱的模型照样回 200。开启后，服务端自报的模型跟请求的不一致就不把降级回答当成功：换下一个号重试，全池都被降级就回 `429 insufficient_quota`（`code: model_downgraded`，带 `Retry-After`）。流式在吐出第一个字之前就判断，不会先吐一半再报错。媒体模型（生图/音乐/视频/画布）不参与判断。 |
 | 降级冷却（`strict_model_cooldown_min`） | 配合严格模型校验：被降级的号在这个模型上歇多久再用，默认 300 分钟（网页端用量按 5 小时窗口算）。0 = 不记，每次请求都重新试。 |
 | 重试次数 / 重试间隔 / 上游超时 | |
+| 超时后重试（`retry_on_timeout`） | 默认开。关掉后上游等满「上游超时」还没回完就直接报错，不再按重试次数重发：重发多半还是超时，一个请求最坏要等「超时 × 重试次数」，超长输入或慢模型（如 Argon）下能拖十几分钟。空响应、出错话术等其他失败照常重试。 |
 | 明细保留天数 | 过期只删明细，聚合数据永久保留 |
 | TLS 指纹 | `chrome_146`（默认）/ `chrome_144` / `chrome_133` / `firefox_147` / `safari_16_0` / `safari_ios_17_0` |
 | Firefox 指纹（`firefox_fingerprint`） | 实验，默认关。开启后请求伪装成 Firefox：直连时 TLS 握手走 Firefox 指纹、UA 换成 Firefox、去掉 Chrome 专有的 `Sec-CH-UA`。cookie 从 Firefox 导出时建议配套打开。走代理时 TLS 这层改不了（见[指纹模拟](#指纹模拟)），只有 header 变 |

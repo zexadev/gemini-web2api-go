@@ -528,7 +528,7 @@ func doWebChannelRequest(r wcRequest, proxyURL string, onLine func(string) error
 	case e := <-getErr:
 		return 0, nil, 0, setCookie, e
 	case <-ctx.Done():
-		return 0, nil, 0, setCookie, fmt.Errorf("processSession 下行没建立（%s）", timeout)
+		return 0, nil, 0, setCookie, fmt.Errorf("processSession 下行没建立（%s）: %w", timeout, errUpstreamTimeout)
 	}
 	if err := post(0, ofs0); err != nil {
 		return 0, nil, 0, setCookie, err
@@ -566,7 +566,7 @@ func doWebChannelRequest(r wcRequest, proxyURL string, onLine func(string) error
 				}
 				if ctx.Err() != nil {
 					return 0, []byte(raw.String()), ttfbOr(ttfb, sendAt), setCookie,
-						fmt.Errorf("processSession 超时（%s）", timeout)
+						fmt.Errorf("processSession 超时（%s）: %w", timeout, errUpstreamTimeout)
 				}
 				return 200, []byte(raw.String()), ttfbOr(ttfb, sendAt), setCookie, nil
 			}
@@ -600,7 +600,7 @@ func doWebChannelRequest(r wcRequest, proxyURL string, onLine func(string) error
 			}
 		case <-ctx.Done():
 			return 0, []byte(raw.String()), ttfbOr(ttfb, sendAt), setCookie,
-				fmt.Errorf("processSession 超时（%s）", timeout)
+				fmt.Errorf("processSession 超时（%s）: %w", timeout, errUpstreamTimeout)
 		}
 	}
 }

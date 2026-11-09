@@ -12,6 +12,7 @@ type Config struct {
 	RetryAttempts  int    `json:"retry_attempts"`
 	RetryDelaySec  int    `json:"retry_delay_sec"`
 	RequestTimeout int    `json:"request_timeout_sec"`
+	RetryOnTimeout bool   `json:"retry_on_timeout"`
 	GeminiBL       string `json:"gemini_bl"`
 	DefaultModel   string `json:"default_model"`
 	LogRequests    bool   `json:"log_requests"`
@@ -82,6 +83,7 @@ func defaultConfig() Config {
 		RetryAttempts:  3,
 		RetryDelaySec:  2,
 		RequestTimeout: 180,
+		RetryOnTimeout: true,
 		GeminiBL:       "boq_gemini-web-uiserver_20261007.01_p0",
 		DefaultModel:   "gemini-3.6-flash",
 		LogRequests:    true,
