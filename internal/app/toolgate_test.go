@@ -221,3 +221,14 @@ func TestParseToolCallsArgsShapes(t *testing.T) {
 		}
 	}
 }
+
+// 回复只有一个解析不了的围栏时，parseToolCalls 返回空正文、无调用。
+// callGemini / callGeminiConv 都要把这种结果当失败，不能回 200 + content:null。
+func TestParseToolCallsOnlyBadFenceIsEmpty(t *testing.T) {
+	for _, body := range []string{`{"arguments":{"command":"x"}}`, `{"name":`} {
+		text, calls := parseToolCalls("```tool_call\n" + body + "\n```")
+		if text != "" || len(calls) != 0 {
+			t.Errorf("body %q: got text=%q calls=%d, want empty", body, text, len(calls))
+		}
+	}
+}
