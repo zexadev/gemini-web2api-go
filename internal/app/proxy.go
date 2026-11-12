@@ -77,15 +77,23 @@ const proxyFailThreshold = 5
 // 清零 —— 只能去面板手动重置。冷却期从 last_used（也就是最后一次尝试）算起，
 // 放回去再失败一次就重新计时。
 //
-// cooldownMin<=0 表示关掉冷却，退回"熔断即永久除名"的旧行为。
+// cooldownMin 有三种取值：
+//
+//	>0  冷却这么多分钟再放回池子
+//	 0  关掉冷却，退回"熔断即永久除名"的旧行为
+//	-1  不熔断，fail_count 只记不拦。出口本身会换 IP（Clash 之类按节点轮换的上游）时
+//	    用这个：失败是那一次落到的节点的事，把整条代理停掉纯属自伤
 func proxyUsable(p Proxy, now int64, cooldownMin int) bool {
 	if !p.Enabled {
 		return false
 	}
+	if cooldownMin < 0 {
+		return true
+	}
 	if p.FailCount < proxyFailThreshold {
 		return true
 	}
-	if cooldownMin <= 0 {
+	if cooldownMin == 0 {
 		return false
 	}
 	return now-p.LastUsed >= int64(cooldownMin)*60

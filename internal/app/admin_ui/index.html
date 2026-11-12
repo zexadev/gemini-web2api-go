@@ -1064,8 +1064,8 @@ const RT_GROUPS = [
   {
     title: '代理与 cookie 的降级行为',
     fields: [
-      { k: 'proxy_cooldown_min', label: '熔断冷却（分钟）', type: 'int', min: 0, max: 10080,
-        hint: '代理连续失败 5 次后歇多久再放回池子。实测被拦的出口 106-121 分钟自恢复，默认 120；0=不恢复，要去代理池页面手动重置' },
+      { k: 'proxy_cooldown_min', label: '熔断冷却（分钟）', type: 'int', min: -1, max: 10080,
+        hint: '代理连续失败 5 次后歇多久再放回池子。实测被拦的出口 106-121 分钟自恢复，默认 120；0=不恢复，要去代理池页面手动重置；-1=不熔断，失败次数只记录不拦请求（出口由 Clash 之类自己换节点时用这个）' },
       { k: 'fallback_direct', label: '无可用代理时退回直连', type: 'bool',
         hint: '关：直接返回 429，本机 IP 不会暴露给上游（默认）。开：可用性优先，但上游会看到本机真实出口' },
       { k: 'fallback_anon', label: 'cookie 失效时降级匿名', type: 'bool',

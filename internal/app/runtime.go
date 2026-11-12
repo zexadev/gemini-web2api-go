@@ -32,6 +32,8 @@ type RuntimeConfig struct {
 	GeminiBL        string `json:"gemini_bl"`
 	// ProxyCooldownMin 是代理连续失败熔断后隔多久放回池子，单位分钟。
 	// 0 = 不恢复（熔断即永久除名，要手动重置）。默认按实测的封禁恢复时长取 120。
+	// -1 = 不熔断：fail_count 照记，但不拦请求。出口自己会轮换（Clash 之类按节点
+	// 换 IP）时用这个——一次失败只代表那一跳的节点，不代表整条代理该停。
 	ProxyCooldownMin int `json:"proxy_cooldown_min"`
 	// FallbackDirect 决定代理池一个出口都用不上时是退回直连还是直接 429。
 	// 默认 false：配了代理池就意味着不想暴露本机 IP，悄悄直连会把这个前提废掉。
@@ -162,7 +164,7 @@ func validateRuntimeConfig(c RuntimeConfig) error {
 		{"per_ip_rpm", c.PerIPRPM, 0, 10000},
 		{"per_ip_rph", c.PerIPRPH, 0, 100000},
 		{"retention_days", c.RetentionDays, 1, 3650},
-		{"proxy_cooldown_min", c.ProxyCooldownMin, 0, 10080},
+		{"proxy_cooldown_min", c.ProxyCooldownMin, -1, 10080},
 		{"max_prompt_bytes", c.MaxPromptBytes, 0, 10000000},
 		{"strict_model_cooldown_min", c.StrictModelCooldownMin, 0, 10080},
 		{"stream_keepalive_sec", c.StreamKeepaliveSec, 0, 300},
