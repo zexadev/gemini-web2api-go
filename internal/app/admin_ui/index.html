@@ -1064,12 +1064,14 @@ const RT_GROUPS = [
   {
     title: '代理与 cookie 的降级行为',
     fields: [
-      { k: 'proxy_cooldown_min', label: '熔断冷却（分钟）', type: 'int', min: 0, max: 10080,
-        hint: '代理连续失败 5 次后歇多久再放回池子。实测被拦的出口 106-121 分钟自恢复，默认 120；0=不恢复，要去代理池页面手动重置' },
+      { k: 'proxy_cooldown_min', label: '熔断冷却（分钟）', type: 'int', min: -1, max: 10080,
+        hint: '代理连续失败 5 次后歇多久再放回池子。实测被拦的出口 106-121 分钟自恢复，默认 120；0=不恢复，要去代理池页面手动重置；-1=不熔断，失败次数只记录不拦请求（出口由 Clash 之类自己换节点时用这个）' },
       { k: 'fallback_direct', label: '无可用代理时退回直连', type: 'bool',
         hint: '关：直接返回 429，本机 IP 不会暴露给上游（默认）。开：可用性优先，但上游会看到本机真实出口' },
       { k: 'fallback_anon', label: 'cookie 失效时降级匿名', type: 'bool',
         hint: '关：直接报错，能立刻发现该换号了（默认）。开：继续跑，但 3.1 Pro 会被静默降级成 3.5 Flash-Lite、思考链消失，客户端看不出来' },
+      { k: 'refusal_as_error', label: '拒答转错误', type: 'bool',
+        hint: '默认关。开：普通聊天回复只要出现 gemini.google/policy-guidelines 官方链接，就返回 422 upstream_refusal，不依赖拒答措辞，引用、翻译或代码中的链接也算。仅检查模型回复；不改变请求、不选择其它模型。流式等完整结果检查后再发送，期间不发保活。关：原样返回。保存后对新请求生效' },
       { k: 'strict_model', label: '严格模型校验', type: 'bool',
         hint: '开：服务端自报的模型跟请求的不一致时（通常是这个号这一档额度用完、被静默降级），不把降级后的回答当成功返回，而是换下一个号重试；全池都被降级就回 429 insufficient_quota（code: model_downgraded）。流式在吐出第一个字之前就判断。关：照常返回降级后的回答（默认）' },
       { k: 'strict_model_cooldown_min', label: '降级冷却（分钟）', type: 'int', min: 0, max: 10080,
