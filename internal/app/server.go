@@ -130,14 +130,37 @@ func rejectUnsupported(req map[string]interface{}, messages []map[string]interfa
 	return nil
 }
 
+var generateGeminiFiles = streamGenerateWithFiles
+
 func callGemini(prompt, latest string, mc ModelConfig, tools []map[string]interface{},
 	images []pendingUpload, onDelta, onReasoning func(string)) (string, []ToolCall, *StreamResult, error) {
-	res, err := streamGenerateWithFiles(prompt, latest, mc, images, onDelta, onReasoning)
+	return callGeminiChecked(prompt, latest, mc, tools, images, onDelta, onReasoning, rtCfg().RefusalAsError)
+}
+
+// API handlers pass the request's setting snapshot so a mid-flight UI change
+// cannot disagree with the decision to send streaming headers or keepalive.
+func callGeminiChecked(prompt, latest string, mc ModelConfig, tools []map[string]interface{},
+	images []pendingUpload, onDelta, onReasoning func(string), checkRefusal bool) (string, []ToolCall, *StreamResult, error) {
+	checked := newCheckedChatOutput(checkRefusal, mc, onDelta, onReasoning)
+	if checked != nil {
+		if onDelta != nil {
+			onDelta = func(s string) { checked.text.WriteString(s) }
+		}
+		if onReasoning != nil {
+			onReasoning = func(s string) { checked.reasoning.WriteString(s) }
+		}
+	}
+	res, err := generateGeminiFiles(prompt, latest, mc, images, onDelta, onReasoning)
 	if err != nil {
 		// res 非 nil：失败时它只带归属（哪个号 / 哪个出口），给 recordRequest 用
 		return "", nil, res, err
 	}
 	text := extractResponseText(res.Raw)
+	if checkRefusal && mc.Tool == 0 {
+		if err := rejectGeminiRefusal(text, res); err != nil {
+			return "", nil, res, err
+		}
+	}
 	// 画布：HTML 文档内联在响应里（不像图/乐要下载），从 immersive 结构里抠出来。
 	// 标准文本提取只拿到 preamble（"I will generate…"），文档在 inner[4][0][30]…，
 	// 用 extractCanvasDoc 单独取。
@@ -176,6 +199,7 @@ func callGemini(prompt, latest string, mc ModelConfig, tools []map[string]interf
 	if len(tools) > 0 {
 		text, toolCalls = parseToolCalls(text)
 	}
+	checked.accept()
 	return text, toolCalls, res, nil
 }
 
@@ -217,6 +241,7 @@ func recordRequest(endpoint, model, prompt, response string, res *StreamResult, 
 }
 
 func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
+	checkRefusal := rtCfg().RefusalAsError
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeJSON(w, 400, map[string]interface{}{"error": map[string]string{"message": err.Error()}})
@@ -299,7 +324,10 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			gate = newToolFenceGate(sse.SendContent)
 			onDelta = gate.Push
 		}
-		ka = startKeepalive(sse.Ping)
+		// Ordinary chat is checked before any response bytes are sent.
+		if !checkRefusal || modelCfg.Tool != 0 {
+			ka = startKeepalive(sse.Ping)
+		}
 		onDelta, onReasoning = ka.guard(onDelta), ka.guard(onReasoning)
 	}
 
@@ -308,20 +336,27 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	var res *StreamResult
 	if rtCfg().MultiTurn && len(images) == 0 && modelCfg.Tool == 0 {
 		// 多轮：按历史前缀识别续接，命中就只发新消息、历史留服务端。带 tools 也走这条。
-		text, toolCalls, res, err = callGeminiConv(messages, modelCfg, tools, req["tool_choice"], onDelta, onReasoning)
+		text, toolCalls, res, err = callGeminiConv(messages, modelCfg, tools, req["tool_choice"], onDelta, onReasoning, checkRefusal)
 	} else {
-		text, toolCalls, res, err = callGemini(prompt, latest, modelCfg, tools, images, onDelta, onReasoning)
+		text, toolCalls, res, err = callGeminiChecked(prompt, latest, modelCfg, tools, images, onDelta, onReasoning, checkRefusal)
 	}
 	ka.Stop() // 之后的收尾回到单 goroutine 写；Started() 也要在保活停下后再看
 	if err != nil {
 		mde, downgraded := err.(*ModelDowngradedError)
 		status := 502
+		if isGeminiRefusalError(err) {
+			status = 422
+		}
 		if downgraded {
 			status = 429
 		}
 		recordRequest("chat.completions", modelName, prompt, "", res, status, err.Error(), stream)
 		if sse != nil && sse.Started() {
 			sse.Fail(err) // 已经开流，HTTP 状态码改不了了
+			return
+		}
+		if isGeminiRefusalError(err) {
+			writeGeminiRefusalError(w)
 			return
 		}
 		if downgraded {
@@ -449,6 +484,7 @@ func remainingOf(full, emitted string) string {
 
 // handleResponses implements OpenAI's /v1/responses (Codex CLI format).
 func handleResponses(w http.ResponseWriter, r *http.Request) {
+	checkRefusal := rtCfg().RefusalAsError
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeJSON(w, 400, map[string]interface{}{"error": map[string]string{"message": err.Error()}})
@@ -597,9 +633,8 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 	nextIdx := 0
 	var ensureMsg func()
 
-	// 流式要先把头和 response.created 发出去，才能边收边推 delta。
-	// 代价是一旦开了流 HTTP 状态码就改不了了，上游失败只能用 response.failed
-	// 事件告知 —— 跟 /v1/chat/completions 那条路的取舍一致。
+	// 拒答检查开启时延迟 response.created 和响应头，保留返回 HTTP 错误的机会。
+	// 其余请求维持原流式行为，开流后的错误通过 response.failed 告知。
 	var writeEvent func(string, interface{})
 	var emitDelta func(string)
 	var gate *toolFenceGate
@@ -610,16 +645,20 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("X-Accel-Buffering", "no") // 关掉反代对 SSE 的缓冲，见 sse.go
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.WriteHeader(200)
 		flusher, _ := w.(http.Flusher)
+		streamStarted := false
 		writeEvent = func(eventType string, payload interface{}) {
+			if !streamStarted {
+				w.WriteHeader(200)
+				streamStarted = true
+			}
 			pj, _ := json.Marshal(payload)
 			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventType, pj)
 			if flusher != nil {
 				flusher.Flush()
 			}
 		}
-		writeEvent("response.created", map[string]interface{}{
+		createdEvent := map[string]interface{}{
 			"type": "response.created",
 			"response": map[string]interface{}{
 				"id":     rid,
@@ -628,7 +667,18 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 				"model":  modelName,
 				"output": []interface{}{},
 			},
-		})
+		}
+		if !checkRefusal || modelCfg.Tool != 0 {
+			writeEvent("response.created", createdEvent)
+		} else {
+			originalWrite := writeEvent
+			writeEvent = func(eventType string, payload interface{}) {
+				if !streamStarted {
+					originalWrite("response.created", createdEvent)
+				}
+				originalWrite(eventType, payload)
+			}
+		}
 		ensureMsg = func() {
 			if msgIndex >= 0 {
 				return
@@ -666,13 +716,15 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 			gate = newToolFenceGate(emitDelta)
 			onDelta = gate.Push
 		}
-		// 这条路响应头一开始就发了，保活没有锁状态码的代价。
-		ka = startKeepalive(func() {
-			fmt.Fprint(w, ": ping\n\n")
-			if flusher != nil {
-				flusher.Flush()
-			}
-		})
+		// 检查期间不发保活，避免提前锁定 HTTP 200。
+		if !checkRefusal || modelCfg.Tool != 0 {
+			ka = startKeepalive(func() {
+				fmt.Fprint(w, ": ping\n\n")
+				if flusher != nil {
+					flusher.Flush()
+				}
+			})
+		}
 		onDelta = ka.guard(onDelta)
 	}
 
@@ -682,19 +734,26 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 	var toolCalls []ToolCall
 	var res *StreamResult
 	if rtCfg().MultiTurn && len(images) == 0 && modelCfg.Tool == 0 {
-		text, toolCalls, res, err = callGeminiConv(messages, modelCfg, tools, req["tool_choice"], onDelta, nil)
+		text, toolCalls, res, err = callGeminiConv(messages, modelCfg, tools, req["tool_choice"], onDelta, nil, checkRefusal)
 	} else {
-		text, toolCalls, res, err = callGemini(prompt, latest, modelCfg, tools, images, onDelta, nil)
+		text, toolCalls, res, err = callGeminiChecked(prompt, latest, modelCfg, tools, images, onDelta, nil, checkRefusal)
 	}
 	ka.Stop()
 	if err != nil {
 		mde, downgraded := err.(*ModelDowngradedError)
 		status := 502
+		if isGeminiRefusalError(err) {
+			status = 422
+		}
 		if downgraded {
 			status = 429
 		}
 		recordRequest("responses", modelName, prompt, "", res, status, err.Error(), stream)
 		if stream {
+			if isGeminiRefusalError(err) {
+				writeGeminiRefusalError(w)
+				return
+			}
 			errObj := map[string]string{"message": err.Error()}
 			if downgraded {
 				errObj["code"] = "model_downgraded"
@@ -709,6 +768,10 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 					"error":  errObj,
 				},
 			})
+			return
+		}
+		if isGeminiRefusalError(err) {
+			writeGeminiRefusalError(w)
 			return
 		}
 		if downgraded {

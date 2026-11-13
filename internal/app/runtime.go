@@ -77,6 +77,9 @@ type RuntimeConfig struct {
 	// RetryOnTimeout 决定上游超时（等满 request_timeout_sec）后还重不重试（#70）。
 	// 默认 true 保持原行为；关掉时超时直接报错，不再按 retry_attempts 再等几轮。
 	RetryOnTimeout bool `json:"retry_on_timeout"`
+	// RefusalAsError returns replies containing Gemini's policy URL as HTTP 422. Off by
+	// default; callers own any retries or model routing.
+	RefusalAsError bool `json:"refusal_as_error"`
 	// StreamKeepaliveSec 是流式请求连续空闲多少秒就发一次保活（#70），0 = 关（默认）。
 	// 开了之后慢请求会先开流，失败只能在流里报错、HTTP 状态码锁成 200，见 keepalive.go。
 	StreamKeepaliveSec int `json:"stream_keepalive_sec"`
@@ -97,6 +100,7 @@ func initRuntimeConfig() {
 		RetryDelaySec:   cfg.RetryDelaySec,
 		RequestTimeout:  cfg.RequestTimeout,
 		RetryOnTimeout:  cfg.RetryOnTimeout,
+		RefusalAsError:  cfg.RefusalAsError,
 		DefaultModel:    cfg.DefaultModel,
 		PerIPConcurrent: cfg.PerIPConcurrent,
 		PerIPRPM:        cfg.PerIPRPM,

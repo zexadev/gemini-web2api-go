@@ -464,9 +464,20 @@ func streamGenerateConv(prompt string, mc ModelConfig, conv *convState,
 //   - 没命中 → 新建会话，首轮发全量拼接的历史（含 tools 指令，把当前上下文交给服务端）。
 //
 // 支持 tools（续接里也解析 ```tool_call``` 围栏）；图片走原单轮路径（callGemini）。
+var generateGeminiConversation = streamGenerateConv
+
 func callGeminiConv(messages []map[string]interface{}, mc ModelConfig,
 	tools []map[string]interface{}, toolChoice interface{},
-	onDelta, onReasoning func(string)) (string, []ToolCall, *StreamResult, error) {
+	onDelta, onReasoning func(string), checkRefusal bool) (string, []ToolCall, *StreamResult, error) {
+	checked := newCheckedChatOutput(checkRefusal, mc, onDelta, onReasoning)
+	if checked != nil {
+		if onDelta != nil {
+			onDelta = func(s string) { checked.text.WriteString(s) }
+		}
+		if onReasoning != nil {
+			onReasoning = func(s string) { checked.reasoning.WriteString(s) }
+		}
+	}
 	parentKey := convParentKey(messages)
 	conv := convGet(parentKey)
 	fresh := conv == nil
@@ -515,7 +526,7 @@ func callGeminiConv(messages []map[string]interface{}, mc ModelConfig,
 				}
 			}
 		}
-		res, err = streamGenerateConv(prompt, mc, conv, onDelta, onReasoning)
+		res, err = generateGeminiConversation(prompt, mc, conv, onDelta, onReasoning)
 		if !retryOnAnotherAccount(res, err, mc, exclude) || !fresh {
 			break
 		}
@@ -528,6 +539,14 @@ func callGeminiConv(messages []map[string]interface{}, mc ModelConfig,
 		return "", nil, res, err
 	}
 	text := extractResponseText(res.Raw)
+	if checkRefusal && mc.Tool == 0 {
+		if err := rejectGeminiRefusal(text, res); err != nil {
+			if !fresh {
+				convDelete(parentKey)
+			}
+			return "", nil, res, err
+		}
+	}
 	var toolCalls []ToolCall
 	if len(tools) > 0 {
 		text, toolCalls = parseToolCalls(text)
@@ -541,6 +560,7 @@ func callGeminiConv(messages []map[string]interface{}, mc ModelConfig,
 	// 存续接状态：客户端下一轮把这段回复原样带回来时，parentKey 会命中这里。
 	// 存的是解析掉围栏后的正文 —— 客户端把 assistant 消息带回来时 content 也是这段。
 	convPut(convChildKey(messages, text), conv)
+	checked.accept()
 	return text, toolCalls, res, nil
 }
 
