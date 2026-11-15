@@ -161,11 +161,21 @@ func foldModelName(s string) string {
 //
 // 看不见就不判：没自报（reported 为空）或模型没登记 Upstream 一律当没降级——
 // 误报会让开了开关的人白白丢请求，比漏判更伤。
+// 已确认的原地改名可由 UpstreamAliases 放行（旧 Flash → Hydrogen）；显式 Hydrogen
+// 条目没有旧名别名，因此返回 3.8 Flash 时仍会报降级。
 func modelDowngraded(mc ModelConfig, reported string) bool {
 	want := foldModelName(mc.Upstream)
 	got := foldModelName(reported)
 	if want == "" || got == "" {
 		return false
 	}
-	return got != want && !strings.HasPrefix(got, want+" ")
+	if got == want || strings.HasPrefix(got, want+" ") {
+		return false
+	}
+	for _, alias := range mc.UpstreamAliases {
+		if name := foldModelName(alias); name != "" && (got == name || strings.HasPrefix(got, name+" ")) {
+			return false
+		}
+	}
+	return true
 }

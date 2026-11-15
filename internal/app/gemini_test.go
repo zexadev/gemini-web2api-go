@@ -51,7 +51,8 @@ func TestModelHeader(t *testing.T) {
 		}
 	}
 	// 守的是「不许冒出假模型」：thinking 版复用同样的 hex，所以看**去重后的 hex 数**，
-	// 不是条目数。服务端清单（otAQ7b）里 3.6/3.5-lite/3.1-pro/3.8-flash + 4 Argon（#35）= 5 个。
+	// 不是条目数。3.6/3.5-lite/3.1-pro/3.8-flash + 4 Argon（#35）= 5 个；
+	// 4 Hydrogen（#74）复用原 3.8 Flash 的 hex，不增加独立 hex。
 	hexes := map[string]bool{}
 	for _, m := range Models {
 		hexes[m.HexID] = true
