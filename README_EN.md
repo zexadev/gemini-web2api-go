@@ -1,6 +1,6 @@
 # gemini-web2api-go
 
-**Gemini web → OpenAI-compatible API.** A self-hosted proxy that turns the free [gemini.google.com](https://gemini.google.com) web app into `/v1/chat/completions` — **no Google API key, no paid quota**. Single Go binary, real Chrome TLS fingerprint, cookie pool with automatic renewal, proxy pool, built-in admin dashboard, SQLite / MySQL / PostgreSQL. Image, music, canvas and video generation (`/v1/videos`) included. Models track the web app, **Gemini 4 Argon** included (needs a paid-account cookie).
+**Gemini web → OpenAI-compatible API.** A self-hosted proxy that turns the free [gemini.google.com](https://gemini.google.com) web app into `/v1/chat/completions` — **no Google API key, no paid quota**. Single Go binary, real Chrome TLS fingerprint, cookie pool with automatic renewal, proxy pool, built-in admin dashboard, SQLite / MySQL / PostgreSQL. Image, music, canvas and video generation (`/v1/videos`) included. Models track the web app, **Gemini 4 Hydrogen and Argon** included (need a paid-account cookie and access to the model in the web app).
 
 <img src="docs/banner.svg" alt="gemini-web2api-go — Gemini web to OpenAI-compatible API, native Gemini API and MCP" width="100%">
 
@@ -92,7 +92,7 @@ The projects most often compared with this one are the Python [Sophomoresty/gemi
 **Models**
 - `gemini-3.6-flash` and `gemini-3.5-flash-lite` work anonymously, web search included
 - `gemini-3.1-pro` needs a cookie; every reply carries a reasoning chain
-- `gemini-3.8-flash` and `gemini-4-argon` need a cookie from a paid / Ultra account
+- `gemini-3.8-flash`, `gemini-4-hydrogen` and `gemini-4-argon` need a cookie from a paid / Ultra account with access to the corresponding model in the web app
 - Every model has a `-thinking` variant (extended thinking), available with a cookie
   (`reasoning_content`)
 - Every response records which model the backend **actually** used, so silent
@@ -340,26 +340,32 @@ The frontend is a single HTML file and Chart.js is embedded in the binary, **not
 
 ## Models
 
-Models follow the Gemini web app's model picker (the list comes from `batchexecute?rpcids=otAQ7b`): five base models,
-of which 3.6 Flash / 3.5 Flash-Lite / 3.1 Pro work with a free account and 3.8 Flash / 4 Argon need a paid one; the rest are their thinking tiers and the media tools.
+Models follow the Gemini web app's model picker (the list comes from `batchexecute?rpcids=otAQ7b`):
+3.6 Flash / 3.5 Flash-Lite / 3.1 Pro work with a free account. 3.8 Flash / 4 Hydrogen / 4 Argon use paid-account routes, with availability determined by the account's access in the web app; the rest are their thinking tiers and the media tools. 4 Hydrogen shares the 3.8 Flash web route, and the old names remain available for existing clients.
 
 | Model | Description |
 |---|---|
 | `gemini-3.6-flash` | All-round, default |
 | `gemini-3.5-flash-lite` | Fast and lightweight |
 | `gemini-3.1-pro` | Most capable, **needs a cookie**; every reply carries a reasoning chain |
-| `gemini-3.8-flash` | Newer Flash, **needs a cookie from a PAID Gemini account** (free accounts get downgraded to 3.5 Flash-Lite). `gemini-3.7-flash` is an alias — Google bumped that same hex from 3.7 to 3.8 in place |
+| `gemini-3.8-flash` | Legacy name, **needs a paid Gemini account's cookie**; may report 3.8 Flash or 4 Hydrogen depending on the account's rollout. `gemini-3.7-flash` remains an alias |
+| `gemini-4-hydrogen` | 4 Hydrogen at the normal tier; **needs a paid Gemini account's cookie and access to Hydrogen in the web app** |
 | `gemini-4-argon` | 4 Argon (complex tasks), **needs a cookie from a PAID/Ultra Gemini account** (free accounts get downgraded to 3.5 Flash-Lite) |
 | `gemini-3.6-flash-thinking` | 3.6 Flash with extended thinking; **needs a cookie** |
 | `gemini-3.5-flash-lite-thinking` | 3.5 Flash-Lite with extended thinking; **needs a cookie** |
 | `gemini-3.1-pro-thinking` | 3.1 Pro with extended thinking; **needs a cookie** |
-| `gemini-3.8-flash-thinking` | 3.8 Flash with extended thinking; **needs a paid-account cookie** (`gemini-3.7-flash-thinking` is an alias) |
+| `gemini-3.8-flash-thinking` | Extended thinking on the legacy 3.8 route; may report 3.8 Flash or 4 Hydrogen; **needs a paid-account cookie** (`gemini-3.7-flash-thinking` is an alias) |
+| `gemini-4-hydrogen-thinking` | 4 Hydrogen with extended thinking (High tier); **needs a paid-account cookie and access to Hydrogen in the web app** |
 | `gemini-4-argon-thinking` | 4 Argon with extended thinking (upstream "High" tier), carries `reasoning_content`; **needs a PAID/Ultra account cookie** |
 | `gemini-4-argon-thinking-medium` | 4 Argon at the Medium thinking tier (thinks server-side, no `reasoning_content`); **needs a PAID/Ultra account cookie** |
 | `gemini-image` | Image generation (Nano Banana); base64 output; **needs a cookie** |
 | `gemini-music` | Music (Lyria, ~30s); base64 output; **needs a cookie** |
 | `gemini-canvas` | Canvas: generates an interactive HTML document (returned inline as a ```html block); **needs a cookie** |
 | `gemini-video` | Video generation (async, tens of seconds to a few minutes); base64 MP4 output; **needs a Pro/paid account** (free accounts are refused by the upstream content policy) |
+
+With `strict_model` enabled, explicit `gemini-4-hydrogen` requests and its thinking variant only accept the upstream name `4 Hydrogen` (including thinking-tier suffixes); the legacy 3.8 / 3.7 names accept both `3.8 Flash` and `4 Hydrogen`. Hydrogen exposes the web app's normal and extended/High tiers, not the official API's `xhigh` tier.
+
+> Hydrogen routing sources: [upstream issue #74](https://github.com/zexadev/gemini-web2api-go/issues/74) and [gemini-stealth-bridge's model registry test](https://github.com/azrinaldi/gemini-stealth-bridge/blob/ace32031a4ba9576d9f1d913c996e03d9bb6d087/internal/gemini/registry_names_test.go#L35). This is community wire-protocol evidence; this implementation has not been verified with a real account on this machine.
 
 Without a cookie, `/v1/models` returns only the first two, and asking for `gemini-3.1-pro` fails with an explanation. An anonymous request for it is always silently downgraded to 3.5 Flash-Lite — better to fail at model selection than to hand back a reply that "succeeded" but isn't Pro.
 
@@ -740,8 +746,8 @@ spread requests across exits with the proxy pool rather than adding accounts.
 Anonymous (no cookie): `gemini-3.6-flash` and `gemini-3.5-flash-lite`, web search included.
 A free account's cookie additionally unlocks `gemini-3.1-pro`, the `-thinking` variants of 3.6 Flash / 3.5 Flash-Lite / 3.1 Pro,
 image / video input, image generation, music and canvas.
-Paid accounts only: `gemini-3.8-flash`, `gemini-4-argon` (and their `-thinking` variants; free accounts are
-downgraded to 3.5 Flash-Lite) and video generation (`gemini-video` / `/v1/videos`).
+Paid-account routes: `gemini-3.8-flash`, `gemini-4-hydrogen`, `gemini-4-argon` (and their `-thinking` variants)
+and video generation (`gemini-video` / `/v1/videos`). Hydrogen also requires access to that model in the account's web app; importing a cookie alone does not grant access.
 
 ### Why does every message create a new conversation on gemini.google.com?
 
@@ -761,8 +767,13 @@ the proxy. Function calling is prompt-level, so the model does not always answer
 
 ### Is gemini-3.8-flash available?
 
-Yes: `gemini-3.8-flash` and `gemini-3.8-flash-thinking`, for paid Gemini accounts; requests from free accounts are
-downgraded server-side to 3.5 Flash-Lite. `gemini-3.7-flash` remains as an alias so older clients keep working.
+Yes: `gemini-3.8-flash` and `gemini-3.8-flash-thinking`, for paid Gemini accounts; `gemini-3.7-flash` remains an alias.
+The web route may report `3.8 Flash` or `4 Hydrogen` depending on the account's rollout, and strict model checking accepts both names. To require Hydrogen, select `gemini-4-hydrogen` explicitly and enable `strict_model`.
+
+### Can I use Gemini 4 Hydrogen through this? How?
+
+Use `gemini-4-hydrogen`, or `gemini-4-hydrogen-thinking` for extended thinking. Import a paid Gemini account's cookie in the admin dashboard and confirm that the account can use Hydrogen on gemini.google.com. Neither model is exposed without a cookie.
+With `strict_model` enabled, replies from the old Flash or any other model are treated as downgrades and retried on another account; the request returns `429` when no account satisfies it. The web app's High tier is not the official API's `xhigh` tier, which this project does not expose.
 
 ### Can I use Gemini 4 Argon through this? How?
 
