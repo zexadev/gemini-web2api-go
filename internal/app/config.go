@@ -50,8 +50,8 @@ type Config struct {
 	AnonFirst bool `json:"anon_first"`
 	// 临时对话（#34）：发请求时塞 inner[45]=1，走 Gemini 网页端原生「临时对话」——
 	// 会话不进账号的会话列表、不用于训练，天然取代 auto_delete_conversation（无需再发删除
-	// RPC）。只登录态有意义（匿名本就不落账号）。与 multi_turn 冲突：multi_turn 开着时不发，
-	// 见 temporaryChatEligible。默认 false。
+	// RPC）。只登录态有意义（匿名本就不落账号）。可与 Responses 的 previous_response_id
+	// 续接并用；续接映射只保存在本进程内。默认 false，见 temporaryChatEligible。
 	TemporaryChat bool `json:"temporary_chat"`
 	// 生成图放大（#62）：出图后照网页「下载原图」那样发 rpc c8o8Fe，返回放大版（实测宽高各
 	// 2 倍、JPEG）。要登录态；放大失败退回原来那张，不重新生成。默认 false。

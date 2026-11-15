@@ -544,6 +544,14 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	previousResponseID := getStr(req, "previous_response_id")
+	// Claude Code often sends only the new input after previous_response_id.
+	// Rebuild the logical history before hashing it for conversation.go; a full
+	// history resend remains supported and is detected without duplication.
+	if previous := responseHistoryGet(previousResponseID); previous != nil {
+		messages = mergeResponseHistory(previous, messages)
+	}
+
 	toolsRaw, _ := req["tools"].([]interface{})
 	var tools []map[string]interface{}
 	for _, t := range toolsRaw {
@@ -681,7 +689,9 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 	var text string
 	var toolCalls []ToolCall
 	var res *StreamResult
-	if rtCfg().MultiTurn && len(images) == 0 && modelCfg.Tool == 0 {
+	useConversation := (rtCfg().MultiTurn || rtCfg().TemporaryChat || previousResponseID != "") &&
+		len(images) == 0 && modelCfg.Tool == 0
+	if useConversation {
 		text, toolCalls, res, err = callGeminiConv(messages, modelCfg, tools, req["tool_choice"], onDelta, nil)
 	} else {
 		text, toolCalls, res, err = callGemini(prompt, latest, modelCfg, tools, images, onDelta, nil)
@@ -761,6 +771,11 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 
 	recordRequest("responses", modelName, prompt, text, res, 200, "", stream)
+	if useConversation {
+		// Store the history under the response ID returned to the client. The next
+		// request can therefore continue even when it sends only a new input item.
+		responseHistoryPut(rid, messages, text, toolCalls)
+	}
 	if stream {
 		// 补上闸门扣住、或前缀 diff 跳过的尾巴，再发终态事件。
 		if rest := remainingOf(text, sentText(res, gate)); rest != "" {

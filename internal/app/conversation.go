@@ -42,7 +42,121 @@ const (
 var (
 	convMu    sync.Mutex
 	convStore = map[string]*convState{}
+	// responseStore bridges OpenAI Responses response IDs to the full logical
+	// history that produced them. Claude Code commonly sends only the next input
+	// together with previous_response_id; without this mapping that request has
+	// no parent hash and starts a new Gemini conversation.
+	responseMu    sync.Mutex
+	responseStore = map[string]*responseHistory{}
 )
+
+type responseHistory struct {
+	messages []map[string]interface{}
+	updated  time.Time
+}
+
+func cloneMessages(messages []map[string]interface{}) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(messages))
+	for _, m := range messages {
+		copy := make(map[string]interface{}, len(m))
+		for k, v := range m {
+			copy[k] = v
+		}
+		out = append(out, copy)
+	}
+	return out
+}
+
+// responseHistoryGet returns a private copy so a request cannot mutate the
+// stored continuation while another request is using the same response ID.
+func responseHistoryGet(id string) []map[string]interface{} {
+	if id == "" {
+		return nil
+	}
+	responseMu.Lock()
+	defer responseMu.Unlock()
+	h, ok := responseStore[id]
+	if !ok {
+		return nil
+	}
+	if time.Since(h.updated) > convTTL {
+		delete(responseStore, id)
+		return nil
+	}
+	return cloneMessages(h.messages)
+}
+
+// responseHistoryPut records the history after a completed Responses turn.
+// It is intentionally process-local, like convStore: response IDs are useful
+// for the running proxy and expire with the same window as Gemini credentials.
+func responseHistoryPut(id string, messages []map[string]interface{}, responseText string, toolCalls []ToolCall) {
+	if id == "" {
+		return
+	}
+	full := cloneMessages(messages)
+	assistant := map[string]interface{}{"role": "assistant", "content": responseText}
+	if len(toolCalls) > 0 {
+		calls := make([]interface{}, 0, len(toolCalls))
+		for _, tc := range toolCalls {
+			calls = append(calls, map[string]interface{}{
+				"id":   tc.ID,
+				"type": tc.Type,
+				"function": map[string]interface{}{
+					"name":      tc.Function.Name,
+					"arguments": tc.Function.Arguments,
+				},
+			})
+		}
+		assistant["tool_calls"] = calls
+	}
+	full = append(full, assistant)
+	responseMu.Lock()
+	defer responseMu.Unlock()
+	responseStore[id] = &responseHistory{messages: full, updated: time.Now()}
+	if len(responseStore) <= convMax {
+		return
+	}
+	var oldestID string
+	var oldest time.Time
+	for key, h := range responseStore {
+		if time.Since(h.updated) > convTTL {
+			delete(responseStore, key)
+			continue
+		}
+		if oldestID == "" || h.updated.Before(oldest) {
+			oldestID, oldest = key, h.updated
+		}
+	}
+	if len(responseStore) > convMax && oldestID != "" {
+		delete(responseStore, oldestID)
+	}
+}
+
+// mergeResponseHistory accepts both Responses API styles: a client may resend
+// the whole history, or only the new input after previous_response_id. Repeated
+// instructions are removed when the latter style is used.
+func mergeResponseHistory(previous, incoming []map[string]interface{}) []map[string]interface{} {
+	if len(previous) == 0 {
+		return cloneMessages(incoming)
+	}
+	if len(incoming) >= len(previous) && canonicalMessages(incoming[:len(previous)]) == canonicalMessages(previous) {
+		return cloneMessages(incoming)
+	}
+	out := cloneMessages(previous)
+	previousSystems := map[string]bool{}
+	for _, m := range previous {
+		if getStr(m, "role") == "system" {
+			previousSystems[canonicalMessages([]map[string]interface{}{m})] = true
+		}
+	}
+	for _, m := range incoming {
+		if getStr(m, "role") == "system" && previousSystems[canonicalMessages([]map[string]interface{}{m})] {
+			continue
+		}
+		out = append(out, cloneMessages([]map[string]interface{}{m})[0])
+	}
+	return out
+}
 
 // convDelete 作废一路会话（续接失败时用，避免客户端重试还撞同一路死会话）。
 func convDelete(key string) {
@@ -301,6 +415,11 @@ func streamGenerateConv(prompt string, mc ModelConfig, conv *convState,
 	inner[27] = 1
 	inner[30] = []interface{}{4}
 	inner[41] = []interface{}{1}
+	// Responses continuations can keep the same Gemini conversation while the
+	// temporary-chat flag keeps it out of the signed-in account's sidebar.
+	if temporaryChatEligible() && conv.cookie != "" {
+		inner[45] = 1
+	}
 	inner[53] = 0
 	reqUUID := uuid.NewString()
 	inner[59] = reqUUID

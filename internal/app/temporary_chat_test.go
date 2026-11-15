@@ -2,8 +2,8 @@ package app
 
 import "testing"
 
-// temporaryChatEligible 的不变量：temporary_chat 开着才走临时对话，且 multi_turn 一律压制
-// （两者冲突——临时对话不进会话列表，多轮要靠服务端留会话，见 temporaryChatEligible 注释）。
+// temporaryChatEligible 的不变量：temporary_chat 开着就走临时对话；Responses
+// previous_response_id 续接状态由本进程维护，因此它可以和服务端多轮并用。
 func TestTemporaryChatEligible(t *testing.T) {
 	old := rtCfg()
 	defer func() { rtMu.Lock(); rtVal = old; rtMu.Unlock() }()
@@ -13,7 +13,7 @@ func TestTemporaryChatEligible(t *testing.T) {
 	}{
 		{false, false, false}, // 都关
 		{true, false, true},   // 只开临时 → 生效
-		{true, true, false},   // 临时+多轮 → 多轮压制
+		{true, true, true},    // 临时+多轮 → 仍隐藏会话
 		{false, true, false},  // 只开多轮
 	}
 	for _, c := range cases {
