@@ -120,3 +120,37 @@ func TestMin1PSIDTSInterval(t *testing.T) {
 		t.Fatalf("地板太短会 429: %s", min1PSIDTSInterval)
 	}
 }
+
+// #73 的原样响应体：等待秒数从 identity.hfcr 取；取不到或越界用默认轮转间隔。
+func TestRotateRetryAfter(t *testing.T) {
+	cases := []struct {
+		body string
+		want time.Duration
+	}{
+		{")]}'\n\n[[\"identity.hfcr\",600],[\"di\",12]]", 600 * time.Second},
+		{")]}'\n\n[[\"identity.hfcr\",120]]", 120 * time.Second},
+		{")]}'\n\n[[\"identity.hfcr\",5]]", defaultRotateInterval},
+		{")]}'\n\n[[\"di\",12]]", defaultRotateInterval},
+		{"", defaultRotateInterval},
+	}
+	for _, c := range cases {
+		if got := rotateRetryAfter([]byte(c.body)); got != c.want {
+			t.Errorf("rotateRetryAfter(%q) = %s, want %s", c.body, got, c.want)
+		}
+	}
+}
+
+func TestSIDCCBackoff(t *testing.T) {
+	const id = 987654
+	if sidccBackoffLeft(id) != 0 {
+		t.Fatal("fresh account should not be in backoff")
+	}
+	noteSIDCCBackoff(id, time.Minute)
+	if left := sidccBackoffLeft(id); left <= 50*time.Second || left > time.Minute {
+		t.Fatalf("want ~1m backoff after 429, got %s", left)
+	}
+	noteSIDCCBackoff(id, -time.Second)
+	if sidccBackoffLeft(id) != 0 {
+		t.Fatal("backoff should end once the deadline passes")
+	}
+}

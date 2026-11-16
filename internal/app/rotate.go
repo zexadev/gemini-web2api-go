@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -79,15 +80,27 @@ func rotateAccount(a CookieAccount) (time.Duration, []string, error) {
 		names = append(names, n...)
 	}
 
-	c3, iv, n2, err := rotateSIDCC(cookie, proxyURL)
-	if err != nil {
-		sidccErr = err
-		logf("[rotate] 账号 #%d SIDCC 保活失败: %v", a.ID, err)
+	if left := sidccBackoffLeft(a.ID); left > 0 {
+		// 不发请求。记成错误，只在 1PSIDTS 也没刷到时才返回，面板按钮据此不显示「保活成功」。
+		sidccErr = fmt.Errorf("SIDCC 保活被限流，%s 后再试", left.Round(time.Second))
 	} else {
-		cookie = c3
-		names = append(names, n2...)
-		if iv > 0 {
-			interval = iv
+		c3, iv, n2, err := rotateSIDCC(cookie, proxyURL)
+		var rl *rotateRateLimitedError
+		switch {
+		case errors.As(err, &rl):
+			sidccErr = err
+			noteSIDCCBackoff(a.ID, rl.RetryAfter)
+			logf("[rotate] 账号 #%d SIDCC 保活被限流（RotateCookies 429），%s 内不再请求",
+				a.ID, rl.RetryAfter)
+		case err != nil:
+			sidccErr = err
+			logf("[rotate] 账号 #%d SIDCC 保活失败: %v", a.ID, err)
+		default:
+			cookie = c3
+			names = append(names, n2...)
+			if iv > 0 {
+				interval = iv
+			}
 		}
 	}
 
@@ -203,12 +216,56 @@ func rotateSIDCC(cookie, proxyURL string) (string, time.Duration, []string, erro
 	if err != nil {
 		return cookie, 0, nil, err
 	}
+	if status == 429 {
+		return cookie, 0, nil, &rotateRateLimitedError{RetryAfter: rotateRetryAfter(respBody)}
+	}
 	if status != 200 {
 		return cookie, 0, nil, fmt.Errorf("RotateCookies 返回 HTTP %d: %s", status, truncate(string(respBody), 120))
 	}
 	cookie = mergeSetCookie(cookie, setCookie)
 	names := setCookieNames(append(append([]string{}, pageSet...), setCookie...))
 	return cookie, interval, names, nil
+}
+
+// rotateRateLimitedError 是 RotateCookies 回 429。实测响应体
+// `)]}'\n\n[["identity.hfcr",600],["di",12]]`，600 当作要等的秒数（跟页面给的轮转间隔同值）。
+type rotateRateLimitedError struct{ RetryAfter time.Duration }
+
+func (e *rotateRateLimitedError) Error() string {
+	return fmt.Sprintf("RotateCookies 返回 HTTP 429（%s 后再试）", e.RetryAfter)
+}
+
+var rotateRetryAfterRe = regexp.MustCompile(`"identity\.hfcr"\s*,\s*([0-9]+)`)
+
+// rotateRetryAfter 从 429 响应体里取等待秒数，取不到或越界就用默认轮转间隔。
+func rotateRetryAfter(body []byte) time.Duration {
+	if m := rotateRetryAfterRe.FindSubmatch(body); m != nil {
+		if sec, err := strconv.Atoi(string(m[1])); err == nil && sec >= 60 && sec <= 3600 {
+			return time.Duration(sec) * time.Second
+		}
+	}
+	return defaultRotateInterval
+}
+
+var (
+	sidccMu       sync.Mutex
+	sidccResumeAt = map[int64]time.Time{}
+)
+
+func noteSIDCCBackoff(id int64, d time.Duration) {
+	sidccMu.Lock()
+	sidccResumeAt[id] = time.Now().Add(d)
+	sidccMu.Unlock()
+}
+
+// sidccBackoffLeft 返回还要等多久，不在退避中返回 0。
+func sidccBackoffLeft(id int64) time.Duration {
+	sidccMu.Lock()
+	defer sidccMu.Unlock()
+	if left := time.Until(sidccResumeAt[id]); left > 0 {
+		return left
+	}
+	return 0
 }
 
 func uniqueKeepOrder(in []string) []string {
