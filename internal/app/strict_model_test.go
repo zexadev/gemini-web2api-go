@@ -151,6 +151,13 @@ func TestModelDowngraded(t *testing.T) {
 		{"gemini-3.1-pro-thinking", "3.1 Pro High", false},
 		{"gemini-3.6-flash-thinking", "3.6 Flash 扩展", false},
 		{"gemini-4-argon-thinking", "4 Argon High", false},
+		// 2026-11-16 实测：mode 8 回报 4 Carbon（上游改名），新旧两个名字互认
+		{"gemini-4-argon", "4 Carbon", false},
+		{"gemini-4-carbon", "4 Carbon", false},
+		{"gemini-4-carbon", "4 Argon", false},
+		{"gemini-4-argon-thinking", "4 Carbon High", false},
+		{"gemini-4-carbon", "3.5 Flash-Lite", true},
+		{"gemini-4-carbon", "4 Hydrogen", true},
 		{"gemini-3.7-flash", "3.8 Flash", false},
 		{"gemini-4-hydrogen", "4 Hydrogen", false},
 		{"gemini-4-hydrogen-thinking", "4 Hydrogen High", false},
