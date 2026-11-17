@@ -161,6 +161,10 @@ func TestModelDowngraded(t *testing.T) {
 		{"gemini-3.8-flash-thinking", "4 Hydrogen High", false},
 		{"gemini-3.7-flash-thinking", "4 Hydrogen High", false},
 		{"gemini-3.8-flash-thinking", "3.8 Flash High", false},
+		// 2026-11-17 实测：登录号（免费号也是）发 mode 1 回报 4 Hydrogen，3.6 Flash 已不在清单
+		{"gemini-3.6-flash", "4 Hydrogen", false},
+		{"gemini-3.6-flash-thinking", "4 Hydrogen High", false},
+		{"gemini-3.6-flash", "3.5 Flash-Lite", true},
 		// An explicit Hydrogen request must still reject older models and other tiers.
 		{"gemini-4-hydrogen", "3.8 Flash", true},
 		{"gemini-4-hydrogen", "3.5 Flash-Lite", true},
