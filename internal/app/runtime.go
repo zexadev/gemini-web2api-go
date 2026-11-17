@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"sync"
 )
 
@@ -148,9 +149,12 @@ func rtCfg() RuntimeConfig {
 
 // replaceRetiredDefault 把上游已下线的默认模型换成 fallbackDefaultModel。
 // 老部署的 config.json 或面板里可能存着 gemini-3.1-pro。
+//
+// 直接写 stderr 不走 logf：logf 只在 log_requests 开着时打，而这里跑在运行时配置
+// 装好之前，rtCfg() 还是零值，logf 一定不打。
 func replaceRetiredDefault(c *RuntimeConfig) {
 	if m, ok := Models[c.DefaultModel]; ok && m.Retired != "" {
-		logf("[config] 默认模型 %s 已下线，改用 %s", c.DefaultModel, fallbackDefaultModel)
+		fmt.Fprintf(os.Stderr, "[config] 默认模型 %s 已下线，改用 %s\n", c.DefaultModel, fallbackDefaultModel)
 		c.DefaultModel = fallbackDefaultModel
 	}
 }
