@@ -1058,7 +1058,7 @@ const RT_GROUPS = [
       { k: 'image_upscale', label: '生图下载原图/放大', type: 'bool',
         hint: '出图后照网页「下载」按钮那样取图：Ultra 号的图会放大到宽高各 2 倍（1376×768 → 2752×1536），普通号拿到未重新压缩的原始文件（尺寸不变、画质更好）。每张图多一次请求，返回体积大几倍。只登录态生效，取不到就退回原来那张，不会重新生成。默认关' },
       { k: 'anon_first', label: '匿名优先', type: 'bool',
-        hint: '这次请求不需要登录态能力时（纯文本、非思考、无工具、不带图）走匿名、不占用 cookie 账号，省账号额度；用到 3.1 Pro / 3.8 Flash / 扩展思考 / 生图 / 传文件这些才挑号。关掉则只要池里有号就一律用号（默认关）' },
+        hint: '这次请求不需要登录态能力时（纯文本、非思考、无工具、不带图）走匿名、不占用 cookie 账号，省账号额度；用到 4 Hydrogen / 4 Carbon / 扩展思考 / 生图 / 传文件这些才挑号。关掉则只要池里有号就一律用号（默认关）' },
     ],
   },
   {
@@ -1069,7 +1069,7 @@ const RT_GROUPS = [
       { k: 'fallback_direct', label: '无可用代理时退回直连', type: 'bool',
         hint: '关：直接返回 429，本机 IP 不会暴露给上游（默认）。开：可用性优先，但上游会看到本机真实出口' },
       { k: 'fallback_anon', label: 'cookie 失效时降级匿名', type: 'bool',
-        hint: '关：直接报错，能立刻发现该换号了（默认）。开：继续跑，但 3.1 Pro 会被静默降级成 3.5 Flash-Lite、思考链消失，客户端看不出来' },
+        hint: '关：直接报错，能立刻发现该换号了（默认）。开：继续跑，但要登录的模型会被静默降级成 3.5 Flash-Lite、思考链消失，客户端看不出来' },
       { k: 'strict_model', label: '严格模型校验', type: 'bool',
         hint: '开：服务端自报的模型跟请求的不一致时（通常是这个号这一档额度用完、被静默降级），不把降级后的回答当成功返回，而是换下一个号重试；全池都被降级就回 429 insufficient_quota（code: model_downgraded）。流式在吐出第一个字之前就判断。关：照常返回降级后的回答（默认）' },
       { k: 'strict_model_cooldown_min', label: '降级冷却（分钟）', type: 'int', min: 0, max: 10080,
@@ -1188,7 +1188,7 @@ function escapeHtml(s) {
   return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
-// 服务端会静默降级（例如请求 3.1 Pro 实际给的是 3.6 Flash），只看请求名发现不了。
+// 服务端会静默降级（例如请求 4 Carbon 实际给的是 3.5 Flash-Lite），只看请求名发现不了。
 // upstream_model 取自响应帧里服务端自报的显示名；跟请求的对不上时标黄。
 //
 // 媒体模型例外：生图/音乐的后端名（Nano Banana / Lyria）跟请求名本来就不同，是预期
@@ -2288,8 +2288,8 @@ const I18N_EN = {
     'How long a proxy rests before returning to the pool after 5 consecutive failures. Blocked egresses were measured to self-recover in 106-121 minutes, so the default is 120. 0 = no auto-recovery, reset manually on the Proxy Pool page',
   '关：直接返回 429，本机 IP 不会暴露给上游（默认）。开：可用性优先，但上游会看到本机真实出口':
     'Off: return 429 directly, the host IP is never exposed to upstream (default). On: availability first, but upstream sees the host real egress',
-  '关：直接报错，能立刻发现该换号了（默认）。开：继续跑，但 3.1 Pro 会被静默降级成 3.5 Flash-Lite、思考链消失，客户端看不出来':
-    'Off: error out directly so you immediately notice it is time to swap accounts (default). On: keep running, but 3.1 Pro gets silently downgraded to 3.5 Flash-Lite and the thinking chain vanishes, invisible to the client',
+  '关：直接报错，能立刻发现该换号了（默认）。开：继续跑，但要登录的模型会被静默降级成 3.5 Flash-Lite、思考链消失，客户端看不出来':
+    'Off: error out directly so you immediately notice it is time to swap accounts (default). On: keep running, but login-only models get silently downgraded to 3.5 Flash-Lite and the thinking chain vanishes, invisible to the client',
   '过期只删明细，聚合数据永久保留': 'Expiry deletes only detail rows; aggregate data is kept forever',
   '显示': 'Show',
   '隐藏': 'Hide',
@@ -2373,8 +2373,8 @@ const I18N_EN = {
   '出图后照网页「下载」按钮那样取图：Ultra 号的图会放大到宽高各 2 倍（1376×768 → 2752×1536），普通号拿到未重新压缩的原始文件（尺寸不变、画质更好）。每张图多一次请求，返回体积大几倍。只登录态生效，取不到就退回原来那张，不会重新生成。默认关':
     'Fetches generated images the way the web app\'s Download button does: on Ultra accounts the image is upscaled 2× in each dimension (1376×768 → 2752×1536); other accounts get the original file instead of the recompressed preview (same size, better quality). One extra request per image and a several-times larger response. Signed-in only; if it fails the regular image is returned, nothing is regenerated. Off by default',
   '匿名优先': 'Anonymous first',
-  '这次请求不需要登录态能力时（纯文本、非思考、无工具、不带图）走匿名、不占用 cookie 账号，省账号额度；用到 3.1 Pro / 3.8 Flash / 扩展思考 / 生图 / 传文件这些才挑号。关掉则只要池里有号就一律用号（默认关）':
-    'Routes requests that do not require account capabilities (plain text, non-thinking, no tools, no images) anonymously to save cookie account quota. Picks an account only when using 3.1 Pro, 3.8 Flash, extended thinking, image gen, or file uploads. When off, always uses an account if any are in the pool (default off)',
+  '这次请求不需要登录态能力时（纯文本、非思考、无工具、不带图）走匿名、不占用 cookie 账号，省账号额度；用到 4 Hydrogen / 4 Carbon / 扩展思考 / 生图 / 传文件这些才挑号。关掉则只要池里有号就一律用号（默认关）':
+    'Routes requests that do not require account capabilities (plain text, non-thinking, no tools, no images) anonymously to save cookie account quota. Picks an account only when using 4 Hydrogen, 4 Carbon, extended thinking, image gen, or file uploads. When off, always uses an account if any are in the pool (default off)',
   'Firefox 指纹（实验）': 'Firefox fingerprint (experimental)',
   '开：请求伪装成 Firefox/Zen——直连时 TLS 握手走 Firefox 指纹、UA 换成 Firefox、去掉 Chrome 专有的 Sec-CH-UA；关：用上面「TLS 指纹」的设置（默认 Chrome）。cookie 从 Firefox 导出时建议配套打开。注意：走代理时 TLS 这层是 Go 标准库的、改不成 Firefox（隧道限制），只有 header 变成 Firefox，仅直连才是完整 Firefox 指纹。实验功能，默认关':
     'On: requests impersonate Firefox/Zen — on a direct connection the TLS handshake uses the Firefox profile, the UA becomes Firefox, and the Chromium-only Sec-CH-UA headers are dropped. Off: uses the "TLS fingerprint" field above (Chrome by default). Recommended when cookies are exported from Firefox. Note: over a proxy the TLS layer is still Go stdlib (tunnel limitation) — only headers become Firefox; a full Firefox fingerprint happens only on direct connections. Experimental, off by default.',
