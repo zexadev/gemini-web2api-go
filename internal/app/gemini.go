@@ -157,7 +157,9 @@ var Models = map[string]ModelConfig{
 	// 4 Argon + 扩展思考：Mode=8（选 Argon）+ inner[80]=2（上游现在把这档叫 "High"）。
 	// 实测回报 "4 Argon High" 且带思考链（硬题 985 字符，走既有 [4][0][37][0][0] 路径，
 	// 无需改抽取代码）→ 映射成 reasoning_content。付费/Ultra 专属。
-	"gemini-4-argon-thinking": {HexID: hexArgon4, Mode: 8, Thinking: true, Upstream: "4 Argon", UpstreamAliases: []string{"4 Carbon"}, Desc: "4 Argon with extended thinking (High reasoning tier); emits reasoning_content; needs a signed-in PAID/Ultra account"},
+	// 2026-11-16 起 mode 8 要带 inner[49]=40 才不挂，而它会关掉思考档：现在回报普通 "4 Carbon"
+	// （见 streamGenerateOnce 里 mode 8 那段）。名字留着，等找到兼得的办法。
+	"gemini-4-argon-thinking": {HexID: hexArgon4, Mode: 8, Thinking: true, Upstream: "4 Argon", UpstreamAliases: []string{"4 Carbon"}, Desc: "4 Carbon/Argon with extended thinking; currently answers at the normal tier (the request slot that stops mode 8 from hanging disables High); needs a signed-in PAID/Ultra account"},
 	// 中档：think 线值 4（高档是 2）。中档思考在服务端内部完成、不吐思考链，所以不设
 	// Thinking（不期望 reasoning_content），登录门控靠 hexArgon4 + thinkWire。
 	"gemini-4-argon-thinking-medium": {HexID: hexArgon4, Mode: 8, ThinkWire: thinkingMedium, Upstream: "4 Argon", UpstreamAliases: []string{"4 Carbon"}, Desc: "4 Argon at the Medium thinking tier (thinks server-side, no reasoning_content); needs a signed-in PAID/Ultra account"},
@@ -695,6 +697,11 @@ func streamGenerateOnce(prompt, latest string, mc ModelConfig, pending []pending
 	}
 	// 4 Argon（mode 8）：按浏览器 processSession 抓包补齐槽位（protobuf 字段 N == inner[N-1]，
 	// 2026-11-09 实测）。不补的话付费号上请求会挂起没有回应。BotGuard 槽位 inner[3]/[4] 留空。
+	//
+	// 起作用的是 inner[49]=40（2026-11-16 Ultra 号，同一程序逐槽交替实测）：带它 15/15 成功，
+	// 只带另外 7 个槽 0/3，什么都不带 9/27。代价是它会关掉思考档——带它时 -thinking 回报普通
+	// "4 Carbon"，不带才回 "4 Carbon High"。两者怎么兼得要浏览器选 High 时的上行帧才能对，
+	// 现在先保证不挂。其余 7 个槽照抓包保留，单独测过无害。
 	if mc.Mode == 8 {
 		inner[6] = []interface{}{1}
 		inner[30] = []interface{}{}
