@@ -2,6 +2,33 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 4.29.0
+
+2026-11 上游 Gemini 网页端换了一轮模型，这版跟着改。实测：付费号的模型选择器里只剩 3.5 Flash-Lite / 4 Hydrogen /
+4 Carbon；登录号（免费号也是）请求 Flash 路由回报的是 4 Hydrogen；匿名请求 Flash 路由回报的是 3.5 Flash-Lite。
+
+### 新增
+
+- **`gemini-4-hydrogen` / `gemini-4-hydrogen-thinking`（#74、#77，PR #76，@georgelichen）**。跟原来的 3.8 Flash
+  是同一条路由，上游原地改了名。**免费号也能用**，只是免费号的思考版没有 High 档。
+- **`gemini-4-carbon`**：上游把 4 Argon 改名成了 4 Carbon，`gemini-4-argon` 及其思考版照样能用，是同一条路由。
+
+### 修复
+
+- **4 Carbon / 4 Argon 请求卡到超时（PR #71，@plxzy）**。请求里补了浏览器会发的几个参数，起作用的是其中一个，
+  Ultra 号上实测带它 15/15 成功、不带只有 9/27。**代价**：这个参数会关掉思考档，`gemini-4-argon-thinking` 现在回答的是
+  普通档。先保证不卡，两者兼得的办法还在找。
+- **开着 `strict_model` 时，Argon 和 3.6 Flash 的每个请求都被判成降级**。上游改名后它们回报的是 `4 Carbon` / `4 Hydrogen`，
+  现在改名前后的名字互认。匿名请求 `gemini-3.6-flash` 拿到的是 3.5 Flash-Lite，开着 `strict_model` 时仍判降级。
+
+### 变更
+
+- **`gemini-3.1-pro` / `gemini-3.1-pro-thinking` 下线**。上游已经不提供 3.1 Pro：免费号请求会卡到超时，付费号会被换成
+  3.5 Flash-Lite。现在不再发给上游，直接返回 400 说明原因和替代（`gemini-4-hydrogen` / `gemini-4-carbon`），也不出现在
+  模型列表里。默认模型设成了 3.1 Pro 的，启动时自动改成 `gemini-3.6-flash` 并打一行日志，面板里存的其余设置不受影响。
+- **`gemini-3.6-flash` 实际拿到的模型变了**：匿名是 3.5 Flash-Lite，挂 cookie 是 4 Hydrogen。名字没改，免得老配置失效。
+- 两份 README 的模型表按实测重写。
+
 ## 4.28.1
 
 ### 修复
