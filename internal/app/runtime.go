@@ -121,9 +121,12 @@ func initRuntimeConfig() {
 		StrictModelCooldownMin: cfg.StrictModelCooldownMin,
 		StreamKeepaliveSec:     cfg.StreamKeepaliveSec,
 	}
+	replaceRetiredDefault(&base)
 	if raw := kvGet(runtimeConfigKey); raw != "" {
 		saved := base
 		if err := json.Unmarshal([]byte(raw), &saved); err == nil {
+			// 先换掉已下线的默认模型再校验：不然校验失败会把整份面板配置一起丢掉。
+			replaceRetiredDefault(&saved)
 			if err := validateRuntimeConfig(saved); err == nil {
 				base = saved
 			} else {
@@ -141,6 +144,15 @@ func rtCfg() RuntimeConfig {
 	rtMu.RLock()
 	defer rtMu.RUnlock()
 	return rtVal
+}
+
+// replaceRetiredDefault 把上游已下线的默认模型换成 fallbackDefaultModel。
+// 老部署的 config.json 或面板里可能存着 gemini-3.1-pro。
+func replaceRetiredDefault(c *RuntimeConfig) {
+	if m, ok := Models[c.DefaultModel]; ok && m.Retired != "" {
+		logf("[config] 默认模型 %s 已下线，改用 %s", c.DefaultModel, fallbackDefaultModel)
+		c.DefaultModel = fallbackDefaultModel
+	}
 }
 
 // validateRuntimeConfig 校验面板传来的值。

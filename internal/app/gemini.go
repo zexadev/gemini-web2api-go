@@ -91,6 +91,10 @@ type ModelConfig struct {
 	// "Nano Banana 2" 这类后端名）。只能用显示名：跟它并排的 hex 现在不管实际用了
 	// 哪个模型都回 Flash-Lite 的那个。
 	Upstream string
+	// Retired 非空 = 上游已经不提供这个模型，值是给客户端看的原因。这种模型不进模型列表，
+	// 请求直接 400 回这句话，不发上游（发了要么挂到超时、要么被静默换成别的模型）。
+	// 名字留在表里而不是删掉，是为了让老配置拿到的是「下线了，换 X」而不是「unknown model」。
+	Retired string
 	// UpstreamAliases 仅用于已确认的上游改名：旧客户端名仍接受原显示名和新显示名。
 	// 显式请求新模型时不接受旧显示名，避免把尚未升级的账号当成新模型。
 	UpstreamAliases []string
@@ -130,7 +134,9 @@ func (mc ModelConfig) thinkWire() int {
 var Models = map[string]ModelConfig{
 	"gemini-3.6-flash":      {HexID: hexFlash36, Mode: 1, Upstream: "3.6 Flash", UpstreamAliases: []string{"4 Hydrogen"}, Desc: "Flash route: 3.5 Flash-Lite when anonymous, 4 Hydrogen when signed in"},
 	"gemini-3.5-flash-lite": {HexID: hexFlashLite, Mode: 6, Upstream: "3.5 Flash-Lite", Desc: "Fastest, lightweight"},
-	"gemini-3.1-pro":        {HexID: hexPro31, Mode: 3, Upstream: "3.1 Pro", Desc: "Most capable; needs a signed-in cookie (downgraded to Flash-Lite without one)"},
+	// 3.1 Pro 已下线（2026-11-16/17 实测）：Ultra 号的 otAQ7b 清单里没有它了，请求回报
+	// 3.5 Flash-Lite；免费号请求挂到超时（2/2）。
+	"gemini-3.1-pro": {HexID: hexPro31, Mode: 3, Upstream: "3.1 Pro", Retired: retiredPro31, Desc: "Retired upstream"},
 	// 3.8 Flash：Google 把原 3.7 那个 hex 原地升级了（同 hex，服务端显示名从 3.7 变 3.8）。
 	// 现在服务端回报 "4 Hydrogen"，登录号（含免费号）都拿得到，匿名拿不到。
 	// gemini-3.7-flash 保留为别名（同 hex）。
@@ -148,7 +154,7 @@ var Models = map[string]ModelConfig{
 	// 所以跟 3.1 Pro 一样在没 cookie 时不暴露。
 	"gemini-3.6-flash-thinking":      {HexID: hexFlash36, Mode: 1, Thinking: true, Upstream: "3.6 Flash", UpstreamAliases: []string{"4 Hydrogen"}, Desc: "3.6 Flash with extended thinking; needs a signed-in cookie"},
 	"gemini-3.5-flash-lite-thinking": {HexID: hexFlashLite, Mode: 6, Thinking: true, Upstream: "3.5 Flash-Lite", Desc: "3.5 Flash-Lite with extended thinking; needs a signed-in cookie"},
-	"gemini-3.1-pro-thinking":        {HexID: hexPro31, Mode: 3, Thinking: true, Upstream: "3.1 Pro", Desc: "3.1 Pro with extended thinking; needs a signed-in cookie"},
+	"gemini-3.1-pro-thinking":        {HexID: hexPro31, Mode: 3, Thinking: true, Upstream: "3.1 Pro", Retired: retiredPro31, Desc: "Retired upstream"},
 	"gemini-3.8-flash-thinking":      {HexID: hexFlash38, Mode: 1, Thinking: true, Upstream: "3.8 Flash", UpstreamAliases: []string{"4 Hydrogen"}, Desc: "Legacy Flash route with extended thinking, now 4 Hydrogen; needs a signed-in Google account"},
 	"gemini-3.7-flash-thinking":      {HexID: hexFlash38, Mode: 1, Thinking: true, Upstream: "3.8 Flash", UpstreamAliases: []string{"4 Hydrogen"}, Desc: "alias of gemini-3.8-flash-thinking"},
 	// 同一路由的扩展思考（think=2），不是其他账号清单里独立的 Mode=5 Thinking 模型。
@@ -172,6 +178,12 @@ var Models = map[string]ModelConfig{
 	// 画布：生成 immersive 交互 HTML 文档，内联返回（不是二进制、不用下载）。要登录态。
 	"gemini-canvas": {HexID: hexFlash36, Mode: 1, Tool: toolCanvas, Desc: "Canvas: generates an interactive HTML document (returned inline as a ```html block); needs a signed-in cookie"},
 }
+
+const retiredPro31 = "Gemini web no longer offers 3.1 Pro: signed-in free accounts hang until timeout and paid accounts " +
+	"are downgraded to 3.5 Flash-Lite. Use gemini-4-hydrogen (any signed-in account) or gemini-4-carbon (paid/Ultra) instead"
+
+// fallbackDefaultModel 是默认模型被下线时换上的那个。
+const fallbackDefaultModel = "gemini-3.6-flash"
 
 // hasCookie 表示 cookie 池里有没有可用账号。决定 3.1 Pro 是否出现在模型列表里。
 func hasCookie() bool {
@@ -211,20 +223,14 @@ func temporaryChatEligible() bool {
 
 // availableModels 返回当前配置下值得暴露的模型。
 //
-// 没配 cookie 时排除 3.1 Pro：实测匿名请求它会被静默降级成 3.5 Flash-Lite，
-// 客户端还以为自己用上了 Pro。与其让它"成功"，不如直接不提供、让选型时就报错。
-//
-// 配了有效 cookie 时它是真能用的：连打 6 次服务端回报的都是 "3.1 Pro" 本身，
-// 且每次都带思考链（118-152 字符，普通 3.6 Flash 为 0）。早前记录的「免费号
-// 登录也只能拿到 3.6 Flash 扩展」是在缺 XSRF token 的条件下测的，那时候带
-// cookie 的请求根本发不出去（见 xsrf.go）。
+// 没配 cookie 时排除要登录的模型：匿名请求它们会被静默降级成 3.5 Flash-Lite，
+// 客户端还以为自己用上了。与其让它"成功"，不如直接不提供、让选型时就报错。
+// 上游已下线的（Retired）不管有没有 cookie 都排除。
 func availableModels() map[string]ModelConfig {
-	if hasCookie() {
-		return Models
-	}
+	cookie := hasCookie()
 	out := make(map[string]ModelConfig, len(Models))
 	for k, v := range Models {
-		if modelNeedsLogin(v) {
+		if v.Retired != "" || (!cookie && modelNeedsLogin(v)) {
 			continue
 		}
 		out[k] = v
@@ -244,6 +250,9 @@ func resolveModel(modelName string) (string, ModelConfig, error) {
 	}
 	mc, ok := availableModels()[modelName]
 	if !ok {
+		if full, exists := Models[modelName]; exists && full.Retired != "" {
+			return "", ModelConfig{}, fmt.Errorf("%s is retired: %s", modelName, full.Retired)
+		}
 		if full, exists := Models[modelName]; exists && !hasCookie() {
 			downgrade := "are silently downgraded to 3.5 Flash-Lite"
 			if full.Tool > 0 {
