@@ -35,8 +35,9 @@ services:
     environment:
       # 面板登录 token。留空 = 面板不鉴权，只有在绑定 127.0.0.1 时才可接受。
       ADMIN_TOKEN: "${ADMIN_TOKEN:-change-me-in-production}"
-      # 可选：锁定 /v1/* 的 API key，设了之后面板改不了。
-      # 不设则首次启动自动生成，在面板里轮换。
+      # 可选：锁定内置「部署 Key」的值，设了之后面板改不了它/删不掉。
+      # 面板仍可新增其他 DB Key（每把可限制可用账号），两者同时有效。
+      # 不设则首次启动自动生成默认 Key，在面板「API Keys」页管理。
       # API_KEY: "sk-gemini-your-key"
       TZ: "${TZ:-UTC}"
 

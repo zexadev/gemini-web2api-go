@@ -62,8 +62,16 @@ var rotateInitRe = regexp.MustCompile(`init\('([^']{4,64})'\s*,\s*([0-9.]+)\s*,[
 // 返回服务端建议的下次间隔，以及这一轮实际刷新的 cookie 名。
 func rotateAccount(a CookieAccount) (time.Duration, []string, error) {
 	proxyURL := ""
+	if a.ProxyExclusive && a.ProxyID <= 0 {
+		return 0, nil, fmt.Errorf("账号 #%d 有独占标记但没有绑定代理，跳过保活", a.ID)
+	}
 	if a.ProxyID > 0 {
 		proxyURL = proxyURLByID(a.ProxyID)
+		if proxyURL == "" {
+			// 绑定的代理被删了：以前这里会静默退回直连，既绕过独占语义，也让
+			// 保活从本机 IP 出去。现在直接跳过，保留 cookie 和绑定关系。
+			return 0, nil, fmt.Errorf("账号 #%d 绑定的代理 #%d 不存在，跳过保活（不再静默直连）", a.ID, a.ProxyID)
+		}
 	}
 
 	cookie := a.Cookie

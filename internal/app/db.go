@@ -114,9 +114,31 @@ CREATE TABLE IF NOT EXISTS accounts (
     last_error    TEXT NOT NULL DEFAULT '',
     fail_count    INTEGER NOT NULL DEFAULT 0,     -- 连续失败次数（成功归零）
     proxy_id      INTEGER NOT NULL DEFAULT 0,     -- 绑定的出口，0 = 还没绑
-    authuser      INTEGER NOT NULL DEFAULT 0      -- 浏览器多号登录时的账号序号（/u/N），0 = 默认号
+    authuser      INTEGER NOT NULL DEFAULT 0,     -- 浏览器多号登录时的账号序号（/u/N），0 = 默认号
+    proxy_exclusive INTEGER NOT NULL DEFAULT 0    -- 1 = proxy_id 是该账号独占的出口
 );
 CREATE INDEX IF NOT EXISTS idx_accounts_pick ON accounts(status, last_used_at);
+
+-- 多 API key：每行一把 key，key_hash 是 sha256(key) 的 hex，鉴权按它查。
+-- key 明文保存是为了面板按需回显；列表接口只返回脱敏值。
+CREATE TABLE IF NOT EXISTS api_keys (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL DEFAULT '',
+    key        TEXT NOT NULL,
+    key_hash   VARCHAR(64) NOT NULL UNIQUE,
+    enabled    INTEGER NOT NULL DEFAULT 1,
+    allow_all  INTEGER NOT NULL DEFAULT 1,
+    note       TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL
+);
+
+-- key 允许使用的账号；allow_all=1 时忽略这些行。
+CREATE TABLE IF NOT EXISTS api_key_accounts (
+    key_id     INTEGER NOT NULL,
+    account_id INTEGER NOT NULL,
+    PRIMARY KEY (key_id, account_id)
+);
+CREATE INDEX IF NOT EXISTS idx_api_key_accounts_account ON api_key_accounts(account_id);
 `
 
 func getDB() *dbx {
@@ -174,6 +196,8 @@ func getDB() *dbx {
 		// authuser 列三种库的老库都要补：缺这一列时查账号的 SELECT 整条失败、池子直接空掉。
 		// 这句语法三种库通用，已有该列时报错忽略。
 		_, _ = conn.Exec(`ALTER TABLE accounts ADD COLUMN authuser INTEGER NOT NULL DEFAULT 0`)
+		// proxy_exclusive 同理：独占绑定开关，缺列会让所有账号查询失败。
+		_, _ = conn.Exec(`ALTER TABLE accounts ADD COLUMN proxy_exclusive INTEGER NOT NULL DEFAULT 0`)
 		db = conn
 		dbw = &dbx{conn}
 		logf("[db] opened dialect=%d driver=%s", curDialect, driver)

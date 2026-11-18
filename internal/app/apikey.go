@@ -2,31 +2,26 @@ package app
 
 import (
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/hex"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
-	"sync/atomic"
 )
 
-// API key for /v1/* endpoints. Source priority:
-//   1. CLI flag --api-key  (highest, locked at boot)
-//   2. env API_KEY         (locked at boot)
-//   3. kv("api_key") in DB (runtime-mutable via admin)
-//   4. auto-generated on first boot if all of the above are empty
+// API key for /v1/* endpoints.
 //
-// `apiKeyLocked` is true if 1 or 2 set the value — admin UI then shows it as
-// read-only (you'd need to redeploy to change it).
+// 现在支持多把 key：面板里的 DB key（api_keys 表）+ 启动参数/环境变量提供的
+// 只读“部署 Key”。鉴权索引在 keys.go 的 keyStore 里，这里只保留对外兼容的单
+// key 辅助函数和中间件。
 //
-// `apiKeyRuntime` is the cached current value, refreshed every getAPIKey() call
-// when not locked.
+// 旧接口（/admin/api/apikey 的 GET/POST/PATCH）继续操作“默认 Key”：优先取
+// id 最小的 DB key，没有 DB key 时取部署 Key。这样老脚本不需要改。
 
 var (
-	apiKeyLocked  bool
-	apiKeyRuntime atomic.Value // string
-	apiKeyMu      sync.Mutex
+	// apiKeyLocked 表示存在部署 Key（--api-key / API_KEY）。旧面板用它显示
+	// “部署锁定”；它不再代表所有 key 都不可改。
+	apiKeyLocked bool
+	apiKeyMu     sync.Mutex
 )
 
 const apiKeyPrefix = "sk-gemini-"
@@ -37,78 +32,72 @@ func newAPIKey() string {
 	return apiKeyPrefix + hex.EncodeToString(b)
 }
 
-// initAPIKey decides the boot-time value. Called once from main after DB open.
-// Returns the resolved key (or "" if explicitly disabled).
-func initAPIKey(flagKey string) string {
-	if flagKey != "" {
-		apiKeyLocked = true
-		apiKeyRuntime.Store(flagKey)
-		return flagKey
-	}
-	if env := os.Getenv("API_KEY"); env != "" {
-		apiKeyLocked = true
-		apiKeyRuntime.Store(env)
-		return env
-	}
-	// runtime-mutable from DB
-	cur := kvGet("api_key")
-	if cur == "" {
-		// first boot ever — auto-generate
-		cur = newAPIKey()
-		_ = kvSet("api_key", cur)
-	}
-	apiKeyRuntime.Store(cur)
-	return cur
-}
-
+// getAPIKey 返回默认 Key 的值，供旧管理接口和启动 banner 使用。
 func getAPIKey() string {
-	if v, ok := apiKeyRuntime.Load().(string); ok {
-		return v
+	if k := defaultAPIKey(); k != nil {
+		return k.Key
 	}
 	return ""
 }
 
-// rotateAPIKey generates a new random key and persists it. Refuses if locked.
+// rotateAPIKey 给默认 DB Key 换一个随机值。部署 Key / 没有 DB Key 时拒绝。
 func rotateAPIKey() (string, error) {
 	apiKeyMu.Lock()
 	defer apiKeyMu.Unlock()
-	if apiKeyLocked {
+	cur := defaultAPIKey()
+	if cur == nil || cur.Locked {
 		return "", errMsg("api key is locked by --api-key flag or env, edit deployment to change")
 	}
 	k := newAPIKey()
-	if err := kvSet("api_key", k); err != nil {
+	if taken, err := apiKeyValueTaken(k, cur.ID); err != nil {
+		return "", err
+	} else if taken {
+		return "", errMsg("generated key collides with an existing key, retry")
+	}
+	if err := apiKeyUpdateRow(cur.ID, cur.Name, k, cur.Note, cur.Enabled, cur.AllowAll); err != nil {
 		return "", err
 	}
-	apiKeyRuntime.Store(k)
+	reloadAPIKeyStore()
 	return k, nil
 }
 
-// setAPIKey persists a user-provided key (must start with sk-, length >= 20).
-// Refuses if locked.
+// setAPIKey 设置默认 DB Key 的自定义值。部署 Key / 没有 DB Key 时拒绝。
 func setAPIKey(k string) error {
 	apiKeyMu.Lock()
 	defer apiKeyMu.Unlock()
-	if apiKeyLocked {
+	cur := defaultAPIKey()
+	if cur == nil || cur.Locked {
 		return errMsg("api key is locked by --api-key flag or env")
 	}
-	if len(k) < 20 {
-		return errMsg("api key too short (min 20 chars)")
-	}
-	if err := kvSet("api_key", k); err != nil {
+	k = strings.TrimSpace(k)
+	if err := validateAPIKeyValue(k); err != nil {
 		return err
 	}
-	apiKeyRuntime.Store(k)
+	if taken, err := apiKeyValueTaken(k, cur.ID); err != nil {
+		return err
+	} else if taken {
+		return errMsg("api key already exists")
+	}
+	if err := apiKeyUpdateRow(cur.ID, cur.Name, k, cur.Note, cur.Enabled, cur.AllowAll); err != nil {
+		return err
+	}
+	reloadAPIKeyStore()
 	return nil
 }
 
-// requireAPIKey wraps a /v1/* handler with bearer-token auth.
+// requireAPIKey wraps a /v1/* handler with API key auth.
+//
 // Accepts: "Authorization: Bearer xxx" (OpenAI SDK default), "x-api-key: xxx",
 // and Google SDK 的两种写法："x-goog-api-key: xxx" 头或 "?key=xxx" 查询参数
 // （/v1beta 原生 Gemini 接口的客户端只会这么带，不认就一律 401）。
+//
+// 命中后把 *APIKey 放进 request context，下游据此限制可用账号。
 func requireAPIKey(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		key := getAPIKey()
-		if key == "" {
+		dbKeys, hasDeploy := apiKeyCounts()
+		if dbKeys == 0 && !hasDeploy {
+			// 没有任何 key 配置：保持旧行为，放行（正常启动 initAPIKeys 会保证
+			// 至少生成一把默认 Key，这里只覆盖测试/异常场景）。
 			next(w, r)
 			return
 		}
@@ -125,17 +114,18 @@ func requireAPIKey(next http.HandlerFunc) http.HandlerFunc {
 		if got == "" {
 			got = strings.TrimSpace(r.URL.Query().Get("key"))
 		}
-		if got == "" || subtle.ConstantTimeCompare([]byte(got), []byte(key)) != 1 {
+		k := authenticateAPIKey(got)
+		if k == nil {
 			writeJSON(w, 401, map[string]interface{}{
 				"error": map[string]string{
-					"message": "Invalid API key. Set Authorization: Bearer <key>, x-api-key or x-goog-api-key header.",
+					"message": "Invalid API key. Set Authorization: Bearer <key>, x-api-key, x-goog-api-key or ?key=.",
 					"type":    "invalid_request_error",
 					"code":    "invalid_api_key",
 				},
 			})
 			return
 		}
-		next(w, r)
+		next(w, r.WithContext(withAPIKeyContext(r.Context(), k)))
 	}
 }
 

@@ -18,6 +18,7 @@ tmp_*
 # ─── IDE ──────────────────
 .vscode/
 .idea/
+.zcode/
 
 # ─── Go cache ─────────────
 vendor/

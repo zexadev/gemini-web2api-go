@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"sort"
@@ -360,11 +361,51 @@ func handleAdminRequests(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// proxyAdminView 在 Proxy 的 DB 字段上补面板要的状态：独占 owner、熔断状态、
+// 冷却剩余秒数。不改 Proxy 结构本身，避免把非 DB 字段混进 Scan。
+func proxyAdminView(p Proxy) map[string]interface{} {
+	now := time.Now().Unix()
+	ownerID, _ := exclusiveOwnerOfProxy(p.ID)
+	ownerLabel := ""
+	if ownerID > 0 {
+		if a := accountByID(ownerID); a != nil {
+			ownerLabel = accountDisplayName(a)
+		}
+	}
+	state := "ok"
+	if !p.Enabled {
+		state = "disabled"
+	} else if !proxyUsable(p, now, rtCfg().ProxyCooldownMin) {
+		state = "cooling"
+	}
+	retry := int((proxyCooldownRemaining(p, now) + time.Second - 1) / time.Second)
+	return map[string]interface{}{
+		"id":                      p.ID,
+		"name":                    p.Name,
+		"url":                     p.URL,
+		"enabled":                 p.Enabled,
+		"weight":                  p.Weight,
+		"fail_count":              p.FailCount,
+		"last_used":               p.LastUsed,
+		"last_error":              p.LastError,
+		"created_at":              p.CreatedAt,
+		"exclusive_account_id":    ownerID,
+		"exclusive_account_label": ownerLabel,
+		"state":                   state,
+		"cooldown_remaining_sec":  retry,
+	}
+}
+
 // /admin/api/proxies — GET list / POST create / PUT update / DELETE
 func handleAdminProxies(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
-		writeJSON(w, 200, map[string]interface{}{"items": listProxies()})
+		proxies := listProxies()
+		items := make([]map[string]interface{}, 0, len(proxies))
+		for _, p := range proxies {
+			items = append(items, proxyAdminView(p))
+		}
+		writeJSON(w, 200, map[string]interface{}{"items": items})
 	case "POST":
 		var p struct {
 			Name   string `json:"name"`
@@ -378,6 +419,11 @@ func handleAdminProxies(w http.ResponseWriter, r *http.Request) {
 		}
 		id, err := proxyCreate(p.Name, p.URL, p.Weight)
 		if err != nil {
+			var dup *proxyDuplicateURLError
+			if errors.As(err, &dup) {
+				writeJSON(w, 409, map[string]string{"error": err.Error()})
+				return
+			}
 			writeJSON(w, 400, map[string]string{"error": err.Error()})
 			return
 		}
@@ -409,6 +455,11 @@ func handleAdminProxyItem(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "DELETE":
 		if err := proxyDelete(id); err != nil {
+			var bound *proxyExclusiveDeleteError
+			if errors.As(err, &bound) {
+				writeJSON(w, 409, map[string]string{"error": err.Error()})
+				return
+			}
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
 			return
 		}
@@ -452,6 +503,11 @@ func handleAdminProxyItem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := proxyUpdate(id, p.Name, p.URL, p.Enabled, p.Weight); err != nil {
+			var dup *proxyDuplicateURLError
+			if errors.As(err, &dup) {
+				writeJSON(w, 409, map[string]string{"error": err.Error()})
+				return
+			}
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
 			return
 		}
@@ -512,7 +568,7 @@ func handleAdminAPIKey(w http.ResponseWriter, r *http.Request) {
 	case "GET":
 		writeJSON(w, 200, map[string]interface{}{
 			"key":    getAPIKey(),
-			"locked": apiKeyLocked,
+			"locked": defaultAPIKeyLocked(),
 		})
 	case "POST":
 		// rotate
@@ -521,7 +577,7 @@ func handleAdminAPIKey(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 400, map[string]string{"error": err.Error()})
 			return
 		}
-		writeJSON(w, 200, map[string]interface{}{"key": k, "locked": apiKeyLocked})
+		writeJSON(w, 200, map[string]interface{}{"key": k, "locked": defaultAPIKeyLocked()})
 	case "PATCH":
 		var p struct {
 			Key string `json:"key"`
@@ -561,14 +617,20 @@ func handleAdminTest(w http.ResponseWriter, r *http.Request) {
 	var proxyID int64
 	useDirect := false
 	if proxyIDStr == "" {
-		// 自动模式：仿照 acquireSlot 优先代理池里第一个 enabled
+		// 自动模式：按 acquireSlot 的规则挑一个可用出口，但跳过被账号独占的
+		// 代理 —— 那些 IP 只属于绑定的 Cookie，诊断也不该占用。
+		now := time.Now().Unix()
 		for _, p := range listProxies() {
-			if p.Enabled && p.FailCount < 5 {
-				proxyURL = p.URL
-				proxyName = p.Name
-				proxyID = p.ID
-				break
+			if !proxyUsable(p, now, rtCfg().ProxyCooldownMin) {
+				continue
 			}
+			if owner, ok := exclusiveOwnerOfProxy(p.ID); ok && owner > 0 {
+				continue
+			}
+			proxyURL = p.URL
+			proxyName = p.Name
+			proxyID = p.ID
+			break
 		}
 		if proxyURL == "" {
 			useDirect = true
@@ -605,7 +667,7 @@ func handleAdminTest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	t0 := time.Now()
-	res := probeGemini(prompt, proxyURL)
+	res := probeGemini(prompt, proxyURL, proxyID)
 	res.TotalMs = time.Since(t0).Milliseconds()
 	res.ProxyID = proxyID
 	res.ProxyName = proxyName

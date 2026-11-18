@@ -28,6 +28,7 @@ type convState struct {
 	isLogin               bool
 	accountID             int64
 	authuser              int // 登录号的账号序号（/u/N）；整条会话不变，匿名为 0
+	keyID                 int64
 	proxyID               int64
 	proxyURL              string
 	updated               time.Time
@@ -120,20 +121,21 @@ func hashStr(s string) string {
 }
 
 // convParentKey 是"这轮之前的历史"的指纹：除最后一条消息外的全部。
-// 命中 store 说明这是某路已知会话的延续，只要发最后一条新消息即可。
-func convParentKey(messages []map[string]interface{}) string {
+// keyID 进哈希：不同 API key 即使消息完全相同也不共享会话状态，否则 Key B
+// 可能续接到 Key A 的账号/会话上，绕过 Key 的账号白名单。
+func convParentKey(messages []map[string]interface{}, keyID int64) string {
 	if len(messages) < 2 {
 		return ""
 	}
-	return hashStr(canonicalMessages(messages[:len(messages)-1]))
+	return hashStr(fmt.Sprintf("%d\x1f%s", keyID, canonicalMessages(messages[:len(messages)-1])))
 }
 
 // convChildKey 是"这轮之后的历史"的指纹：历史 + 本轮模型回复。
 // 下一轮请求的 parentKey 会正好等于它（客户端把我们的回复原样带回来），从而续上。
-func convChildKey(messages []map[string]interface{}, responseText string) string {
+func convChildKey(messages []map[string]interface{}, responseText string, keyID int64) string {
 	full := append(append([]map[string]interface{}{}, messages...),
 		map[string]interface{}{"role": "assistant", "content": responseText})
-	return hashStr(canonicalMessages(full))
+	return hashStr(fmt.Sprintf("%d\x1f%s", keyID, canonicalMessages(full)))
 }
 
 var rcidRe = regexp.MustCompile(`"(rc_[A-Za-z0-9_-]{6,})"`)
@@ -248,9 +250,34 @@ const webUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
 // cid/rid/rcid/tok26 和 turn+1，供下一轮续接。
 func streamGenerateConv(prompt string, mc ModelConfig, conv *convState,
 	onDelta, onReasoning func(string)) (*StreamResult, error) {
-	p, slotOK, slotErr := acquireSlot(conv.proxyID)
+	// 登录态会话每轮重新读一次账号的独占绑定：管理员可能在会话期间改了
+	// proxy_id / 独占开关。独占账号必须严格走当前绑定出口；普通账号继续用
+	// 会话首轮记下的出口偏好。
+	requireProxyID := int64(0)
+	if conv.isLogin && conv.accountID > 0 {
+		a := accountByID(conv.accountID)
+		if a == nil || a.Status != "enabled" {
+			return &StreamResult{AccountID: conv.accountID}, fmt.Errorf(
+				"conversation account #%d is no longer available", conv.accountID)
+		}
+		if a.ProxyExclusive {
+			if a.ProxyID <= 0 {
+				return &StreamResult{AccountID: conv.accountID}, fmt.Errorf(
+					"account #%d has an exclusive binding without a proxy", conv.accountID)
+			}
+			conv.proxyID = a.ProxyID
+			requireProxyID = a.ProxyID
+		}
+	}
+
+	p, slotOK, slotErr := acquireSlotFor(conv.accountID, conv.proxyID, requireProxyID)
 	if !slotOK {
-		return &StreamResult{}, slotErr
+		if requireProxyID > 0 {
+			if a := accountByID(conv.accountID); a != nil {
+				slotErr = accountUnavailableFromStatus(*a, accountProxyStatus(*a, time.Now()))
+			}
+		}
+		return &StreamResult{AccountID: conv.accountID}, slotErr
 	}
 	defer releaseSlot(p.ID)
 	proxyURL := p.URL
@@ -467,8 +494,14 @@ func streamGenerateConv(prompt string, mc ModelConfig, conv *convState,
 func callGeminiConv(messages []map[string]interface{}, mc ModelConfig,
 	tools []map[string]interface{}, toolChoice interface{},
 	onDelta, onReasoning func(string)) (string, []ToolCall, *StreamResult, error) {
-	parentKey := convParentKey(messages)
+	parentKey := convParentKey(messages, mc.KeyID)
 	conv := convGet(parentKey)
+	// Key 的账号白名单可能在会话存续期间被改过：续接前重新确认这个号仍被允许。
+	// 不允许就作废会话，当新会话全量重发，避免绕过 Key 限制。
+	if conv != nil && conv.isLogin && !allowedByMap(mc.AllowedAccounts, conv.accountID) {
+		convDelete(parentKey)
+		conv = nil
+	}
 	fresh := conv == nil
 
 	var prompt string
@@ -489,7 +522,7 @@ func callGeminiConv(messages []map[string]interface{}, mc ModelConfig,
 	var err error
 	for try := 0; try < maxCookieTries; try++ {
 		if fresh {
-			conv = &convState{}
+			conv = &convState{keyID: mc.KeyID}
 			// 有 cookie 池就用登录号（能力更全），否则匿名（首轮就地拿 session cookie）。
 			// #20 匿名优先：模型不需要登录态时不占号（多轮已被 gate 限成无图无工具，附件
 			// 恒无，所以第二个参数传 false）。必须在调用前短路：挑号会更新
@@ -499,8 +532,13 @@ func callGeminiConv(messages []map[string]interface{}, mc ModelConfig,
 				if perr != nil {
 					var last *ModelDowngradedError
 					if try > 0 && errors.As(err, &last) {
-						// 换号时已经没号可挑：报上一个号真实的降级，补上解冻时间
-						last.RetryAfter = perr.(*ModelDowngradedError).RetryAfter
+						// 换号时已经没号可挑：报上一个号真实的降级（带自报模型名），
+						// 补上本次池子里最早的解冻时间。只对真正的降级错误补，别把
+						// 出口/白名单错误错当成 ModelDowngradedError。
+						var next *ModelDowngradedError
+						if errors.As(perr, &next) {
+							last.RetryAfter = next.RetryAfter
+						}
 						break
 					}
 					return "", nil, &StreamResult{}, perr
@@ -540,7 +578,7 @@ func callGeminiConv(messages []map[string]interface{}, mc ModelConfig,
 	}
 	// 存续接状态：客户端下一轮把这段回复原样带回来时，parentKey 会命中这里。
 	// 存的是解析掉围栏后的正文 —— 客户端把 assistant 消息带回来时 content 也是这段。
-	convPut(convChildKey(messages, text), conv)
+	convPut(convChildKey(messages, text, mc.KeyID), conv)
 	return text, toolCalls, res, nil
 }
 

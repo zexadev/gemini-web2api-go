@@ -40,6 +40,7 @@ func startScheduler() {
 				retentionSweep()
 			case <-proxyReload.C:
 				loadProxies()
+				loadAccountProxyBindings()
 			case <-rotate.C:
 				rotate.Reset(rotateAllAccounts())
 			}

@@ -42,6 +42,11 @@ type videoJob struct {
 	accountID      int64
 	cid, rid, rcid string
 	turn           int // this job's turn index in the conversation (first = 0)
+	// 创建这个任务的 API key。多 Key 下任务按 Key 隔离：别的 Key 即使知道 id
+	// 也不能查询/下载/续写。allowedAccounts 是创建时 key 白名单的快照。
+	keyID           int64
+	keyName         string
+	allowedAccounts map[int64]bool
 	// 生成时 temporary_chat 和 auto_delete_conversation 都关着，会话才留在账号里、才能续写。
 	convKept bool
 }
@@ -68,6 +73,34 @@ func getVideoJob(id string) *videoJob {
 	videoJobsMu.Lock()
 	defer videoJobsMu.Unlock()
 	return videoJobs[id]
+}
+
+// videoKeySnapshot 把创建任务时的 key 身份/白名单复制进 job。任务活 2 小时，
+// 期间 key 可能被删改，所以不能用 key 指针，必须存快照。
+func videoKeySnapshot(k *APIKey) (id int64, name string, allowed map[int64]bool) {
+	if k == nil {
+		return 0, "", nil
+	}
+	id, name = k.ID, k.Name
+	if !k.AllowAll {
+		allowed = make(map[int64]bool, len(k.Accounts))
+		for a := range k.Accounts {
+			allowed[a] = true
+		}
+	}
+	return id, name, allowed
+}
+
+// videoJobAllowed 判断请求的 key 能不能访问这个任务。kind 为 0 表示没有 key
+// 配置（测试/异常），只允许 keyID=0 的任务。
+func videoJobAllowed(j *videoJob, k *APIKey) bool {
+	if j == nil {
+		return false
+	}
+	if k == nil {
+		return j.keyID == 0
+	}
+	return j.keyID == k.ID
 }
 
 // handleCreateVideo 处理 POST /v1/videos。
@@ -119,9 +152,17 @@ func handleCreateVideo(w http.ResponseWriter, r *http.Request) {
 	}
 	// 校验模型确实是视频模型（查基础配置，不用 resolveModel —— 它无 cookie 时对登录态模型
 	// 直接返「需要 cookie」错，那个错该留给 job 里报，别在这一步糊成「不是视频模型」）。
-	if base, ok := Models[model]; !ok || base.Tool != toolVideo {
+	base, ok := Models[model]
+	if !ok || base.Tool != toolVideo {
 		writeJSON(w, 400, map[string]any{"error": map[string]string{
 			"message": "model must be a video model (gemini-video)", "type": "invalid_request_error"}})
+		return
+	}
+	// Key 的账号白名单一个可用账号都没有时，建任务注定失败，直接 403 比排队后
+	// 失败更清楚。全局池为空仍沿用“先入队、job 内报错”的旧行为。
+	reqKey := keyFromContext(r.Context())
+	if err := keyCanUseModel(reqKey, base); err != nil {
+		writeAPIAccountError(w, err)
 		return
 	}
 	// Image→video: OpenAI Sora's `input_reference` (start frame). Accepts a data: URL,
@@ -152,19 +193,23 @@ func handleCreateVideo(w http.ResponseWriter, r *http.Request) {
 			"retry_after": retryAfterSeconds(reset)}})
 		return
 	}
-	writeJSON(w, 200, startVideoJob(model, prompt, size, images))
+	writeJSON(w, 200, startVideoJob(model, prompt, size, images, reqKey))
 }
 
 // startVideoJob 建一个视频任务并在后台跑，立即返回（status=queued）。
-func startVideoJob(model, prompt, size string, images []pendingUpload) *videoJob {
+func startVideoJob(model, prompt, size string, images []pendingUpload, key *APIKey) *videoJob {
+	keyID, keyName, allowed := videoKeySnapshot(key)
 	j := &videoJob{
-		Size:      size,
-		ID:        "video_" + randHex(16),
-		Object:    "video",
-		Model:     model,
-		Status:    "queued",
-		CreatedAt: time.Now().Unix(),
-		Prompt:    prompt,
+		Size:            size,
+		ID:              "video_" + randHex(16),
+		Object:          "video",
+		Model:           model,
+		Status:          "queued",
+		CreatedAt:       time.Now().Unix(),
+		Prompt:          prompt,
+		keyID:           keyID,
+		keyName:         keyName,
+		allowedAccounts: allowed,
 	}
 	putVideoJob(j)
 	go runVideoJob(j, images)
@@ -223,6 +268,10 @@ func runVideoJobWith(j *videoJob, images []pendingUpload, pin int64, cont *ConvR
 		finishVideoJob(j, nil, "", err.Error())
 		return
 	}
+	// 任务创建时捕获的 key 身份/白名单；key 后来被删也不影响已在跑的任务。
+	mc.KeyID = j.keyID
+	mc.KeyName = j.keyName
+	mc.AllowedAccounts = j.allowedAccounts
 	if j.Size == "720x1280" {
 		mc.VideoAspect = 17
 	}
@@ -230,6 +279,12 @@ func runVideoJobWith(j *videoJob, images []pendingUpload, pin int64, cont *ConvR
 	kept := !temporaryChatEligible() && !rtCfg().AutoDeleteConversation
 	var res *StreamResult
 	if pin > 0 {
+		if !allowedByMap(j.allowedAccounts, pin) {
+			finishVideoJob(j, nil, "", (&KeyAccountForbiddenError{
+				KeyName: j.keyName, Detail: fmt.Sprintf("account #%d is not in this key's allowlist", pin),
+			}).Error())
+			return
+		}
 		// An extension stays on the account and conversation of its parent; an exhausted
 		// account is still remembered so new videos skip it.
 		mc.PinAccountID = pin
@@ -277,10 +332,14 @@ func callOnVideoAccount(j *videoJob, mc ModelConfig, images []pendingUpload) (*S
 	var res *StreamResult
 	var err error
 	for tries := len(accountList()); tries > 0; tries-- {
-		acct, ok := pickCookieAccountExcept(skip)
-		if !ok {
+		acct, nextSkip, perr := pickAccountForModel(mc, skip)
+		if perr != nil {
+			return res, perr
+		}
+		if acct == nil {
 			break
 		}
+		skip = nextSkip
 		skip[acct.ID] = true
 		mc.PinAccountID = acct.ID
 		_, _, res, err = videoCall(j.Prompt, j.Prompt, mc, nil, images, nil, nil)
@@ -354,9 +413,23 @@ func handleExtendVideo(w http.ResponseWriter, r *http.Request, parentID string) 
 		writeJSON(w, 404, map[string]any{"error": map[string]string{"message": "video job not found (jobs are kept 2 h in memory)", "type": "not_found"}})
 		return
 	}
+	reqKey := keyFromContext(r.Context())
+	if !videoJobAllowed(p, reqKey) {
+		writeJSON(w, 403, map[string]any{"error": map[string]string{
+			"message": "video job belongs to another API key", "type": "forbidden"}})
+		return
+	}
 	videoJobsMu.Lock()
 	status, acct, cid, rid, rcid, turn, model, size := p.Status, p.accountID, p.cid, p.rid, p.rcid, p.turn, p.Model, p.Size
 	kept := p.convKept
+	keyID, keyName := p.keyID, p.keyName
+	var allowed map[int64]bool
+	if p.allowedAccounts != nil {
+		allowed = make(map[int64]bool, len(p.allowedAccounts))
+		for id := range p.allowedAccounts {
+			allowed[id] = true
+		}
+	}
 	videoJobsMu.Unlock()
 	if status != "completed" {
 		writeJSON(w, 409, map[string]any{"error": map[string]string{"message": "parent video is " + status + "; only completed videos can be extended", "type": "invalid_request_error"}})
@@ -374,15 +447,18 @@ func handleExtendVideo(w http.ResponseWriter, r *http.Request, parentID string) 
 		return
 	}
 	j := &videoJob{
-		ID:          "video_" + randHex(16),
-		Object:      "video",
-		Model:       model,
-		Status:      "queued",
-		CreatedAt:   time.Now().Unix(),
-		Prompt:      prompt,
-		Size:        size,
-		RemixedFrom: parentID,
-		turn:        turn + 1,
+		ID:              "video_" + randHex(16),
+		Object:          "video",
+		Model:           model,
+		Status:          "queued",
+		CreatedAt:       time.Now().Unix(),
+		Prompt:          prompt,
+		Size:            size,
+		RemixedFrom:     parentID,
+		turn:            turn + 1,
+		keyID:           keyID,
+		keyName:         keyName,
+		allowedAccounts: allowed,
 	}
 	putVideoJob(j)
 	go runVideoJobWith(j, images, acct, &ConvRef{CID: cid, RID: rid, RCID: rcid, Turn: turn + 1})
@@ -431,6 +507,11 @@ func handleVideoItem(w http.ResponseWriter, r *http.Request) {
 	j := getVideoJob(id)
 	if j == nil {
 		writeJSON(w, 404, map[string]any{"error": map[string]string{"message": "video job not found", "type": "not_found"}})
+		return
+	}
+	if !videoJobAllowed(j, keyFromContext(r.Context())) {
+		writeJSON(w, 403, map[string]any{"error": map[string]string{
+			"message": "video job belongs to another API key", "type": "forbidden"}})
 		return
 	}
 	if len(parts) == 2 && parts[1] == "content" {

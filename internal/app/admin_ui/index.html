@@ -632,23 +632,31 @@ const pages = {
             实测单个出口打 80-180 次就会被 Google 拦，所以扩容只能靠加出口。
           </div>
         </details>
+        <div class="hint" style="margin:0 0 12px;">代理可以在 Cookie 池里被某个账号独占绑定：独占后其他账号和匿名请求都不会用它，删除也会被拒绝（先去 Cookie 池解绑）。同一个 URL 不能建两条代理，否则独占会绕过。</div>
         <div class="table-scroll">
           <table>
             <colgroup>
               <col style="width:56px"><col style="width:150px"><col>
-              <col style="width:88px"><col style="width:80px"><col style="width:200px">
-              <col style="width:186px">
+              <col style="width:88px"><col style="width:120px"><col style="width:80px">
+              <col style="width:200px"><col style="width:186px">
             </colgroup>
             <thead><tr>
               <th class="nw">ID</th><th class="nw">名称</th><th>代理 URL</th><th class="nw">状态</th>
-              <th class="nw">失败</th><th class="nw">最近错误</th><th class="nw">操作</th>
+              <th class="nw">专属账号</th><th class="nw">失败</th><th class="nw">最近错误</th><th class="nw">操作</th>
             </tr></thead>
             <tbody>${(data.items || []).map(p => `
               <tr>
                 <td class="num nw">${p.id}</td>
                 <td class="truncate" title="${escapeHtml(p.name)}">${escapeHtml(p.name)}</td>
                 <td class="pre truncate" title="${escapeHtml(p.url)}">${escapeHtml(p.url)}</td>
-                <td class="nw">${p.enabled ? '<span class="badge ok">已启用</span>' : '<span class="badge muted">已禁用</span>'}</td>
+                <td class="nw">${
+                  p.state === 'disabled' ? '<span class="badge muted">已禁用</span>'
+                  : p.state === 'cooling' ? `<span class="badge fail" title="连续失败 ${p.fail_count} 次，熔断冷却中">冷却 ${p.cooldown_remaining_sec || 0}s</span>`
+                  : '<span class="badge ok">已启用</span>'
+                }</td>
+                <td class="nw">${p.exclusive_account_id
+                  ? `<span class="badge warn" title="这个 IP 只允许该账号使用；删除前需先解绑">${escapeHtml(p.exclusive_account_label || ('#' + p.exclusive_account_id))}</span>`
+                  : '<span class="badge muted">共享</span>'}</td>
                 <td class="num nw">${p.fail_count > 0 ? '<span class="badge fail">' + p.fail_count + '</span>' : p.fail_count}</td>
                 <td class="pre truncate" title="${escapeHtml(t(p.last_error || ''))}">${escapeHtml(t(p.last_error) || '—')}</td>
                 <td class="nw">
@@ -658,7 +666,7 @@ const pages = {
                     <button class="btn danger" onclick="delProxy(${p.id})">删除</button>
                   </span>
                 </td>
-              </tr>`).join('') || '<tr><td colspan="7" class="empty">还没有代理。点「+ 添加代理」加一个。</td></tr>'}
+              </tr>`).join('') || '<tr><td colspan="8" class="empty">还没有代理。点「+ 添加代理」加一个。</td></tr>'}
             </tbody>
           </table>
         </div>
@@ -695,11 +703,13 @@ const pages = {
           <table>
             <colgroup>
               <col style="width:48px"><col style="width:160px"><col style="width:80px">
+              <col style="width:130px"><col style="width:120px">
               <col style="width:150px"><col style="width:92px"><col style="width:64px">
               <col style="width:150px"><col><col style="width:150px">
             </colgroup>
             <thead><tr>
               <th class="nw">ID</th><th class="nw">标签</th><th class="nw">状态</th>
+              <th class="nw">出口</th><th class="nw">可用性</th>
               <th class="nw">关键 Cookie</th><th class="nw">SAPISID</th><th class="nw">失败</th>
               <th class="nw">最近成功</th><th>最近错误</th><th class="nw">操作</th>
             </tr></thead>
@@ -712,6 +722,15 @@ const pages = {
                   : a.health === 'disabled' ? '<span class="badge muted">禁用</span>'
                   : a.health === 'unknown' ? '<span class="badge warn" title="还没成功用过，点「检测」确认">待检测</span>'
                   : '<span class="badge ok">正常</span>'
+                }</td>
+                <td class="nw">${a.proxy_id
+                  ? `<span class="badge ${a.proxy_exclusive ? 'warn' : 'muted'}" title="${escapeHtml(a.proxy_name || '')}">${escapeHtml(a.proxy_name || ('#' + a.proxy_id))}${a.proxy_exclusive ? ' · 独占' : ''}</span>`
+                  : '<span class="badge muted" title="按调度自动选择共享出口">自动</span>'}</td>
+                <td class="nw">${
+                  a.status !== 'enabled' ? '<span class="badge muted">已停用</span>'
+                  : a.available === false
+                    ? `<span class="badge fail" title="${escapeHtml(t(a.unavailable_reason || 'IP 冷却中，Cookie 暂不可用'))}">${t('IP 冷却中')}${a.proxy_retry_after ? ' ' + a.proxy_retry_after + 's' : ''}</span>`
+                    : '<span class="badge ok">可用</span>'
                 }</td>
                 <td class="nw" title="${LANG === 'en' ? 'Total ' + a.cookie_count + ' cookies, key items: ' + (a.key_cookies||[]).join(' / ') : '共 ' + a.cookie_count + ' 个 cookie，关键项：' + (a.key_cookies||[]).join(' / ')}">
                   <span class="badge ${a.has_1psidts ? 'ok' : 'warn'}">${(a.key_cookies||[]).length}/9 项</span>
@@ -726,11 +745,74 @@ const pages = {
                     <button class="btn muted" onclick="checkCookieAcct(${a.id}, this)">检测</button>
                     <button class="btn muted" onclick="rotateCookieAcct(${a.id}, this)">保活</button>
                     <button class="btn muted" onclick="toggleCookieAcct(${a.id})">${a.status === 'enabled' ? '禁用' : '启用'}</button>
-                    <button class="btn muted" onclick="editCookieAcct(${a.id}, ${JSON.stringify(a.label || '').replace(/"/g, '&quot;')}, ${JSON.stringify(a.note || '').replace(/"/g, '&quot;')}, ${a.authuser || 0})">编辑</button>
+                    <button class="btn muted" onclick="editCookieAcct(${a.id}, ${JSON.stringify(a.label || '').replace(/"/g, '&quot;')}, ${JSON.stringify(a.note || '').replace(/"/g, '&quot;')}, ${a.authuser || 0}, ${a.proxy_id || 0}, ${a.proxy_exclusive ? 'true' : 'false'})">编辑</button>
                     <button class="btn danger" onclick="delCookieAcct(${a.id})">删除</button>
                   </span>
                 </td>
-              </tr>`).join('') || '<tr><td colspan="9" class="empty">Cookie 池是空的。点「+ 导入 Cookie」加一个登录态账号。</td></tr>'}
+              </tr>`).join('') || '<tr><td colspan="11" class="empty">Cookie 池是空的。点「+ 导入 Cookie」加一个登录态账号。</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  },
+
+  keys: async () => {
+    const [data, cookies] = await Promise.all([api('api/keys'), api('api/cookies')]);
+    const items = data.items || [];
+    const accts = cookies.items || [];
+    keysListCache = items;
+    keysAccountsCache = accts;
+    const acctLabel = id => {
+      const a = accts.find(x => x.id === id);
+      return a ? (a.label || ('#' + a.id)) : ('#' + id);
+    };
+    const allowCell = k => {
+      if (k.allow_all) return '<span class="badge ok">全部账号</span>';
+      if (!(k.account_ids || []).length) return '<span class="badge warn" title="' + t('没有勾选账号，这把 Key 只能走匿名能力（登录态模型不可用）') + '">仅匿名</span>';
+      return '<span class="badge muted" title="' + escapeHtml((k.account_ids || []).map(acctLabel).join(', ')) + '">' +
+        (k.account_ids || []).length + ' 个账号</span>';
+    };
+    return `
+      <div class="panel page-fill">
+        <h2>API Keys
+          <span class="controls"><button class="btn" onclick="addKey()">+ 新增 Key</button></span>
+        </h2>
+        <details class="note">
+          <summary>多把 Key，各自限制可用账号</summary>
+          <div class="body">每个 Key 默认允许全部账号；关闭「允许全部账号」后只使用勾选的 Cookie 账号，一个都不勾时只能走匿名能力（登录态模型会从该 Key 的模型列表隐藏，请求返回 403）。<br><br><code>--api-key</code> / <code>API_KEY</code> 提供的是<b>部署 Key</b>：永远启用、允许全部账号、面板只读，不能改值或删除；它和这里新增的 Key 同时有效。列表只显示脱敏值，需要完整 Key 时点「显示」。</div>
+        </details>
+        <div class="table-scroll">
+          <table>
+            <colgroup>
+              <col style="width:48px"><col style="width:170px"><col>
+              <col style="width:90px"><col style="width:130px"><col style="width:150px">
+              <col style="width:210px">
+            </colgroup>
+            <thead><tr>
+              <th class="nw">ID</th><th class="nw">名称</th><th>Key</th>
+              <th class="nw">状态</th><th class="nw">允许账号</th><th class="nw">创建时间</th>
+              <th class="nw">操作</th>
+            </tr></thead>
+            <tbody>${items.map(k => `
+              <tr>
+                <td class="num nw">${k.id === 0 ? '—' : k.id}</td>
+                <td class="truncate" title="${escapeHtml(k.name || '')}">${escapeHtml(k.name || '')}${k.locked ? ' <span class="badge warn">部署</span>' : ''}</td>
+                <td class="pre truncate" title="${escapeHtml(k.masked_key || '')}">${escapeHtml(k.masked_key || '—')}</td>
+                <td class="nw">${k.enabled ? '<span class="badge ok">启用</span>' : '<span class="badge muted">停用</span>'}</td>
+                <td class="nw">${allowCell(k)}</td>
+                <td class="nw" style="font-size:12px;color:var(--muted)">${k.created_at ? fmt.ts(k.created_at) : '—'}</td>
+                <td class="nw">
+                  <span class="actions">
+                    <button class="btn muted" onclick="revealKey(${k.id})">显示</button>
+                    ${k.locked ? '' : `
+                      <button class="btn muted" onclick="editKey(${k.id})">编辑</button>
+                      <button class="btn muted" onclick="rotateKeyById(${k.id})">轮换</button>
+                      <button class="btn muted" onclick="toggleKey(${k.id})">${k.enabled ? '停用' : '启用'}</button>
+                      <button class="btn danger" onclick="delKey(${k.id})">删除</button>`}
+                  </span>
+                </td>
+              </tr>`).join('') || '<tr><td colspan="7" class="empty">还没有额外的 API Key。部署 Key 不存在时需要新增一把。</td></tr>'}
             </tbody>
           </table>
         </div>
@@ -739,7 +821,6 @@ const pages = {
   },
 
   settings: async () => {
-    const k = await api('api/apikey');
     return `
       <div class="grid-main">
         <div class="panel">
@@ -758,23 +839,14 @@ const pages = {
 
         <div class="stack">
           <div class="card">
-            <h2>API Key</h2>
+            <h2>API Keys</h2>
             <p class="lede">
-              ${k.locked
-                ? '已被 <code>--api-key</code> / <code>API_KEY</code> 锁定，改部署配置才能换。'
-                : '给 <code>/v1/*</code> 接口鉴权，可随时轮换。'}
+              支持多把 Key，每把可以限制可用账号。完整 Key 只在创建/轮换时显示一次，
+              之后在「API Keys」页按需显示。
             </p>
             <div class="row" style="margin-bottom:10px;">
-              <input id="apiKeyView" type="password" value="${escapeHtml(k.key)}"
-                     style="flex:1; min-width:0; font-family:ui-monospace,monospace;" readonly />
-              <button class="btn muted" onclick="toggleKeyVis()">显示</button>
-              <button class="btn muted" onclick="copyKey()">复制</button>
+              <button class="btn" onclick="switchPage('keys')">管理 API Keys</button>
             </div>
-            ${k.locked ? '' : `
-              <div class="row" style="margin-bottom:10px;">
-                <button class="btn muted" onclick="rotateKey()">生成随机 Key</button>
-                <button class="btn muted" onclick="customKey()">自定义</button>
-              </div>`}
             <details class="note">
               <summary>调用示例</summary>
               <div class="body">
@@ -1232,12 +1304,14 @@ async function addProxy() {
 async function delProxy(id) {
   const ok = await modalConfirm({
     title: '删除代理',
-    desc: `确定删除代理 #${id}？此操作不可撤销。`,
+    desc: `确定删除代理 #${id}？此操作不可撤销。被 Cookie 独占绑定的代理需要先解绑。`,
     confirmText: '删除',
     danger: true,
   });
   if (!ok) return;
-  await api('api/proxies/' + id, { method: 'DELETE' });
+  const r = await fetch('api/proxies/' + id, { method: 'DELETE', credentials: 'include' });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.error) return flash(t('删除失败：') + t(j.error || ('HTTP ' + r.status)));
   flash('已删除');
   await refreshPage();
 }
@@ -1422,26 +1496,92 @@ function parseAuthUser(v) {
   return parseInt(s, 10);
 }
 
-async function editCookieAcct(id, label, note, authuser) {
-  const data = await modalForm({
+async function editCookieAcct(id, label, note, authuser, proxyID, proxyExclusive) {
+  let proxies = [];
+  try { proxies = (await api('api/proxies')).items || []; } catch (e) {}
+  const proxyOptions = proxies.map(p => {
+    const state = p.state === 'cooling'
+      ? (LANG === 'en' ? ' · IP cooling' : ' · IP 冷却中')
+      : p.state === 'disabled'
+        ? (LANG === 'en' ? ' · disabled' : ' · 已禁用')
+        : '';
+    const owner = p.exclusive_account_id && p.exclusive_account_id !== id
+      ? (LANG === 'en' ? ` · owned by #${p.exclusive_account_id}` : ` · 已被 #${p.exclusive_account_id} 独占`)
+      : '';
+    return `<option value="${p.id}" ${p.id === proxyID ? 'selected' : ''}>${escapeHtml(p.name || ('#' + p.id))} — ${escapeHtml(p.url)}${state}${owner}</option>`;
+  }).join('');
+
+  const ok = await buildModal({
     title: '编辑 Cookie #' + id,
-    desc: '只改标签、备注和账号序号，不动 cookie 本身。要换 cookie 请删掉重新导入。',
-    fields: [
-      { name: 'label', label: '标签', value: label || '', placeholder: '账号邮箱' },
-      { name: 'authuser', label: '账号序号', value: String(authuser || 0),
-        hint: '浏览器里同时登了多个 Google 号时用：地址栏 /u/1/ 填 1，没有 /u/ 填 0。' },
-      { name: 'note', label: '备注', value: note || '', placeholder: '可留空' },
-    ],
+    wide: true,
+    desc: '改标签、备注、账号序号和出口绑定。要换 cookie 请删掉重新导入。',
+    bodyHTML: `
+      <div class="field">
+        <label>标签</label>
+        <input data-name="label" type="text" value="${escapeHtml(label || '')}" placeholder="账号邮箱" />
+      </div>
+      <div class="field">
+        <label>账号序号</label>
+        <input data-name="authuser" type="text" inputmode="numeric" value="${authuser || 0}" />
+        <div class="hint">浏览器里同时登了多个 Google 号时用：地址栏 /u/1/ 填 1，没有 /u/ 填 0。</div>
+      </div>
+      <div class="field">
+        <label>出口</label>
+        <select data-name="proxy_id">
+          <option value="0" ${!proxyID ? 'selected' : ''}>不绑定（按调度自动选择共享出口）</option>
+          ${proxyOptions}
+        </select>
+        <div class="hint">绑定后优先用这个出口。勾选独占后，这个 IP 只允许本 Cookie 使用，其他账号和匿名请求都不会用它；IP 冷却或容量满时本 Cookie 暂时不可用，不会换别的 IP。</div>
+      </div>
+      <label class="row" style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;">
+        <input type="checkbox" data-name="proxy_exclusive" ${proxyExclusive ? 'checked' : ''} ${!proxyID ? 'disabled' : ''} />
+        <span>独占此 IP</span>
+      </label>
+      <div class="field" style="margin-top:12px;">
+        <label>备注</label>
+        <input data-name="note" type="text" value="${escapeHtml(note || '')}" placeholder="可留空" />
+      </div>`,
+    onReady: (overlay) => {
+      const sel = overlay.querySelector('[data-name=proxy_id]');
+      const chk = overlay.querySelector('[data-name=proxy_exclusive]');
+      const sync = () => {
+        if (sel.value === '0') {
+          chk.checked = false;
+          chk.disabled = true;
+        } else {
+          chk.disabled = false;
+        }
+      };
+      sel.onchange = sync;
+      sync();
+    },
+    submitText: '保存',
+    onSubmit: async (overlay) => {
+      const au = parseAuthUser(overlay.querySelector('[data-name=authuser]').value);
+      if (au === null) return { error: '账号序号要填 0 到 9 的整数' };
+      const pid = parseInt(overlay.querySelector('[data-name=proxy_id]').value || '0', 10);
+      const excl = overlay.querySelector('[data-name=proxy_exclusive]').checked && pid > 0;
+      const payload = {
+        label: (overlay.querySelector('[data-name=label]').value || '').trim(),
+        note: (overlay.querySelector('[data-name=note]').value || '').trim(),
+        authuser: au,
+        proxy_id: pid,
+        proxy_exclusive: excl,
+      };
+      const r = await fetch('api/cookies/' + id, {
+        method: 'PATCH', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || j.error) return { error: j.error || ('HTTP ' + r.status) };
+      return true;
+    },
   });
-  if (!data) return;
-  const au = parseAuthUser(data.authuser);
-  if (au === null) return flash(t('账号序号要填 0 到 9 的整数'));
-  const j = await api('api/cookies/' + id, {
-    method: 'PATCH', body: JSON.stringify({ label: data.label, note: data.note, authuser: au }),
-  });
-  if (j.error) return flash(t('保存失败：') + t(j.error));
-  flash(t('已保存'));
-  await refreshPage();
+  if (ok) {
+    flash(t('已保存'));
+    await refreshPage();
+  }
 }
 
 // 检测 cookie 还有没有登录态。判据是 /app 页面里有没有 SNlM0e——cookie 失效时
@@ -1564,57 +1704,217 @@ async function runTest() {
 
 // API key actions ──────────────────────────────────────────────────────────
 
-function toggleKeyVis() {
-  const el = document.getElementById('apiKeyView');
-  const btn = el.parentElement.querySelector('button');
-  el.type = el.type === 'password' ? 'text' : 'password';
-  if (btn) btn.textContent = t(el.type === 'password' ? '显示' : '隐藏');
-}
-
-async function copyKey() {
-  const el = document.getElementById('apiKeyView');
-  try {
-    await navigator.clipboard.writeText(el.value);
-    flash('已复制到剪贴板');
-  } catch (e) {
-    el.type = 'text'; el.select(); document.execCommand('copy');
-    flash('已复制（兼容模式）');
+function copyText(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text)
+      .then(() => flash('已复制到剪贴板'))
+      .catch(() => fallbackCopy(text));
+    return;
   }
+  fallbackCopy(text);
 }
 
-async function rotateKey() {
-  const ok = await modalConfirm({
-    title: '生成新 Key',
-    desc: '现有客户端在重新配置前将无法访问。确定继续？',
-    confirmText: '生成新 Key',
-    danger: true,
+function fallbackCopy(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.cssText = 'position:fixed;top:-1000px;opacity:0;';
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); flash('已复制（兼容模式）'); }
+  catch (e) { flash('复制失败'); }
+  ta.remove();
+}
+
+// 完整 Key 只在创建/轮换/reveal 时通过这个弹窗出现一次。
+async function showKeyOnce(key, title) {
+  if (!key) return;
+  await buildModal({
+    title: title || 'API Key',
+    desc: '完整 Key 只在这里显示，请现在复制保存。',
+    bodyHTML: `
+      <div class="field">
+        <label>Key</label>
+        <div class="row">
+          <input data-role="key" type="text" readonly value="${escapeHtml(key)}"
+                 style="flex:1;min-width:0;font-family:ui-monospace,monospace" />
+          <button class="btn muted" data-role="copy">复制</button>
+        </div>
+      </div>`,
+    submitText: '完成',
+    onReady: (overlay) => {
+      overlay.querySelector('[data-role=copy]').onclick = () => copyText(key);
+    },
+    onSubmit: () => true,
   });
-  if (!ok) return;
-  await api('api/apikey', { method: 'POST' });
-  flash('已生成新 Key');
+}
+
+function keyAccountListHTML(selected) {
+  const sel = new Set(selected || []);
+  const rows = (keysAccountsCache || []).map(a => `
+    <label class="row" style="display:flex;align-items:center;gap:8px;padding:5px 0;font-size:13px;cursor:pointer;">
+      <input type="checkbox" data-account="${a.id}" ${sel.has(a.id) ? 'checked' : ''} />
+      <span>${escapeHtml(a.label || ('#' + a.id))}</span>
+      <span class="badge ${a.status === 'enabled' ? 'ok' : 'muted'}">${a.status === 'enabled' ? '启用' : '停用'}</span>
+      ${a.proxy_id ? `<span class="badge ${a.proxy_exclusive ? 'warn' : 'muted'}">${escapeHtml(a.proxy_name || ('#' + a.proxy_id))}${a.proxy_exclusive ? ' · 独占' : ''}</span>` : ''}
+      ${a.available === false ? '<span class="badge fail">IP 不可用</span>' : ''}
+    </label>`).join('');
+  return rows || '<div class="empty">Cookie 池是空的</div>';
+}
+
+function keyModalSync(overlay) {
+  const chk = overlay.querySelector('[data-name=allow_all]');
+  const box = overlay.querySelector('[data-role=accts]');
+  const sync = () => { box.style.display = chk.checked ? 'none' : ''; };
+  chk.onchange = sync;
+  sync();
+}
+
+function keyModalPayload(overlay) {
+  return {
+    allow_all: overlay.querySelector('[data-name=allow_all]').checked,
+    account_ids: [...overlay.querySelectorAll('[data-account]:checked')]
+      .map(el => parseInt(el.dataset.account, 10)),
+    name: (overlay.querySelector('[data-name=name]').value || '').trim(),
+    note: (overlay.querySelector('[data-name=note]').value || '').trim(),
+    enabled: overlay.querySelector('[data-name=enabled]').checked,
+  };
+}
+
+async function addKey() {
+  if (!keysAccountsCache.length) {
+    try { keysAccountsCache = (await api('api/cookies')).items || []; } catch (e) {}
+  }
+  const data = await buildModal({
+    title: '新增 API Key', wide: true,
+    desc: 'Key 留空会自动生成。关闭「允许全部账号」后只使用勾选的账号；一个都不勾时只能走匿名能力。',
+    bodyHTML: `
+      <div class="field"><label>名称</label>
+        <input data-name="name" type="text" placeholder="例如 team-a" /></div>
+      <div class="field"><label>Key（留空自动生成）</label>
+        <input data-name="key" type="text" autocomplete="off" placeholder="至少 20 字符，或留空" /></div>
+      <label class="row" style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;">
+        <input type="checkbox" data-name="allow_all" checked /><span>允许全部账号</span>
+      </label>
+      <div data-role="accts" style="display:none;margin:10px 0 12px;">
+        <div class="hint" style="margin-bottom:6px;">只允许以下账号（可多选）：</div>
+        <div style="max-height:220px;overflow:auto;border:1px solid #dadce0;border-radius:8px;padding:8px;">
+          ${keyAccountListHTML([])}
+        </div>
+      </div>
+      <div class="field"><label>备注</label>
+        <input data-name="note" type="text" placeholder="可留空" /></div>
+      <label class="row" style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;">
+        <input type="checkbox" data-name="enabled" checked /><span>启用</span>
+      </label>`,
+    onReady: keyModalSync,
+    submitText: '创建',
+    onSubmit: (overlay) => {
+      const p = keyModalPayload(overlay);
+      p.key = (overlay.querySelector('[data-name=key]').value || '').trim() || undefined;
+      return p;
+    },
+  });
+  if (!data) return;
+  const r = await fetch('api/keys', {
+    method: 'POST', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.error) return flash(t('创建失败：') + t(j.error || ('HTTP ' + r.status)));
+  await showKeyOnce(j.key, 'API Key 已生成');
   await refreshPage();
-  const el = document.getElementById('apiKeyView');
-  if (el) { el.type = 'text'; }
 }
 
-async function customKey() {
-  const k = await modalPrompt({
-    title: '设置自定义 API Key',
-    desc: '至少 20 字符。设置后所有客户端要更换为新 Key。',
-    label: '新 Key',
-    placeholder: 'sk-gemini-...',
-    password: true,
-  });
+async function editKey(id) {
+  const k = keysListCache.find(x => x.id === id);
   if (!k) return;
-  if (k.length < 20) return flash('Key 至少 20 字符');
-  const r = await fetch('api/apikey', {
+  if (!keysAccountsCache.length) {
+    try { keysAccountsCache = (await api('api/cookies')).items || []; } catch (e) {}
+  }
+  const data = await buildModal({
+    title: '编辑 API Key #' + id, wide: true,
+    desc: '改名称、启用状态和可用账号。要换 Key 值用下面的「自定义 Key」或列表里的「轮换」。',
+    bodyHTML: `
+      <div class="field"><label>名称</label>
+        <input data-name="name" type="text" value="${escapeHtml(k.name || '')}" /></div>
+      <label class="row" style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;">
+        <input type="checkbox" data-name="allow_all" ${k.allow_all ? 'checked' : ''} /><span>允许全部账号</span>
+      </label>
+      <div data-role="accts" style="display:none;margin:10px 0 12px;">
+        <div class="hint" style="margin-bottom:6px;">只允许以下账号（可多选）：</div>
+        <div style="max-height:220px;overflow:auto;border:1px solid #dadce0;border-radius:8px;padding:8px;">
+          ${keyAccountListHTML(k.account_ids || [])}
+        </div>
+      </div>
+      <div class="field"><label>自定义 Key（留空不改）</label>
+        <input data-name="key" type="text" autocomplete="off" placeholder="留空保持当前 Key" />
+        <div class="hint">改 Key 值会让旧 Key 立即失效。</div></div>
+      <div class="field"><label>备注</label>
+        <input data-name="note" type="text" value="${escapeHtml(k.note || '')}" /></div>
+      <label class="row" style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;">
+        <input type="checkbox" data-name="enabled" ${k.enabled ? 'checked' : ''} /><span>启用</span>
+      </label>`,
+    onReady: keyModalSync,
+    submitText: '保存',
+    onSubmit: (overlay) => {
+      const p = keyModalPayload(overlay);
+      p.key = (overlay.querySelector('[data-name=key]').value || '').trim() || undefined;
+      return p;
+    },
+  });
+  if (!data) return;
+  const r = await fetch('api/keys/' + id, {
     method: 'PATCH', credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ key: k }),
+    body: JSON.stringify(data),
   });
-  const j = await r.json();
-  if (j.ok) { flash('Key 已更新'); await refreshPage(); }
-  else flash(t('错误：') + t(j.error || '未知错误'));
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.error) return flash(t('保存失败：') + t(j.error || ('HTTP ' + r.status)));
+  flash(t('已保存'));
+  await refreshPage();
+}
+
+async function revealKey(id) {
+  const r = await fetch('api/keys/' + id + '/reveal', { method: 'POST', credentials: 'include' });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.error) return flash(t('读取失败：') + t(j.error || ('HTTP ' + r.status)));
+  await showKeyOnce(j.key, id === 0 ? '部署 Key' : 'API Key');
+}
+
+async function rotateKeyById(id) {
+  const ok = await modalConfirm({
+    title: '轮换 API Key',
+    desc: '旧 Key 立即失效，所有使用它的客户端都要更换。确定继续？',
+    confirmText: '轮换', danger: true,
+  });
+  if (!ok) return;
+  const r = await fetch('api/keys/' + id + '/rotate', { method: 'POST', credentials: 'include' });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.error) return flash(t('轮换失败：') + t(j.error || ('HTTP ' + r.status)));
+  await showKeyOnce(j.key, '新的 API Key');
+  await refreshPage();
+}
+
+async function toggleKey(id) {
+  const r = await fetch('api/keys/' + id + '/toggle', { method: 'POST', credentials: 'include' });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.error) return flash(t('操作失败：') + t(j.error || ('HTTP ' + r.status)));
+  await refreshPage();
+}
+
+async function delKey(id) {
+  const ok = await modalConfirm({
+    title: '删除 API Key',
+    desc: `确定删除 Key #${id}？使用它的客户端会立即失去访问权限，此操作不可撤销。`,
+    confirmText: '删除', danger: true,
+  });
+  if (!ok) return;
+  const r = await fetch('api/keys/' + id, { method: 'DELETE', credentials: 'include' });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.error) return flash(t('删除失败：') + t(j.error || ('HTTP ' + r.status)));
+  flash('已删除');
+  await refreshPage();
 }
 
 function flash(msg) {
@@ -1746,6 +2046,9 @@ function modalForm({ title, desc, fields, submitText = '提交' }) {
 
 let currentPage = null;
 let pageSeq = 0;
+// API Keys 页的数据缓存：编辑弹窗直接用列表里的字段，不用再请求一遍。
+let keysListCache = [];
+let keysAccountsCache = [];
 
 // 点已经选中的导航项直接忽略：重新拉一遍数据、整块内容闪一下再画回原样，
 // 用户看到的只是抖动。要重新取数有「刷新」按钮，走 refreshPage()。
@@ -1804,6 +2107,7 @@ const ICONS = {
   proxies: '<path d="M12 2a2.5 2.5 0 011 4.79V9h4a2 2 0 012 2v1.21a2.5 2.5 0 11-2 0V11h-4v1.21a2.5 2.5 0 11-2 0V11H7v1.21a2.5 2.5 0 11-2 0V11a2 2 0 012-2h4V6.79A2.5 2.5 0 0112 2z"/>',
   settings: '<path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/>',
   cookies: '<path d="M12 2a10 10 0 100 20 10 10 0 000-20zm-1 4a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zm7 3a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zM8 13a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zm6 4a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0z"/>',
+  keys: '<path d="M14 2a6 6 0 00-5.65 8H3v3h2v2h2v2h3v-3.1A6 6 0 1014 2zm0 2a4 4 0 110 8 4 4 0 010-8zm0 2a2 2 0 100 4 2 2 0 000-4z"/>',
   menu: '<path d="M3 6h18v2H3V6zm0 5h18v2H3v-2zm0 5h18v2H3v-2z"/>',
   logout: '<path d="M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5-5-5zM4 5h8V3H4a2 2 0 00-2 2v14a2 2 0 002 2h8v-2H4V5z"/>',
   about: '<path d="M11 7h2v2h-2V7zm0 4h2v6h-2v-6zm1-9a10 10 0 100 20 10 10 0 000-20zm0 18a8 8 0 110-16 8 8 0 010 16z"/>',
@@ -1815,11 +2119,13 @@ const NAV = [
   ['requests', '请求记录'],
   ['proxies', '代理池'],
   ['cookies', 'Cookie 池'],
+  ['keys', 'API Keys'],
   ['settings', '设置'],
   ['about', '关于'],
 ];
 const PAGE_TITLES = {
-  dashboard: '概览', requests: '请求记录', proxies: '代理池', cookies: 'Cookie 池', settings: '设置',
+  dashboard: '概览', requests: '请求记录', proxies: '代理池', cookies: 'Cookie 池',
+  keys: 'API Keys', settings: '设置',
   about: '关于',
 };
 
@@ -2487,8 +2793,72 @@ const I18N_EN = {
   '提交问题': 'Issues',
   '许可证': 'License',
   '作者': 'Author',
+
+  // API Keys / exclusive proxy
+  '多把 Key，各自限制可用账号': 'Multiple keys with per-key account allowlists',
+  '+ 新增 Key': '+ New key',
+  '新增 Key': 'New key',
+  '没有勾选账号，这把 Key 只能走匿名能力（登录态模型不可用）':
+    'No accounts selected. This key can only use anonymous-capable models (signed-in models are unavailable).',
+  '仅匿名': 'Anonymous only',
+  '还没有额外的 API Key。部署 Key 不存在时需要新增一把。':
+    'No extra API keys yet. Add one if no deploy key is configured.',
+  '新增 API Key': 'New API key',
+  'Key 留空会自动生成。关闭「允许全部账号」后只使用勾选的账号；一个都不勾时只能走匿名能力。':
+    'Leave the key empty to generate one. Turn off "Allow all accounts" to use only the checked accounts; with none checked the key can only use anonymous-capable models.',
+  'Key（留空自动生成）': 'Key (leave empty to generate)',
+  '允许全部账号': 'Allow all accounts',
+  '只允许以下账号（可多选）：': 'Only allow these accounts (multi-select):',
+  '创建': 'Create',
+  '创建失败：': 'Create failed: ',
+  'API Key 已生成': 'API key generated',
+  '完整 Key 只在这里显示，请现在复制保存。':
+    'The full key is shown only here. Copy it now.',
+  '编辑 API Key #': 'Edit API key #',
+  '改名称、启用状态和可用账号。要换 Key 值用下面的「自定义 Key」或列表里的「轮换」。':
+    'Change the name, enabled state and allowed accounts. To change the key value, use the custom key field below or Rotate in the list.',
+  '自定义 Key（留空不改）': 'Custom key (leave empty to keep)',
+  '留空保持当前 Key': 'Leave empty to keep the current key',
+  '改 Key 值会让旧 Key 立即失效。': 'Changing the key invalidates the old key immediately.',
+  '读取失败：': 'Read failed: ',
+  '部署 Key': 'Deploy key',
+  '轮换 API Key': 'Rotate API key',
+  '旧 Key 立即失效，所有使用它的客户端都要更换。确定继续？':
+    'The old key stops working immediately; every client using it must be updated. Continue?',
+  '轮换': 'Rotate',
+  '轮换失败：': 'Rotate failed: ',
+  '新的 API Key': 'New API key',
+  '操作失败：': 'Operation failed: ',
+  '删除 API Key': 'Delete API key',
+  '出口': 'Egress',
+  '可用性': 'Availability',
+  '自动': 'Auto',
+  'IP 冷却中': 'IP cooling down',
+  '可用': 'Available',
+  '已停用': 'Disabled',
+  'IP 不可用': 'IP unavailable',
+  '绑定后优先用这个出口。勾选独占后，这个 IP 只允许本 Cookie 使用，其他账号和匿名请求都不会用它；IP 冷却或容量满时本 Cookie 暂时不可用，不会换别的 IP。':
+    'Requests prefer this egress. With Exclusive checked, only this cookie may use the IP; other accounts and anonymous requests cannot use it. While the IP is cooling down or at capacity this cookie is unavailable and will not fall back to another IP.',
+  '不绑定（按调度自动选择共享出口）': 'Unbound (pick a shared egress automatically)',
+  '独占此 IP': 'Exclusive use of this IP',
+  '改标签、备注、账号序号和出口绑定。要换 cookie 请删掉重新导入。':
+    'Edit the label, note, account index and egress binding. To change the cookie itself, delete and re-import it.',
+  '代理可以在 Cookie 池里被某个账号独占绑定：独占后其他账号和匿名请求都不会用它，删除也会被拒绝（先去 Cookie 池解绑）。同一个 URL 不能建两条代理，否则独占会绕过。':
+    'A proxy can be bound exclusively to an account in the Cookie pool. Other accounts and anonymous requests then cannot use it, and deleting it is refused until it is unbound. The same URL cannot be added twice, otherwise exclusivity could be bypassed.',
+  '专属账号': 'Exclusive for',
+  '共享': 'Shared',
+  '支持多把 Key，每把可以限制可用账号。完整 Key 只在创建/轮换时显示一次，之后在「API Keys」页按需显示。':
+    'Multiple keys are supported, each with its own account allowlist. Full keys are shown only on create/rotate; reveal them on demand from the API Keys page.',
+  '管理 API Keys': 'Manage API keys',
+  '允许账号': 'Allowed accounts',
+  '创建时间': 'Created',
+  '默认 Key': 'Default key',
+  '全部账号': 'All accounts',
+  '停用': 'Disabled',
 };
 const I18N_HTML_EN = {
+  '每个 Key 默认允许全部账号；关闭「允许全部账号」后只使用勾选的 Cookie 账号，一个都不勾时只能走匿名能力（登录态模型会从该 Key 的模型列表隐藏，请求返回 403）。<br><br><code>--api-key</code> / <code>API_KEY</code> 提供的是<b>部署 Key</b>：永远启用、允许全部账号、面板只读，不能改值或删除；它和这里新增的 Key 同时有效。列表只显示脱敏值，需要完整 Key 时点「显示」。':
+    'Each key allows all accounts by default. Turn off "Allow all accounts" to use only the checked cookie accounts; with none checked the key can only use anonymous-capable models (signed-in models are hidden from its model list and requests return 403).<br><br><code>--api-key</code> / <code>API_KEY</code> provides the <b>deploy key</b>: always enabled, all accounts allowed, read-only in the panel, and it cannot be changed or deleted. It works alongside the keys added here. The list only shows masked values; click Show when you need the full key.',
   '实测单个出口打 <b>80-180 次</b>后会被 Google 重定向到 <code>sorry/index</code>， 轨道取的是这个区间的<b>下沿</b>。区间这么宽是因为它主要由连接策略和出口质量 决定：同样并发 10，复用连接池能打到 172/177，每次新建连接只有 106/109； 静态 IP 上到过 188。<br><br> <b>它不是一条硬线。</b>节奏才是关键 —— 10 次/分钟平缓地打，连打 800 次、 跨 110 分钟一次没被拦。所以这条轨道是保守参考，不是"到了就会挂"。<br><br> 被拦之后是硬拦（封后 20 分钟内 60 次探测 0 成功），106-121 分钟自动恢复。 红竖线是本地 RPH 限额的位置，超了直接返回 429 而不去消耗 Google 配额。 要放大产能就在「代理池」加代理，每个代理是独立 slot。':
     'Testing showed a single egress gets redirected to <code>sorry/index</code> by Google after <b>80-180 requests</b>; the track uses the <b>lower bound</b> of this range. This wide window is largely determined by connection strategy and egress quality: with concurrency 10, connection pool reuse reaches 172/177, while new connections each time yield only 106/109; static IPs reached 188.<br><br> <b>It is not a hard line.</b> Pacing is key — at a steady 10 requests/min, 800 consecutive requests over 110 minutes were never blocked. Thus this track is a conservative reference, not a cliff edge.<br><br> Once blocked, it is a hard block (0/60 probes succeeded within 20 min post-ban), recovering automatically in 106-121 min. The red vertical bar marks the local RPH limit, returning 429 directly once exceeded without exhausting Google quota. To scale capacity, add proxies in the Proxy Pool — each proxy acts as an independent slot.',
 
@@ -2594,6 +2964,15 @@ const I18N_PATTERNS = [
   [/^「(.+)」不能为空$/, (m, f) => `"${I18N_EN[f] || f}" cannot be empty`],
   [/^「(.+)」至少\s*(\d+)\s*字符$/, (m, f, n) => `"${I18N_EN[f] || f}" must be at least ${n} characters`],
   [/^另有\s*(\d+)\s*项未在上面列出（(.*?)），会一并保留。$/, '$1 additional items not listed above ($2) will be kept.'],
+  [/^(\d+)\s*个账号$/, '$1 accounts'],
+  [/^冷却\s*(\d+)s$/, 'Cooling $1s'],
+  [/· 独占/g, ' · exclusive'],
+  [/· IP 冷却中/g, ' · IP cooling'],
+  [/· 已禁用/g, ' · disabled'],
+  [/已被 #(\d+) 独占/g, 'owned by #$1'],
+  [/^编辑 API Key #(\d+)$/, 'Edit API key #$1'],
+  [/^确定删除 Key #(\d+)？使用它的客户端会立即失去访问权限，此操作不可撤销。$/, 'Delete key #$1? Clients using it lose access immediately. This cannot be undone.'],
+  [/^确定删除代理 #(\d+)？此操作不可撤销。被 Cookie 独占绑定的代理需要先解绑。$/, 'Delete proxy #$1? This cannot be undone. A proxy bound exclusively to a cookie must be unbound first.'],
 ];
 
 let LANG = (() => { try { return localStorage.getItem('lang') === 'en' ? 'en' : 'zh'; } catch (e) { return 'zh'; } })();

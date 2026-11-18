@@ -150,9 +150,33 @@ func getStdlibClient(proxyURL string) *http.Client {
 // 它的值在启动时被 seedCookiesFromConfig 并进池子了。
 //
 // 第三个返回值是池里那条记录的 ID，请求结束后拿它调 markCookieByStatus 回写健康度。
+// loadCookie 是 loadCookieForProxy(0) 的旧包装（直连/无指定代理）。
 func loadCookie() (cookie, sapisid string) {
-	if a, ok := pickCookieAccount(); ok {
-		return a.Cookie, extractSAPISID(a.Cookie)
+	return loadCookieForProxy(0)
+}
+
+// loadCookieForProxy 按出口挑一份 cookie 给旁路探测用。
+//
+// 独占绑定上线后，探测也不能违反“这个 IP 只属于那个 Cookie”：
+//   - 指定出口有独占 owner → 用 owner 的 cookie（即使它被停用，诊断该出口时
+//     仍然应该用真正属于它的账号）；
+//   - 共享出口/直连 → 只挑普通（非独占）账号，独占账号必须留给自己的出口。
+func loadCookieForProxy(proxyID int64) (cookie, sapisid string) {
+	if owner, ok := exclusiveOwnerOfProxy(proxyID); ok {
+		if a := accountByID(owner); a != nil {
+			return a.Cookie, extractSAPISID(a.Cookie)
+		}
+	}
+	allowed := map[int64]bool{}
+	for _, a := range accountList() {
+		if a.Status == "enabled" && !a.ProxyExclusive {
+			allowed[a.ID] = true
+		}
+	}
+	if len(allowed) > 0 {
+		if a, ok := pickCookieAccountFiltered(nil, allowed); ok {
+			return a.Cookie, extractSAPISID(a.Cookie)
+		}
 	}
 	return "", ""
 }

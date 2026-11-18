@@ -25,6 +25,9 @@ type CookieAccount struct {
 	LastError  string `json:"last_error"`
 	FailCount  int64  `json:"fail_count"`
 	ProxyID    int64  `json:"proxy_id"` // 绑定的出口，0 = 还没绑
+	// ProxyExclusive 为真时 proxy_id 是该账号独占的出口：其他账号和匿名请求
+	// 都不能使用这个代理，账号的请求也只能从这个出口发出（满/冷却时不回退）。
+	ProxyExclusive bool `json:"proxy_exclusive"`
 	// AuthUser 是浏览器里多号登录时的账号序号：同一串 cookie 里登着好几个号，
 	// 请求路径带 /u/N 才落到第 N 个号，0 = 默认号（裸路径）。
 	AuthUser int `json:"authuser"`
@@ -139,7 +142,7 @@ func accountInsert(label, cookie, note string) (int64, error) {
 // accountList 返回池里全部账号，按 id 升序。
 func accountList() []CookieAccount {
 	rows, err := getDB().Query(
-		`SELECT id, label, cookie, status, note, created_at, last_used_at, last_ok_at, last_error, fail_count, proxy_id, authuser
+		`SELECT id, label, cookie, status, note, created_at, last_used_at, last_ok_at, last_error, fail_count, proxy_id, proxy_exclusive, authuser
 		 FROM accounts ORDER BY id`)
 	if err != nil {
 		return nil
@@ -148,10 +151,12 @@ func accountList() []CookieAccount {
 	var out []CookieAccount
 	for rows.Next() {
 		var a CookieAccount
+		var excl int
 		if err := rows.Scan(&a.ID, &a.Label, &a.Cookie, &a.Status, &a.Note,
-			&a.CreatedAt, &a.LastUsedAt, &a.LastOkAt, &a.LastError, &a.FailCount, &a.ProxyID, &a.AuthUser); err != nil {
+			&a.CreatedAt, &a.LastUsedAt, &a.LastOkAt, &a.LastError, &a.FailCount, &a.ProxyID, &excl, &a.AuthUser); err != nil {
 			continue
 		}
+		a.ProxyExclusive = excl == 1
 		out = append(out, a)
 	}
 	return out
@@ -163,20 +168,32 @@ func accountList() []CookieAccount {
 // CookieAccount 是轮转之前的快照，接着用等于把刚刷新的值扔掉。
 func accountByID(id int64) *CookieAccount {
 	var a CookieAccount
+	var excl int
 	err := getDB().QueryRow(
-		`SELECT id, label, cookie, status, note, created_at, last_used_at, last_ok_at, last_error, fail_count, proxy_id, authuser
+		`SELECT id, label, cookie, status, note, created_at, last_used_at, last_ok_at, last_error, fail_count, proxy_id, proxy_exclusive, authuser
 		 FROM accounts WHERE id=?`, id).
 		Scan(&a.ID, &a.Label, &a.Cookie, &a.Status, &a.Note,
-			&a.CreatedAt, &a.LastUsedAt, &a.LastOkAt, &a.LastError, &a.FailCount, &a.ProxyID, &a.AuthUser)
+			&a.CreatedAt, &a.LastUsedAt, &a.LastOkAt, &a.LastError, &a.FailCount, &a.ProxyID, &excl, &a.AuthUser)
 	if err != nil {
 		return nil
 	}
+	a.ProxyExclusive = excl == 1
 	return &a
 }
 
 // accountDelete 删除一条。
+// accountDelete 删除一条。关联的 API Key 白名单和独占绑定索引一起清掉：
+// 表之间没有外键，不能指望数据库级联。
 func accountDelete(id int64) error {
+	if id <= 0 {
+		return nil
+	}
+	_, _ = getDB().Exec(`DELETE FROM api_key_accounts WHERE account_id=?`, id)
 	_, err := getDB().Exec(`DELETE FROM accounts WHERE id=?`, id)
+	if err == nil {
+		loadAccountProxyBindings()
+		reloadAPIKeyStore()
+	}
 	return err
 }
 
@@ -413,18 +430,23 @@ func poolHasCookie(cookie string) bool {
 // 全是方言分支）。挑号只是一次极快的 SELECT+UPDATE，串行化的争用可忽略。
 var pickMu sync.Mutex
 
-// pickCookieAccount 从池里挑一个 enabled 账号，按 last_used_at 最久优先，
-// 挑中后立刻把 last_used_at 记为现在（下次轮到别人）。池空返回 (nil,false)。
+// pickCookieAccount 从池里挑一个 enabled 账号，按 last_used_at 最久优先。
 func pickCookieAccount() (*CookieAccount, bool) {
-	return pickCookieAccountExcept(nil)
+	return pickCookieAccountFiltered(nil, nil)
 }
 
 // pickCookieAccountExcept 同上，但跳过本次已经试过的账号。
-//
-// 存在的理由：一个 cookie 失效不该让整个请求失败。池子里 2 个号坏 1 个，
-// 轮转会让大约一半请求撞上坏号 —— 表现就是"成功率莫名其妙很低"，而每次失败
-// 看起来都像是上游的问题。
 func pickCookieAccountExcept(skip map[int64]bool) (*CookieAccount, bool) {
+	return pickCookieAccountFiltered(skip, nil)
+}
+
+// pickCookieAccountFiltered 是挑号的统一实现。allowed 为 nil 表示允许全部账号；
+// 非 nil（包括空 map）表示只允许这些账号，用于多 API key 的账号白名单。
+//
+// 选中的行会立刻写 last_used_at，让下一次轮到别人；整个 SELECT + UPDATE 由
+// pickMu 串行化。账号的独占代理是否可用不在这里判断（由 pickAccountForModel
+// 先算好 skip），因为那需要代理状态，属于调度层。
+func pickCookieAccountFiltered(skip map[int64]bool, allowed map[int64]bool) (*CookieAccount, bool) {
 	pickMu.Lock()
 	defer pickMu.Unlock()
 	// 健康的排前面，同样健康的按最久未用轮转。
@@ -433,7 +455,7 @@ func pickCookieAccountExcept(skip map[int64]bool) (*CookieAccount, bool) {
 	// 出口就按"无偏好"选了；等换号换到好号，出口已经定死 —— 于是好号的出口
 	// 粘性被坏号带偏。实测 1 好 2 坏时出口在两个代理间对半分。
 	rows, err := getDB().Query(
-		`SELECT id, label, cookie, status, note, created_at, last_used_at, last_ok_at, last_error, fail_count, proxy_id, authuser
+		`SELECT id, label, cookie, status, note, created_at, last_used_at, last_ok_at, last_error, fail_count, proxy_id, proxy_exclusive, authuser
 		 FROM accounts WHERE status='enabled' ORDER BY fail_count ASC, last_used_at ASC, id ASC`)
 	if err != nil {
 		return nil, false
@@ -441,11 +463,13 @@ func pickCookieAccountExcept(skip map[int64]bool) (*CookieAccount, bool) {
 	defer rows.Close()
 	for rows.Next() {
 		var a CookieAccount
+		var excl int
 		if err := rows.Scan(&a.ID, &a.Label, &a.Cookie, &a.Status, &a.Note,
-			&a.CreatedAt, &a.LastUsedAt, &a.LastOkAt, &a.LastError, &a.FailCount, &a.ProxyID, &a.AuthUser); err != nil {
+			&a.CreatedAt, &a.LastUsedAt, &a.LastOkAt, &a.LastError, &a.FailCount, &a.ProxyID, &excl, &a.AuthUser); err != nil {
 			continue
 		}
-		if skip[a.ID] {
+		a.ProxyExclusive = excl == 1
+		if skip[a.ID] || !allowedByMap(allowed, a.ID) {
 			continue
 		}
 		_, _ = getDB().Exec(`UPDATE accounts SET last_used_at=? WHERE id=?`, time.Now().Unix(), a.ID)
@@ -540,22 +564,44 @@ type CookieCheck struct {
 // SNlM0e 就说明服务端没认这个登录态。
 //
 // 只抓页面，不发对话，不消耗生成配额。
+//
+// 独占账号固定走绑定出口，且**绕过**该 IP 的熔断/容量限制：检测是管理员显式动作，
+// 目的是判断 cookie 本身，不该被“IP 冷却中”挡住，也不该消耗该 IP 的配额。
 func checkAccountCookie(a CookieAccount) CookieCheck {
 	t0 := time.Now()
-	picked, ok, err := acquireSlot(a.ProxyID)
-	if !ok {
-		return CookieCheck{Detail: "拿不到出口：" + err.Error()}
-	}
-	defer releaseSlot(picked.ID)
-	proxyURL := picked.URL
-	name := picked.Name
-	if name == "" {
-		name = "直连"
+	var proxyURL, name string
+	if a.ProxyExclusive {
+		if a.ProxyID <= 0 {
+			return CookieCheck{Detail: "独占标记没有绑定到具体代理，请先在面板解绑并重新绑定"}
+		}
+		p, err := diagnosticProxy(a.ProxyID)
+		if err != nil {
+			return CookieCheck{
+				Detail:    "绑定的出口不可用：" + err.Error(),
+				ProxyName: proxyNameByID(a.ProxyID),
+			}
+		}
+		proxyURL = p.URL
+		name = p.Name
+		if name == "" {
+			name = "直连"
+		}
+	} else {
+		picked, ok, err := acquireSlot(a.ProxyID)
+		if !ok {
+			return CookieCheck{Detail: "拿不到出口：" + err.Error()}
+		}
+		defer releaseSlot(picked.ID)
+		proxyURL = picked.URL
+		name = picked.Name
+		if name == "" {
+			name = "直连"
+		}
 	}
 
 	// 先作废缓存，否则可能拿到几分钟前的旧结论，检测就没意义了
 	invalidateXSRF(a.Cookie)
-	_, err = getXSRF(a.Cookie, a.AuthUser, proxyURL)
+	_, err := getXSRF(a.Cookie, a.AuthUser, proxyURL)
 	took := time.Since(t0).Milliseconds()
 	if err != nil {
 		// 断网、被拦这类不是 cookie 的错，不动健康度（也不算成功）
@@ -568,6 +614,11 @@ func checkAccountCookie(a CookieAccount) CookieCheck {
 	detail := "登录态有效"
 	if extractSAPISID(a.Cookie) == "" {
 		detail += "，但缺 SAPISID（算不出授权头，部分接口会被当匿名）"
+	}
+	if a.ProxyExclusive {
+		if st := accountProxyStatus(a, time.Now()); st.State != "ok" {
+			detail += "（IP 状态：" + st.State + "，检测已绕过调度限制）"
+		}
 	}
 	return CookieCheck{OK: true, Detail: detail, ProxyName: name, TookMs: took}
 }
@@ -589,11 +640,254 @@ func explainCookieFailure(err error) string {
 }
 
 // bindAccountProxy 记住这个账号这次用的出口，下次优先复用。
+//
+// 独占账号不参与自动绑定：它的出口只能由管理员显式设置，自动改绑会破坏独占语义。
 func bindAccountProxy(accountID, proxyID int64) {
 	if accountID <= 0 {
 		return
 	}
+	if a := accountByID(accountID); a != nil && a.ProxyExclusive {
+		return
+	}
 	_, _ = getDB().Exec(`UPDATE accounts SET proxy_id=? WHERE id=?`, proxyID, accountID)
+}
+
+// shouldBindAccountProxy 判断这次成功请求后要不要把账号粘到 picked 出口。
+// 独占账号永不改绑；普通账号只在没绑、绑的出口不可用、或绑的出口其实是别人的
+// 独占出口时才改绑。
+func shouldBindAccountProxy(a *CookieAccount, proxyID int64) bool {
+	if a == nil || a.ProxyExclusive {
+		return false
+	}
+	if a.ProxyID == 0 {
+		return true
+	}
+	if !proxyAllowedForAccount(a.ProxyID, a.ID) {
+		return true
+	}
+	return !proxyUsableByID(a.ProxyID)
+}
+
+// proxyCompatibleWithAccount 判断当前已经占住的出口能不能换给这个账号用。
+// 独占账号只能用它自己的出口；普通账号不能用别人独占的出口。
+func proxyCompatibleWithAccount(proxyID int64, a *CookieAccount) bool {
+	if a == nil {
+		return false
+	}
+	if a.ProxyExclusive {
+		return a.ProxyID == proxyID
+	}
+	return proxyAllowedForAccount(proxyID, a.ID)
+}
+
+// 独占绑定的进程内索引。代理池/账号池都是单实例假设，这里跟 pickMu、slots 一样
+// 只维护本进程的内存快照；绑定变更后同步刷新，scheduler 每 60 秒兜底重读。
+var (
+	bindingMu               sync.RWMutex
+	exclusiveOwnerByProxy   = map[int64]int64{}
+	exclusiveProxyByAccount = map[int64]int64{}
+)
+
+// loadAccountProxyBindings 从库里重建独占绑定索引。
+//
+// 历史数据里可能有多个账号标记独占同一个代理（手工改库、旧版本没有约束）。
+// 这里按账号 id 升序保留第一个，其余打日志但不进入索引；那些账号在
+// accountProxyStatus 里会显示 conflict，管理员需要先解绑再重新绑定。
+func loadAccountProxyBindings() {
+	rows, err := getDB().Query(
+		`SELECT id, proxy_id FROM accounts WHERE proxy_exclusive=1 AND proxy_id>0 ORDER BY id`)
+	if err != nil {
+		logf("[cookie] 读取独占绑定失败，保留上一次快照: %v", err)
+		return
+	}
+	defer rows.Close()
+	owners := map[int64]int64{}
+	byAcct := map[int64]int64{}
+	for rows.Next() {
+		var id, proxyID int64
+		if err := rows.Scan(&id, &proxyID); err != nil {
+			continue
+		}
+		if prev, ok := owners[proxyID]; ok && prev != id {
+			logf("[cookie] 代理 #%d 被账号 #%d 和 #%d 同时标记独占，保留 #%d；请在面板解绑其中一个",
+				proxyID, prev, id, prev)
+			continue
+		}
+		owners[proxyID] = id
+		byAcct[id] = proxyID
+	}
+	if err := rows.Err(); err != nil {
+		logf("[cookie] 读取独占绑定中断，保留上一次快照: %v", err)
+		return
+	}
+	bindingMu.Lock()
+	exclusiveOwnerByProxy = owners
+	exclusiveProxyByAccount = byAcct
+	bindingMu.Unlock()
+}
+
+// exclusiveOwnerOfProxy 返回独占这个代理的账号 id。
+func exclusiveOwnerOfProxy(proxyID int64) (int64, bool) {
+	if proxyID <= 0 {
+		return 0, false
+	}
+	bindingMu.RLock()
+	defer bindingMu.RUnlock()
+	id, ok := exclusiveOwnerByProxy[proxyID]
+	return id, ok
+}
+
+// accountExclusiveProxy 返回账号独占的代理 id。
+func accountExclusiveProxy(accountID int64) (int64, bool) {
+	if accountID <= 0 {
+		return 0, false
+	}
+	bindingMu.RLock()
+	defer bindingMu.RUnlock()
+	id, ok := exclusiveProxyByAccount[accountID]
+	return id, ok
+}
+
+// proxyAllowedForAccount 判断某个账号能不能使用这个代理。
+// 没有被任何人独占的代理对所有账号/匿名开放。
+func proxyAllowedForAccount(proxyID, accountID int64) bool {
+	owner, ok := exclusiveOwnerOfProxy(proxyID)
+	if !ok {
+		return true
+	}
+	return owner == accountID
+}
+
+// AccountProxyStatus 是账号绑定出口的派生状态，给挑号/管理面板共用。
+type AccountProxyStatus struct {
+	State      string        `json:"state"` // ok | not_bound | unbound | disabled | deleted | cooling | full | conflict
+	ProxyID    int64         `json:"proxy_id"`
+	ProxyName  string        `json:"proxy_name"`
+	RetryAfter time.Duration `json:"-"`
+	Reason     string        `json:"reason,omitempty"`
+}
+
+// RetryAfterSec 给 JSON 用的整数秒。
+func (s AccountProxyStatus) RetryAfterSec() int {
+	if s.RetryAfter <= 0 {
+		return 0
+	}
+	return int((s.RetryAfter + time.Second - 1) / time.Second)
+}
+
+// accountProxyStatus 计算账号当前出口状态。
+//
+// 只有独占账号的状态参与可用性判断；普通粘性绑定（proxy_exclusive=0）只是偏好，
+// 代理坏了/满了会换别的出口，所以它的状态仅用于面板展示。
+func accountProxyStatus(a CookieAccount, now time.Time) AccountProxyStatus {
+	st := AccountProxyStatus{ProxyID: a.ProxyID, ProxyName: proxyNameByID(a.ProxyID)}
+	if a.ProxyID <= 0 {
+		if a.ProxyExclusive {
+			st.State = "unbound"
+			st.Reason = "独占标记没有绑定到具体代理"
+		} else {
+			st.State = "not_bound"
+		}
+		return st
+	}
+	if a.ProxyExclusive {
+		if got, ok := accountExclusiveProxy(a.ID); !ok || got != a.ProxyID {
+			st.State = "conflict"
+			st.Reason = "另一个账号也标记独占了这个代理，请解绑后重新绑定"
+			return st
+		}
+	}
+	p, ok := proxyByID(a.ProxyID)
+	if !ok {
+		st.State = "deleted"
+		st.Reason = "代理已删除"
+		return st
+	}
+	st.ProxyName = p.Name
+	if !p.Enabled {
+		st.State = "disabled"
+		st.Reason = "代理已禁用"
+		return st
+	}
+	if !proxyUsable(p, now.Unix(), rtCfg().ProxyCooldownMin) {
+		st.State = "cooling"
+		st.Reason = "IP 熔断冷却中"
+		st.RetryAfter = proxyCooldownRemaining(p, now.Unix())
+		return st
+	}
+	if !a.ProxyExclusive {
+		st.State = "ok"
+		return st
+	}
+	if ok, reason, retry := slotAvailability(p.ID); !ok {
+		st.State = "full"
+		st.Reason = "IP 当前已满（" + reason + "）"
+		st.RetryAfter = retry
+		return st
+	}
+	st.State = "ok"
+	return st
+}
+
+// proxyBindingConflictError 表示另一个账号已经独占了这个代理。
+type proxyBindingConflictError struct {
+	ProxyID    int64
+	OwnerID    int64
+	OwnerLabel string
+}
+
+func (e *proxyBindingConflictError) Error() string {
+	return fmt.Sprintf("代理 #%d 已被账号 %s 独占，请先解绑那个账号", e.ProxyID, e.OwnerLabel)
+}
+
+var bindMu sync.Mutex
+
+// accountBindProxy 显式设置账号的绑定出口。exclusive=true 时该代理只允许这个
+// 账号使用；exclusive=false 是旧的粘性偏好（多个账号可以共享）。
+func accountBindProxy(id, proxyID int64, exclusive bool) error {
+	if id <= 0 {
+		return fmt.Errorf("bad account id")
+	}
+	if proxyID < 0 {
+		return fmt.Errorf("bad proxy id")
+	}
+	if exclusive && proxyID == 0 {
+		return fmt.Errorf("独占绑定必须选择一个代理")
+	}
+	if accountByID(id) == nil {
+		return fmt.Errorf("account not found")
+	}
+	if proxyID > 0 {
+		if _, ok := proxyByID(proxyID); !ok {
+			return fmt.Errorf("proxy not found")
+		}
+	}
+	bindMu.Lock()
+	defer bindMu.Unlock()
+	if exclusive {
+		if owner, ok := exclusiveOwnerOfProxy(proxyID); ok && owner != id {
+			label := fmt.Sprintf("#%d", owner)
+			if o := accountByID(owner); o != nil {
+				label = accountDisplayName(o)
+			}
+			return &proxyBindingConflictError{ProxyID: proxyID, OwnerID: owner, OwnerLabel: label}
+		}
+	}
+	excl := 0
+	if exclusive {
+		excl = 1
+	}
+	if _, err := getDB().Exec(
+		`UPDATE accounts SET proxy_id=?, proxy_exclusive=? WHERE id=?`, proxyID, excl, id); err != nil {
+		return err
+	}
+	loadAccountProxyBindings()
+	return nil
+}
+
+// accountUnbindProxy 解除账号的出口绑定（含独占标记）。
+func accountUnbindProxy(id int64) error {
+	return accountBindProxy(id, 0, false)
 }
 
 // accountDisplayName 面板/记录里显示的账号名，没填标签就用 #id。

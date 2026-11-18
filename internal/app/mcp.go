@@ -81,7 +81,7 @@ func handleMCPHTTP(w http.ResponseWriter, r *http.Request) {
 		writeMCPHTTPError(w, nil, -32700, "parse error")
 		return
 	}
-	resp := dispatchMCP(&req)
+	resp := dispatchMCP(&req, keyFromContext(r.Context()))
 	if resp == nil {
 		w.WriteHeader(http.StatusAccepted) // 通知：无响应体
 		return
@@ -98,7 +98,7 @@ func writeMCPHTTPError(w http.ResponseWriter, id json.RawMessage, code int, msg 
 	w.Write(b)
 }
 
-func dispatchMCP(req *rpcRequest) *rpcResponse {
+func dispatchMCP(req *rpcRequest, key *APIKey) *rpcResponse {
 	// 没有 id 的是通知（notifications/initialized 等），不回响应。
 	if len(req.ID) == 0 {
 		return nil
@@ -145,7 +145,7 @@ func dispatchMCP(req *rpcRequest) *rpcResponse {
 			if query == "" {
 				return ok(toolTextError("query 不能为空"))
 			}
-			text, err := mcpWebSearch(query)
+			text, err := mcpWebSearch(query, key)
 			if err != nil {
 				return ok(toolTextError("搜索失败: " + err.Error()))
 			}
@@ -161,13 +161,13 @@ func dispatchMCP(req *rpcRequest) *rpcResponse {
 			if p.Name == "generate_music" {
 				model, refs = "gemini-music", nil
 			}
-			result, err := mcpGenerateMedia(model, prompt, refs)
+			result, err := mcpGenerateMedia(model, prompt, refs, key)
 			if err != nil {
 				return ok(toolTextError("生成失败: " + err.Error()))
 			}
 			return ok(result)
 		case "create_video_task":
-			result, err := mcpCreateVideo(p.Arguments)
+			result, err := mcpCreateVideo(p.Arguments, key)
 			if err != nil {
 				return ok(toolTextError("建任务失败: " + err.Error()))
 			}
@@ -176,6 +176,9 @@ func dispatchMCP(req *rpcRequest) *rpcResponse {
 			j := getVideoJob(strings.TrimSpace(getStr(p.Arguments, "id")))
 			if j == nil {
 				return ok(toolTextError("video task not found"))
+			}
+			if !videoJobAllowed(j, key) {
+				return ok(toolTextError("video task belongs to another API key"))
 			}
 			withVideo, _ := p.Arguments["include_video"].(bool)
 			return ok(mcpVideoJobResult(j, withVideo))
@@ -212,11 +215,12 @@ func webSearchToolDef() map[string]interface{} {
 }
 
 // mcpWebSearch 执行一次联网搜索，返回"答案 + 来源清单"的文本。
-func mcpWebSearch(query string) (string, error) {
+func mcpWebSearch(query string, key *APIKey) (string, error) {
 	mc, ok := Models[rtCfg().DefaultModel]
 	if !ok || mc.Retired != "" {
 		mc = Models[fallbackDefaultModel]
 	}
+	mc = withKeyAccess(mc, key)
 	res, err := streamGenerate(query, query, mc, nil, nil)
 	if err != nil {
 		return "", err

@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const Version = "4.29.0"
+const Version = "4.30.0"
 
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	body, _ := json.Marshal(data)
@@ -22,7 +22,7 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 
 func handleModels(w http.ResponseWriter, r *http.Request) {
 	var data []map[string]interface{}
-	for name, c := range availableModels() {
+	for name, c := range availableModelsForKey(keyFromContext(r.Context())) {
 		data = append(data, map[string]interface{}{
 			"id":          name,
 			"object":      "model",
@@ -238,8 +238,12 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if modelInput == "" {
 		modelInput = rtCfg().DefaultModel
 	}
-	modelName, modelCfg, err := resolveModel(modelInput)
+	reqKey := keyFromContext(r.Context())
+	modelName, modelCfg, err := resolveModelForKey(modelInput, reqKey)
 	if err != nil {
+		if writeAPIAccountError(w, err) {
+			return
+		}
 		writeJSON(w, 400, map[string]interface{}{"error": map[string]string{"message": err.Error()}})
 		return
 	}
@@ -320,6 +324,15 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	ka.Stop() // 之后的收尾回到单 goroutine 写；Started() 也要在保活停下后再看
 	if err != nil {
+		if accStatus, ok := apiAccountErrorStatus(err); ok {
+			recordRequest("chat.completions", modelName, prompt, "", res, accStatus, err.Error(), stream)
+			if sse != nil && sse.Started() {
+				sse.Fail(err) // 已经开流，HTTP 状态码改不了了
+				return
+			}
+			writeAPIAccountError(w, err)
+			return
+		}
 		mde, downgraded := err.(*ModelDowngradedError)
 		status := 502
 		if downgraded {
@@ -470,8 +483,12 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 	if modelInput == "" {
 		modelInput = rtCfg().DefaultModel
 	}
-	modelName, modelCfg, err := resolveModel(modelInput)
+	reqKey := keyFromContext(r.Context())
+	modelName, modelCfg, err := resolveModelForKey(modelInput, reqKey)
 	if err != nil {
+		if writeAPIAccountError(w, err) {
+			return
+		}
 		writeJSON(w, 400, map[string]interface{}{"error": map[string]string{"message": err.Error()}})
 		return
 	}
@@ -694,6 +711,24 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 	ka.Stop()
 	if err != nil {
+		if accStatus, ok := apiAccountErrorStatus(err); ok {
+			recordRequest("responses", modelName, prompt, "", res, accStatus, err.Error(), stream)
+			if stream {
+				writeEvent("response.failed", map[string]interface{}{
+					"type": "response.failed",
+					"response": map[string]interface{}{
+						"id":     rid,
+						"object": "response",
+						"status": "failed",
+						"model":  modelName,
+						"error":  map[string]string{"message": err.Error(), "code": apiAccountErrorCode(err)},
+					},
+				})
+				return
+			}
+			writeAPIAccountError(w, err)
+			return
+		}
 		mde, downgraded := err.(*ModelDowngradedError)
 		status := 502
 		if downgraded {

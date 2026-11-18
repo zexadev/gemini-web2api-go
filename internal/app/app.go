@@ -77,9 +77,10 @@ func Run() {
 	getDB()
 	initRuntimeConfig() // 面板改过的运行时配置盖在启动配置之上
 	loadProxies()
-	seedProxiesFromConfig() // --proxy / 遗留静态代理并进代理池
-	seedCookiesFromConfig() // --cookie-file / 遗留单 cookie 并进 cookie 池
-	resolvedAPIKey := initAPIKey(*apiKey)
+	loadAccountProxyBindings() // 独占绑定索引，挑号/删代理都要用
+	seedProxiesFromConfig()    // --proxy / 遗留静态代理并进代理池
+	seedCookiesFromConfig()    // --cookie-file / 遗留单 cookie 并进 cookie 池
+	resolvedAPIKey := initAPIKeys(*apiKey)
 	initTokenizer()
 	startScheduler()
 
@@ -145,6 +146,8 @@ func Run() {
 		mux.HandleFunc("/admin/api/proxies", requireAuth(handleAdminProxies))
 		mux.HandleFunc("/admin/api/proxies/", requireAuth(handleAdminProxyItem))
 		mux.HandleFunc("/admin/api/apikey", requireAuth(handleAdminAPIKey))
+		mux.HandleFunc("/admin/api/keys", requireAuth(handleAdminKeys))
+		mux.HandleFunc("/admin/api/keys/", requireAuth(handleAdminKeyItem))
 		mux.HandleFunc("/admin/api/usage", requireAuth(handleAdminUsage))
 		mux.HandleFunc("/admin/api/config", requireAuth(handleAdminConfig))
 		mux.HandleFunc("/admin/api/cookies", requireAuth(handleAdminCookies))
@@ -179,7 +182,13 @@ func Run() {
 	fmt.Printf("  Listening:   http://%s\n", addr)
 	fmt.Printf("  Base URL:    http://localhost:%d/v1\n", cfg.Port)
 	fmt.Printf("  API key:     %s%s\n", maskKey(resolvedAPIKey),
-		map[bool]string{true: "  (locked by flag/env)", false: "  (mutable in admin UI)"}[apiKeyLocked])
+		map[bool]string{true: "  (locked by flag/env)", false: "  (mutable in admin UI)"}[defaultAPIKeyLocked()])
+	dbKeys, hasDeploy := apiKeyCounts()
+	fmt.Printf("  API keys:    %d in DB", dbKeys)
+	if hasDeploy {
+		fmt.Printf(" + 1 deploy key (locked)")
+	}
+	fmt.Println()
 	if cfg.AdminEnabled {
 		authMode := "no auth (open)"
 		if cfg.AdminToken != "" {

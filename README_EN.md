@@ -28,6 +28,7 @@ Turn the Google Gemini web app into an OpenAI-compatible API, with a native Gemi
 - [Gemini native API](#gemini-native-api)
 - [MCP tools](#mcp-tools)
 - [Admin panel](#admin-panel)
+- [API Keys (multiple keys)](#api-keys-multiple-keys)
 - [Models](#models)
 - [Configuration](#configuration)
 - [Cookie (optional)](#cookie-optional)
@@ -85,7 +86,7 @@ The projects most often compared with this one are the Python [Sophomoresty/gemi
   - video quota routing: an account whose video budget runs out is skipped for new videos until it resets, and a job that lands on one moves to the next account inside the same job. When every account is cooling down, `POST /v1/videos` answers `429` with `code: video_quota_exhausted` and `Retry-After`, and a running job fails with `retry_after=N` (seconds until the first reset)
   - `GET /admin/api/video-quota` (admin): per-account video usage in the rolling 5-hour window, status and reset time, read from each account's own Gemini history (read-only; Google's own reset time when a refusal carries it, otherwise first video + 5 h). Each refresh costs about 2 + N upstream requests per account (N = conversations updated in the last few hours; unchanged ones are cached), sent through the proxy pool and counted against the per-IP budget, so don't poll it. With `temporary_chat` or `auto_delete_conversation` on, videos made through this proxy aren't in the history and are undercounted (the response carries a `history_incomplete` note)
 - Real incremental streaming: every upstream frame is forwarded as a delta, on `/v1/chat/completions`, `/v1/responses` and requests with `tools` alike (a tool-call block is sent once complete)
-- Bearer token / `x-api-key` / `x-goog-api-key` auth; the key can be rotated from the panel
+- Bearer token / `x-api-key` / `x-goog-api-key` / `?key=` auth; **multiple API keys**, each with its own account allowlist (see [API Keys](#api-keys-multiple-keys))
 - `usage` computed with tiktoken; `reasoning_tokens` counted separately, not folded
   into `completion_tokens`
 
@@ -103,13 +104,15 @@ The projects most often compared with this one are the Python [Sophomoresty/gemi
 - Real Chrome 146 TLS fingerprint via utls, not a default SDK handshake
 - Per-exit-IP limits: concurrency / RPM / RPH
 - Proxy pool: runtime CRUD, failure circuit breaker, rotation — each proxy is its
-  own rate-limit slot
-- Cookie pool: several Google accounts rotated least-recently-used first, auto-refreshed and kept alive, each account pinned to its own exit
+  own rate-limit slot; an IP can be **exclusively bound** to one cookie so other
+  accounts and anonymous requests never use it
+- Cookie pool: several Google accounts rotated least-recently-used first, auto-refreshed and kept alive, each account pinned to its own exit; an exclusively bound account goes unavailable while its IP is cooling down or at capacity
+- Multiple API keys: each key can be restricted to a subset of cookie accounts; async video jobs are isolated per key
 
 **Operations**
 - Single binary, cross-compiled for 6 platforms; container image built on distroless
 - SQLite persistence: 30 days of per-request detail plus permanent aggregates (optional MySQL / PostgreSQL via `SQL_DSN`)
-- Admin panel: overview / requests / proxy pool / cookie pool / settings / about, with
+- Admin panel: overview / requests / proxy pool / cookie pool / API keys / settings / about, with
   config changes applied without a restart and a top-bar notice when a new release is out
 - **Prompt and response bodies are never stored** — metadata only (length, latency,
   model, status)
@@ -189,7 +192,7 @@ gemini-web2api-go v4.29.0
   Retry:       3x / 2s
 ```
 
-An API key is generated on first boot. The banner masks it; the full value is on the **Settings** page of the admin panel.
+An API key is generated on first boot. The banner masks it; the full value is on the **API Keys** page of the admin panel.
 
 ### Making a call
 
@@ -233,7 +236,7 @@ Every OpenAI-compatible client (Cherry Studio / ChatBox / Open WebUI / dify / Cu
 | Field | Value |
 |---|---|
 | Base URL | `http://localhost:8083/v1` (some clients want just `http://localhost:8083` and append `/v1` themselves) |
-| API key | the `sk-gemini-…` shown on the admin panel's Settings page |
+| API key | the `sk-gemini-…` shown on the admin panel's API Keys page (pick the right key when several exist) |
 | Model | `gemini-3.6-flash` |
 
 **newapi / one-api channel**: pick the OpenAI type, set the base URL to `http://localhost:8083` (use `http://host.docker.internal:8083` or the container name if newapi runs in Docker too), paste the API key, and list the models as `gemini-3.6-flash,gemini-3.5-flash-lite`.
@@ -309,7 +312,7 @@ need a cookie (video needs a paid account).
 ```
 
 - `url` points at the backend's `/mcp`; locally it's `http://localhost:8083/mcp`.
-- `Authorization` is the same API key as the OpenAI endpoint (shown on the Settings page).
+- `Authorization` is the same API key as the OpenAI endpoint (shown on the API Keys page).
 - Claude Code: `claude mcp add --transport http gemini-search http://localhost:8083/mcp --header "Authorization: Bearer sk-gemini-your-key"`.
 
 | Tool | Arguments | Returns |
@@ -330,14 +333,52 @@ URL's content) is not implemented yet.
 
 - **Overview** — 24h KPIs, request volume / P50 latency dual-axis chart, per-model and per-proxy breakdowns, IP rate-limit usage, one-click connectivity check
 - **Requests** — request log (metadata only, no prompt/response content), status/model filters, pagination
-- **Proxy pool** — runtime CRUD, enable/disable, circuit breaker on repeated failures (each proxy is its own IP slot)
-- **Cookie pool** — import multiple signed-in Google accounts; requests rotate through them **least-recently-used first**. One-click "check" tells you whether an account is still signed in, and **dead accounts are flagged in red** so you know which to re-import; `__Secure-1PSIDTS` is rotated automatically plus a 10-minute keepalive; each account is pinned to its own exit; when several Google accounts are signed in to one browser, the "account index" picks which one to use. The list shows redacted summaries only (cookie count / key entries / last 4 of SAPISID / failure count)
-- **Settings** — runtime config form (saved settings take effect immediately), API key rotation, read-only view of deploy-time config
+- **Proxy pool** — runtime CRUD, enable/disable, circuit breaker on repeated failures (each proxy is its own IP slot); the "exclusive for" column shows which cookie owns it and the cooldown countdown
+- **Cookie pool** — import multiple signed-in Google accounts; requests rotate through them **least-recently-used first**. One-click "check" tells you whether an account is still signed in, and **dead accounts are flagged in red** so you know which to re-import; `__Secure-1PSIDTS` is rotated automatically plus a 10-minute keepalive; each account is pinned to its own exit; when several Google accounts are signed in to one browser, the "account index" picks which one to use. An exit can be bound **exclusively** to an account; while that IP is cooling down or at capacity the account shows "IP cooling down, unavailable". The list shows redacted summaries only (cookie count / key entries / last 4 of SAPISID / failure count)
+- **API keys** — multiple keys, each with its own account allowlist; the deploy key (`--api-key` / `API_KEY`) is read-only and works alongside them; the list is masked and full values are only returned on create/rotate/reveal
+- **Settings** — runtime config form (saved settings take effect immediately), read-only view of deploy-time config
 - **About** — current and latest version plus a manual update check; when a newer release exists it shows the release notes, the Docker upgrade command and per-platform binary download links (the binary is never replaced automatically; upgrading is still up to you)
 
 The frontend is a single HTML file and Chart.js is embedded in the binary, **not loaded from a CDN**, so the panel also works on air-gapped or intranet deployments.
 
 **Serving it under a path prefix needs no extra configuration**: every URL in the panel is relative, so forwarding `https://example.com/gemini/` to this service's `/` is enough to open `https://example.com/gemini/admin`. (Requesting `/admin` without the trailing slash 301s to `admin/` — relative URLs resolve against the document URL's *directory*, and the two forms differ by one level, so they have to be normalised first.)
+
+## API Keys (multiple keys)
+
+The **API Keys** page in the panel creates any number of keys. Authentication is unchanged:
+`Authorization: Bearer <key>`, `x-api-key`, `x-goog-api-key` and `?key=` all work.
+
+**Where keys come from**
+- `--api-key` / `API_KEY` provides the **deploy key**: always enabled, all accounts
+  allowed, read-only in the panel (its value cannot be changed, it cannot be deleted
+  or rotated) and it is not stored in the database. It works alongside panel-managed keys.
+- Keys created in the panel live in the database and can be named, enabled/disabled,
+  rotated and deleted.
+- On upgrade, the old single key in `kv("api_key")` is migrated to a "Default Key" row.
+  The kv value is kept so rolling back to the old version still works. The legacy
+  `GET/POST/PATCH /admin/api/apikey` endpoints keep operating on the default key.
+- A fresh deployment with no deploy key auto-generates a default key, so it works out
+  of the box.
+
+**Account allowlists**
+- `allow_all=1` by default: the key may use every account in the pool.
+- Turn it off to use only the checked cookie accounts. Selecting none is valid: the
+  key can only use anonymous-capable models, signed-in models disappear from its
+  `/v1/models` list and requests return `403 key_account_forbidden`.
+- Model lists are filtered per key, and a key's requests rotate only within its allowed accounts.
+- Multi-turn conversations and async video jobs carry the key identity: different keys
+  never resume each other's server-side conversations, and only the key that created a
+  video job can query/download/extend it (otherwise 403).
+
+**Admin API**
+- `GET/POST /admin/api/keys`
+- `PATCH/DELETE /admin/api/keys/{id}`
+- `POST /admin/api/keys/{id}/rotate` (new random key), `/toggle`, `/reveal`
+- The list returns masked values only; the full key is returned on create/rotate/reveal.
+
+**Caveat**: keys are stored in plaintext in the database (like cookies), and the panel
+masks them by default; anyone who can open the admin panel can reveal them, so set
+`ADMIN_TOKEN` on anything reachable.
 
 ## Models
 
@@ -475,10 +516,12 @@ Every value is range-checked on the server (for example `retry_attempts` accepts
 
 | Item | Notes |
 |---|---|
-| API key | generated on first boot, rotatable or replaceable from the panel |
+| API key | a default key is generated on first boot; the API Keys page adds more, restricts them to accounts, rotates/disables/deletes them. The deploy key (`--api-key` / `API_KEY`) is read-only and coexists |
 | Google cookie | import it on the Cookie pool page, effective on save; several accounts can be imported. Once the pool has an account, `gemini-4-hydrogen` and the other login-only models appear in the model list |
 
-Both live in the database. Saved values are never echoed back (the cookie only reports how many cookies were recognised and whether the key ones are present).
+Both live in the database. The API key list is masked; full values are only returned on
+create/rotate/reveal. Cookies are never echoed back (the list only reports how many
+cookies were recognised and whether the key ones are present).
 
 ### Deploy-time config → `docker-compose.yml`
 
@@ -490,7 +533,7 @@ What's left is only what requires restarting the process:
 | Database path | `volumes` + `command: --db` |
 | `ADMIN_TOKEN` | `environment`, the panel login token |
 
-The `API_KEY` environment variable pins the API key (the panel can't change it), for deployments that must not be changed at runtime.
+The `API_KEY` environment variable pins the **deploy key** (the panel can't change or delete it), but panel-managed DB keys can still be added and both keep working.
 
 `--proxy` and `--cookie-file` are **seed parameters, not a second configuration layer**: at startup their values are imported into the proxy pool / cookie pool (deduplicated by URL and by cookie contents), and everything is managed from the panel afterwards. Change them and restart to take effect.
 
@@ -506,7 +549,7 @@ All flags:
 | `--config` | path to `config.json` |
 | `--db` | SQLite path, default `./data/gemini.db` |
 | `--admin-token` | panel login token; empty = no auth (only acceptable when bound to 127.0.0.1) |
-| `--api-key` | pins the `/v1/*` key so the panel can't change it, same as the `API_KEY` env var |
+| `--api-key` | pins the deploy key value so the panel can't change it, same as the `API_KEY` env var; panel-managed DB keys are unaffected |
 | `--cookie-file` | imports the cookie in this file into the cookie pool at startup |
 | `--proxy` | imports this proxy into the proxy pool at startup |
 | `--impersonate` | TLS fingerprint profile |
@@ -544,6 +587,16 @@ Note that "last success" only means a request involving this cookie succeeded; i
 > **Export cookies from Firefox.** Recent Chrome enables Device Bound Session Credentials, so a session exported from Chrome is bound to that machine and `*PSIDTS` cannot be rotated — it dies in about 30 minutes to a few hours. Firefox has no such binding, and the same keepalive will keep the session alive. If you must use Chrome: log in in a fresh private window, export immediately, and **close that window** so the browser does not rotate the same session out from under you.
 
 **Each account is pinned to its own exit.** If the cookie pool and proxy pool rotated independently, one Google account would emit requests from dozens of different IPs, which is exactly what account sharing looks like to Google. An account binds to the first exit it uses and stays there until that exit becomes unusable.
+
+**Exclusive binding.** In the Cookie pool's Edit dialog, pick an exit and check **Exclusive use of this IP**. The semantics change from "preferred" to "only allowed":
+
+- Only that account may use the proxy; other accounts and anonymous requests are never scheduled onto it.
+- Requests, keepalive, the panel's "check", and video-quota statistics all leave through the bound exit; they no longer drift to another IP or direct.
+- If the proxy is disabled/deleted/cooling down after the circuit breaker, or the IP is at its concurrency/RPM/RPH limit, the account shows "IP cooling down, unavailable" and requests return `429 proxy_cooling` with `Retry-After`; there is **no** fallback to another exit.
+- During that cooling period "check" and keepalive still use the bound IP: they bypass scheduling limits, do not consume the IP's concurrency/RPM/RPH budget, and failures are logged without changing the cooldown state.
+- A proxy that is exclusively bound cannot be deleted (409) until the binding is removed in the Cookie pool.
+
+An un-exclusive `proxy_id` keeps the old sticky-preference behaviour (it may move to another shared exit when full or broken). The same proxy URL cannot be added twice — otherwise exclusivity could be bypassed — and `proxyCreate`/`proxyUpdate` reject duplicates.
 
 **Several Google accounts signed in to one browser? Set the "account index".** Accounts signed in to the same browser share one cookie jar, so the exported cookie string can act as any of them; which one a request uses is decided by the URL (`/u/1/` is the second account). If you leave it unset, every request lands on the **default account** (the one signed in first). If your subscription is on another account, paid models are silently downgraded to 3.5 Flash-Lite while "check" still says the session is valid.
 
@@ -664,7 +717,10 @@ internal/app/              everything else
   sse.go                   SSE writer (lazy header, so early failures still return 502 JSON)
   ratelimit.go             per-IP-slot concurrency / RPM / RPH
   tokenizer.go             tiktoken cl100k_base singleton
-  apikey.go                API key (locked by flag / rotatable from the panel)
+  apikey.go                API key middleware + legacy single-key endpoint compatibility (multi-key lives in keys.go)
+  keys.go                  multi-key store/auth/account allowlists + old kv migration
+  admin_keys.go            /admin/api/keys REST
+  errors.go                account/key restriction errors (proxy_cooling, key_account_forbidden, …)
   db.go                    database schema (shared by SQLite / MySQL / PostgreSQL): sessions / requests / accounts / kv
   dbdialect.go             multi-database dialects: SQL_DSN selects MySQL / PostgreSQL, placeholder rewriting
   proxy.go                 proxy pool CRUD + capacity scheduling + circuit breaker
@@ -702,6 +758,9 @@ docker-compose.yml         single container, pulls the ghcr image by default, sq
 | Symptom | Most likely cause | What to do |
 |---|---|---|
 | We return **429** | Every IP slot is at its concurrency/RPM/RPH limit. **This is not Google refusing** and no upstream quota was consumed | Add proxies, or raise the limits on the Settings page |
+| **429 `proxy_cooling`**, Cookie page shows "IP cooling down" | The exclusively bound proxy is cooling down after the circuit breaker, or the IP is at its concurrency/RPM/RPH limit; by design there is no fallback to another IP | Wait for `Retry-After`, reset the proxy or pick another exit, or remove the exclusive binding |
+| A key's `/v1/models` only lists anonymous models and signed-in models return **403 `key_account_forbidden`** | The key has "Allow all accounts" off with no accounts checked, or all checked accounts are disabled | Edit the key on the API Keys page and check at least one enabled cookie account |
+| Key B gets **403** for a video job created by Key A | Video jobs are isolated per key; only the creating key can access them | Use the key that created the job, or create a new job |
 | Panel diagnostics show **302 → `google.com/sorry/index`** | This exit IP is blocked by Google (after 80-180 requests, depending on connection strategy and exit quality) | Change exit / add proxies. **The block is hard, not probabilistic** (60 probes after a block, zero successes), so retrying in place is pointless |
 | Occasional empty responses, logged as an upstream refusal | Upstream transient refusal (`1155`). There is no predictable threshold — it correlates with neither rate, concurrency, nor cumulative count | Resend once and it usually works. **Lowering RPM does not help**: measured, it is unrelated to request rate |
 | Every request times out | This host can't reach `gemini.google.com` | Configure a proxy (panel or `--proxy`). Note that **`HTTPS_PROXY` is not read** |
