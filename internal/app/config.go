@@ -71,6 +71,10 @@ type Config struct {
 	StrictModelCooldownMin int `json:"strict_model_cooldown_min"`
 	// 流式保活间隔（秒），0 = 关（默认）。见 keepalive.go。
 	StreamKeepaliveSec int `json:"stream_keepalive_sec"`
+	// 空闲超时（秒，#81）：上游开流后连续这么多秒一个 chunk 都不来就掐断、当瞬时错误
+	// 重试。0 = 关（默认）。总超时（request_timeout_sec）管不到"首字节到了但之后挂着"，
+	// 这个补那个缺口。只老协议（StreamGenerate）生效，见 gemini.go 的 readBodyWithIdle。
+	StreamIdleTimeoutSec int `json:"stream_idle_timeout_sec"`
 }
 
 var (

@@ -79,6 +79,11 @@ type RuntimeConfig struct {
 	// StreamKeepaliveSec 是流式请求连续空闲多少秒就发一次保活（#70），0 = 关（默认）。
 	// 开了之后慢请求会先开流，失败只能在流里报错、HTTP 状态码锁成 200，见 keepalive.go。
 	StreamKeepaliveSec int `json:"stream_keepalive_sec"`
+	// StreamIdleTimeoutSec 是上游开流后连续多少秒收不到任何 chunk 就掐断重试（#81），
+	// 0 = 关（默认）。总超时（request_timeout_sec）是整体 deadline，"首字节 2 秒就到、
+	// 之后 200 多秒一个 chunk 不来"落在它的射程之外；这个盯帧间间隔，补那个缺口。掐断当
+	// 瞬时错误重试（像空响应 1155），重发通常就拿到内容。只老协议生效，见 readBodyWithIdle。
+	StreamIdleTimeoutSec int `json:"stream_idle_timeout_sec"`
 }
 
 const runtimeConfigKey = "runtime_config"
@@ -121,6 +126,7 @@ func initRuntimeConfig() {
 		StrictModel:            cfg.StrictModel,
 		StrictModelCooldownMin: cfg.StrictModelCooldownMin,
 		StreamKeepaliveSec:     cfg.StreamKeepaliveSec,
+		StreamIdleTimeoutSec:   cfg.StreamIdleTimeoutSec,
 	}
 	replaceRetiredDefault(&base)
 	if raw := kvGet(runtimeConfigKey); raw != "" {
@@ -182,6 +188,7 @@ func validateRuntimeConfig(c RuntimeConfig) error {
 		{"max_prompt_bytes", c.MaxPromptBytes, 0, 10000000},
 		{"strict_model_cooldown_min", c.StrictModelCooldownMin, 0, 10080},
 		{"stream_keepalive_sec", c.StreamKeepaliveSec, 0, 300},
+		{"stream_idle_timeout_sec", c.StreamIdleTimeoutSec, 0, 600},
 	} {
 		if r.v < r.min || r.v > r.max {
 			return fmt.Errorf("%s=%d 超出允许范围 [%d, %d]", r.name, r.v, r.min, r.max)

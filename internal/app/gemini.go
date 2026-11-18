@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	fhttp "github.com/bogdanfinn/fhttp"
@@ -845,7 +846,8 @@ func streamGenerateOnce(prompt, latest string, mc ModelConfig, pending []pending
 		if err != nil {
 			lastErr = err
 			// 出错话术不记进代理健康度：匿名直连也一样出，跟出口无关，算进去会误熔断。
-			if pickedOK && !errors.Is(err, errUpstreamFailureReply) {
+			// 空闲超时同理不记：首字节已经到了（出口通的），是上游开流后自己卡住，不是出口的锅。
+			if pickedOK && !errors.Is(err, errUpstreamFailureReply) && !errors.Is(err, errIdleTimeout) {
 				recordProxyResult(picked.ID, false, err.Error())
 			}
 			// 已经往客户端吐过内容就不能重试，否则会重复（思考链也算吐过）。
@@ -1074,6 +1076,7 @@ func setAuthUserHeaders(h map[string]string, authuser int) {
 func doGeminiRequest(endpoint, body string, headers map[string]string, proxyURL string,
 	onLine func(string) error) (int, []byte, int64, []string, error) {
 	sendAt := time.Now()
+	idle := time.Duration(rtCfg().StreamIdleTimeoutSec) * time.Second
 	if proxyURL != "" {
 		// 走 stdlib 的 http.ProxyURL，已知能过 socks5/socks5h。
 		req, err := http.NewRequest("POST", endpoint, strings.NewReader(body))
@@ -1090,7 +1093,7 @@ func doGeminiRequest(endpoint, body string, headers map[string]string, proxyURL 
 			return 0, nil, 0, nil, err
 		}
 		defer resp.Body.Close()
-		raw, ttfb, err := readBody(resp.Body, onLine, sendAt)
+		raw, ttfb, err := readBodyWithIdle(resp.Body, onLine, sendAt, idle)
 		if err != nil {
 			return resp.StatusCode, nil, ttfb, resp.Header.Values("Set-Cookie"), err
 		}
@@ -1111,7 +1114,7 @@ func doGeminiRequest(endpoint, body string, headers map[string]string, proxyURL 
 		return 0, nil, 0, nil, err
 	}
 	defer resp.Body.Close()
-	raw, ttfb, err := readBody(resp.Body, onLine, sendAt)
+	raw, ttfb, err := readBodyWithIdle(resp.Body, onLine, sendAt, idle)
 	if err != nil {
 		return resp.StatusCode, nil, ttfb, resp.Header.Values("Set-Cookie"), err
 	}
@@ -1129,12 +1132,21 @@ func doGeminiRequest(endpoint, body string, headers map[string]string, proxyURL 
 // start 必须是**请求发出前**的时刻，由调用方传入。放在本函数里取 time.Now()
 // 是不对的：那时 client.Do 已经返回、响应头甚至部分 body 都到了，测出来恒为 0。
 func readBody(r io.Reader, onLine func(string) error, start time.Time) ([]byte, int64, error) {
+	return readBodyActivity(r, onLine, start, nil)
+}
+
+// readBodyActivity 同 readBody，但每扫到一行先调一次 onActivity —— 空闲看门狗靠它
+// 记"最后一次收到数据的时刻"。onActivity 为 nil 时跟 readBody 完全一样。
+func readBodyActivity(r io.Reader, onLine func(string) error, start time.Time, onActivity func()) ([]byte, int64, error) {
 	var buf bytes.Buffer
 	sc := bufio.NewScanner(io.TeeReader(r, &buf))
 	// 单帧可能很大（实测见过 40 万字节的响应），默认 64KB 上限不够。
 	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	var ttfb int64 = -1
 	for sc.Scan() {
+		if onActivity != nil {
+			onActivity()
+		}
 		if ttfb < 0 {
 			ttfb = time.Since(start).Milliseconds()
 		}
@@ -1151,6 +1163,74 @@ func readBody(r io.Reader, onLine func(string) error, start time.Time) ([]byte, 
 		return buf.Bytes(), ttfb, err
 	}
 	return buf.Bytes(), ttfb, nil
+}
+
+// readBodyWithIdle 在 readBody 外面套一个空闲超时看门狗（#81）。
+//
+// 为什么要：总超时（request_timeout_sec）是整条请求的 deadline。上游"首字节 2 秒就到、
+// 之后 200 多秒一个 chunk 都不来"这种挂法落在它射程之外——首字节一到，整体 deadline
+// 还远着，请求就那么挂着，客户端只能等到自己超时（#81 实测 254 秒、输出 0）。空闲看门狗
+// 盯的是帧与帧之间隔了多久，超过 idle 就 Close 掉 body 打断阻塞的读取。
+//
+// 掐断后报 errIdleTimeout（瞬时错误、无条件重试）：空闲多半是上游抖动，重发通常就拿到
+// 内容，跟空响应 1155 同一套路。idle<=0 时不装看门狗，退回普通 readBody。
+//
+// 只给老协议（StreamGenerate）用：新协议 processSession 的下行长轮询本来就约 60 秒空闲
+// 一次、靠 AID 重连，空闲是正常的，装了会误杀。
+func readBodyWithIdle(body io.ReadCloser, onLine func(string) error, start time.Time, idle time.Duration) ([]byte, int64, error) {
+	if idle <= 0 {
+		return readBody(body, onLine, start)
+	}
+	var mu sync.Mutex
+	last := time.Now()
+	fired := false
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		tick := idle / 4
+		if tick > time.Second {
+			tick = time.Second
+		}
+		if tick < 50*time.Millisecond {
+			tick = 50 * time.Millisecond
+		}
+		t := time.NewTicker(tick)
+		defer t.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case now := <-t.C:
+				mu.Lock()
+				idleFor := now.Sub(last)
+				mu.Unlock()
+				if idleFor >= idle {
+					mu.Lock()
+					fired = true
+					mu.Unlock()
+					body.Close() // 打断阻塞在 Read 上的 Scan
+					return
+				}
+			}
+		}
+	}()
+	raw, ttfb, err := readBodyActivity(body, onLine, start, func() {
+		mu.Lock()
+		last = time.Now()
+		mu.Unlock()
+	})
+	close(stop)
+	<-done
+	mu.Lock()
+	f := fired
+	mu.Unlock()
+	if f {
+		// 看门狗 Close 导致的读错误（"use of closed connection"之类）对上层没意义，
+		// 统一报成空闲超时。
+		return raw, ttfb, errIdleTimeout
+	}
+	return raw, ttfb, err
 }
 
 // reasoningInLine 从单个 wrb.fr 行里取出思考链。
@@ -1270,6 +1350,11 @@ var errUpstreamFailureReply = errors.New("upstream returned a failure reply (inn
 // errUpstreamTimeout 标记新协议（processSession）等满 request_timeout_sec 的超时；
 // 老协议的超时由 http 客户端报出，靠 net.Error.Timeout() 认（见 isUpstreamTimeout）。
 var errUpstreamTimeout = errors.New("upstream timeout")
+
+// errIdleTimeout 标记上游开流后长时间不来 chunk、被空闲看门狗掐断（#81，见 readBodyWithIdle）。
+// 故意不让 isUpstreamTimeout 认它：空闲是瞬时抖动（跟空响应 1155 同类，重发通常就好），
+// 要无条件重试，而不是被 retry_on_timeout=关 一起挡掉（那是给"等满总超时多半还超时"用的）。
+var errIdleTimeout = errors.New("upstream idle timeout (no chunk within stream_idle_timeout_sec)")
 
 // isUpstreamTimeout 判断这次失败是不是上游超时（等满 request_timeout_sec 没收完）。
 // 两种 http 客户端（stdlib、tls-client 的 fhttp）超时都返回 Timeout()=true 的错误，
