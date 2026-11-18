@@ -58,8 +58,8 @@ func generateMusicToolDef() map[string]interface{} {
 }
 
 // mcpGenerateMedia 用媒体模型生成一次，返回 MCP 工具结果。
-func mcpGenerateMedia(model, prompt string, refs []string) (map[string]interface{}, error) {
-	_, mc, err := resolveModel(model)
+func mcpGenerateMedia(model, prompt string, refs []string, key *APIKey) (map[string]interface{}, error) {
+	_, mc, err := resolveModelForKey(model, key)
 	if err != nil {
 		return nil, err
 	}
@@ -166,10 +166,15 @@ func getVideoStatusToolDef() map[string]interface{} {
 }
 
 // mcpCreateVideo 跟 POST /v1/videos 同一套校验和任务：尺寸、首帧、全池额度用完时直接报错。
-func mcpCreateVideo(args map[string]interface{}) (map[string]interface{}, error) {
+func mcpCreateVideo(args map[string]interface{}, key *APIKey) (map[string]interface{}, error) {
 	prompt := strings.TrimSpace(getStr(args, "prompt"))
 	if prompt == "" {
 		return nil, fmt.Errorf("prompt 不能为空")
+	}
+	if base, ok := Models["gemini-video"]; !ok {
+		return nil, fmt.Errorf("video model unavailable")
+	} else if err := keyCanUseModel(key, base); err != nil {
+		return nil, err
 	}
 	size, err := videoSize(map[string]any{"size": getStr(args, "size")})
 	if err != nil {
@@ -186,7 +191,7 @@ func mcpCreateVideo(args map[string]interface{}) (map[string]interface{}, error)
 	if exhausted, reset := videoPoolExhausted(); exhausted {
 		return nil, fmt.Errorf("%s", videoPoolExhaustedError(reset))
 	}
-	return mcpVideoJobResult(startVideoJob("gemini-video", prompt, size, images), false), nil
+	return mcpVideoJobResult(startVideoJob("gemini-video", prompt, size, images, key), false), nil
 }
 
 // mcpVideoJobResult 把任务状态写成文本 JSON（跟 GET /v1/videos/{id} 同形状）；

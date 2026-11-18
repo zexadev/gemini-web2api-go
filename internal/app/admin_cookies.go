@@ -2,11 +2,13 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // keyCookieWants 是判断一条 cookie 是否"复制全了"要看的关键项。
@@ -51,24 +53,42 @@ func cookieAcctView(a CookieAccount) map[string]interface{} {
 	case a.LastOkAt == 0:
 		health = "unknown"
 	}
+	st := accountProxyStatus(a, time.Now())
+	available := a.Status == "enabled" && (!a.ProxyExclusive || st.State == "ok")
+	unavailableReason := ""
+	if !available {
+		if a.Status != "enabled" {
+			unavailableReason = "账号已停用"
+		} else {
+			unavailableReason = st.Reason
+			if unavailableReason == "" {
+				unavailableReason = "IP 不可用（" + st.State + "）"
+			}
+		}
+	}
 	return map[string]interface{}{
-		"id":           a.ID,
-		"label":        a.Label,
-		"status":       a.Status,
-		"health":       health,
-		"note":         a.Note,
-		"created_at":   a.CreatedAt,
-		"last_used_at": a.LastUsedAt,
-		"last_ok_at":   a.LastOkAt,
-		"last_error":   a.LastError,
-		"fail_count":   a.FailCount,
-		"cookie_count": len(names),
-		"key_cookies":  key,
-		"sapisid_tail": tail,
-		"has_1psidts":  nameSet["__Secure-1PSIDTS"],
-		"proxy_id":     a.ProxyID,
-		"proxy_name":   proxyNameByID(a.ProxyID),
-		"authuser":     a.AuthUser,
+		"id":                 a.ID,
+		"label":              a.Label,
+		"status":             a.Status,
+		"health":             health,
+		"note":               a.Note,
+		"created_at":         a.CreatedAt,
+		"last_used_at":       a.LastUsedAt,
+		"last_ok_at":         a.LastOkAt,
+		"last_error":         a.LastError,
+		"fail_count":         a.FailCount,
+		"cookie_count":       len(names),
+		"key_cookies":        key,
+		"sapisid_tail":       tail,
+		"has_1psidts":        nameSet["__Secure-1PSIDTS"],
+		"proxy_id":           a.ProxyID,
+		"proxy_name":         proxyNameByID(a.ProxyID),
+		"proxy_exclusive":    a.ProxyExclusive,
+		"proxy_state":        st.State,
+		"proxy_retry_after":  st.RetryAfterSec(),
+		"available":          available,
+		"unavailable_reason": unavailableReason,
+		"authuser":           a.AuthUser,
 	}
 }
 
@@ -204,10 +224,12 @@ func handleAdminCookieItem(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]interface{}{"status": next})
 	case http.MethodPatch:
 		var p struct {
-			Label    *string `json:"label"`
-			Note     *string `json:"note"`
-			Status   *string `json:"status"`
-			AuthUser *int    `json:"authuser"`
+			Label          *string `json:"label"`
+			Note           *string `json:"note"`
+			Status         *string `json:"status"`
+			AuthUser       *int    `json:"authuser"`
+			ProxyID        *int64  `json:"proxy_id"`
+			ProxyExclusive *bool   `json:"proxy_exclusive"`
 		}
 		body, _ := io.ReadAll(r.Body)
 		if err := json.Unmarshal(body, &p); err != nil {
@@ -243,6 +265,33 @@ func handleAdminCookieItem(w http.ResponseWriter, r *http.Request) {
 			}
 			if err := accountUpdateMeta(id, curLabel, curNote); err != nil {
 				writeJSON(w, 500, map[string]string{"error": err.Error()})
+				return
+			}
+		}
+		if p.ProxyID != nil || p.ProxyExclusive != nil {
+			cur := accountByID(id)
+			if cur == nil {
+				writeJSON(w, 404, map[string]string{"error": "account not found"})
+				return
+			}
+			proxyID := cur.ProxyID
+			exclusive := cur.ProxyExclusive
+			if p.ProxyID != nil {
+				proxyID = *p.ProxyID
+			}
+			if p.ProxyExclusive != nil {
+				exclusive = *p.ProxyExclusive
+			}
+			if proxyID == 0 {
+				exclusive = false
+			}
+			if err := accountBindProxy(id, proxyID, exclusive); err != nil {
+				var conflict *proxyBindingConflictError
+				if errors.As(err, &conflict) {
+					writeJSON(w, 409, map[string]string{"error": err.Error()})
+					return
+				}
+				writeJSON(w, 400, map[string]string{"error": err.Error()})
 				return
 			}
 		}

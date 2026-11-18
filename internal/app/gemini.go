@@ -106,6 +106,15 @@ type ModelConfig struct {
 	// Cont, when set, sends this request as the next turn of an existing Gemini
 	// conversation (used for video extension: "reply to the video").
 	Cont *ConvRef
+
+	// KeyID / KeyName / AllowedAccounts 是**请求期字段**，Models 表里的条目不填。
+	// 入站 API key 命中后由 withKeyAccess 填进来：
+	//   - KeyID=0 表示部署 Key / 无 key；
+	//   - AllowedAccounts=nil 表示允许全部账号，非 nil（含空 map）表示只允许其中
+	//     为 true 的账号。挑号、会话续接、视频任务都以它为准。
+	KeyID           int64
+	KeyName         string
+	AllowedAccounts map[int64]bool
 }
 
 // ConvRef identifies the turn to continue: conversation id, the previous turn's
@@ -314,26 +323,100 @@ func (e *RateLimitError) Error() string {
 }
 
 // acquireSlot 选一个有容量的 slot 给本次请求用。
-// 优先级：代理池里有容量的代理 → 直连。
-// 全满返回 *RateLimitError。
-//
-// 调用方拿到 (proxy, ok=true) 必须配 deferred releaseSlot()。
+// 这是没有账号上下文的包装（匿名/诊断）；正式请求用 acquireSlotForAccount。
 func acquireSlot(preferProxyID int64) (Proxy, bool, error) {
+	return acquireSlotFor(0, preferProxyID, 0)
+}
+
+// acquireSlotForAccount 按账号的绑定关系取出口：
+//   - 独占账号（ProxyExclusive）：只能用 proxy_id 那个出口，满/冷却/禁用/删除都
+//     直接失败，绝不换代理或直连；
+//   - 普通账号：优先绑定出口，但可以换其他共享出口；
+//   - nil：匿名，排除所有被独占的出口。
+//
+// 调用方拿到 ok=true 必须配 deferred releaseSlot()。
+func acquireSlotForAccount(a *CookieAccount) (Proxy, bool, error) {
+	if a == nil {
+		return acquireSlotFor(0, 0, 0)
+	}
+	require := int64(0)
+	if a.ProxyExclusive {
+		if a.ProxyID <= 0 {
+			return Proxy{}, false, accountUnavailableFromStatus(*a, accountProxyStatus(*a, time.Now()))
+		}
+		if st := accountProxyStatus(*a, time.Now()); st.State != "ok" {
+			return Proxy{}, false, accountUnavailableFromStatus(*a, st)
+		}
+		require = a.ProxyID
+	}
+	p, ok, err := acquireSlotFor(a.ID, a.ProxyID, require)
+	if ok {
+		return p, true, nil
+	}
+	if require > 0 {
+		// 预检查之后状态可能变了（另一个请求刚占满 slot）。重新读一次账号状态，
+		// 把“冷却/满/禁用/删除”的细节带给上层。
+		if fresh := accountByID(a.ID); fresh != nil {
+			return Proxy{}, false, accountUnavailableFromStatus(*fresh, accountProxyStatus(*fresh, time.Now()))
+		}
+	}
+	return p, false, err
+}
+
+// accountUnavailableFromStatus 把派生的出口状态翻成可返回给客户端的错误。
+func accountUnavailableFromStatus(a CookieAccount, st AccountProxyStatus) *AccountUnavailableError {
+	reason := "proxy_disabled"
+	switch st.State {
+	case "cooling":
+		reason = "proxy_cooling"
+	case "full":
+		reason = "proxy_full"
+	case "deleted":
+		reason = "proxy_deleted"
+	case "conflict":
+		reason = "proxy_conflict"
+	case "unbound":
+		reason = "proxy_conflict"
+	case "disabled":
+		reason = "proxy_disabled"
+	}
+	return &AccountUnavailableError{
+		Reason:       reason,
+		AccountID:    a.ID,
+		AccountLabel: accountDisplayName(&a),
+		ProxyID:      a.ProxyID,
+		ProxyName:    st.ProxyName,
+		RetryAfter:   st.RetryAfter,
+	}
+}
+
+// acquireSlotFor 是带账号上下文的底层选路。requireProxyID>0 时是硬约束，
+// 候选池里只有它，失败也不回退。
+func acquireSlotFor(accountID, preferProxyID, requireProxyID int64) (Proxy, bool, error) {
 	// 1. 先试代理池（如果配了）
 	proxyMu.RLock()
 	hasProxies := len(proxyCache) > 0
 	proxyMu.RUnlock()
 
 	if hasProxies {
-		if p, ok, reason := pickProxyPreferring(preferProxyID); ok {
+		if p, ok, reason := pickProxyFor(preferProxyID, accountID, requireProxyID); ok {
 			return p, true, nil
+		} else if requireProxyID > 0 {
+			// 独占账号：不换出口、不直连。细节由 acquireSlotForAccount 重新计算。
+			reasonCode := "proxy_cooling"
+			if reason == "concurrent" || reason == "rpm" || reason == "rph" || reason == "mixed" {
+				reasonCode = "proxy_full"
+			}
+			return Proxy{}, false, &AccountUnavailableError{
+				Reason: reasonCode, AccountID: accountID, ProxyID: requireProxyID,
+			}
 		} else if !rtCfg().FallbackDirect {
 			if reason == "unavailable" {
-				return Proxy{}, false, fmt.Errorf("proxy_unavailable: all configured proxies are disabled or in circuit-breaker cooldown")
+				return Proxy{}, false, fmt.Errorf("proxy_unavailable: all configured proxies are disabled, cooling down, or exclusively bound to another account")
 			}
 			return Proxy{}, false, &RateLimitError{Reason: reason, ProxyID: -1}
 		}
-		// 代理池里有代理但一个都用不上（限流满 / 全禁用 / 全熔断且没过冷却）。
+		// 代理池里有代理但一个都用不上（限流满 / 全禁用 / 全熔断且没过冷却 / 全被独占）。
 		// 默认**不退回直连** —— 配了代理池就意味着不想让上游看到本机 IP，
 		// 悄悄直连等于把这个前提废掉，而且日志上只是几条普通请求，很难发现。
 		// 要可用性优先于隐藏 IP 的部署可以打开 fallback_direct。
@@ -345,7 +428,12 @@ func acquireSlot(preferProxyID int64) (Proxy, bool, error) {
 		}
 	}
 
-	// 2. 没配代理池 → 用直连 slot（id=0）
+	// 2. 没配代理池 → 用直连 slot（id=0）。独占账号没有代理可绑，不能走这里。
+	if requireProxyID > 0 {
+		return Proxy{}, false, &AccountUnavailableError{
+			Reason: "proxy_deleted", AccountID: accountID, ProxyID: requireProxyID,
+		}
+	}
 	if ok, reason := trySlotAcquire(0); ok {
 		return Proxy{}, true, nil // ProxyID=0 表示直连
 	} else {
@@ -464,6 +552,12 @@ func streamGenerateOnce(prompt, latest string, mc ModelConfig, pending []pending
 		if a == nil || a.Status != "enabled" {
 			return &StreamResult{}, &pinnedAccountError{ID: mc.PinAccountID}
 		}
+		if !allowedByMap(mc.AllowedAccounts, a.ID) {
+			return &StreamResult{}, &KeyAccountForbiddenError{
+				KeyName: mc.KeyName, Model: mc.Upstream,
+				Detail: fmt.Sprintf("account #%d is not in this key's allowlist", a.ID),
+			}
+		}
 		acct = a
 	} else if !anonFirstEligible(mc, len(pending) > 0) {
 		a, s, err := pickAccountForModel(mc, exclude)
@@ -472,16 +566,17 @@ func streamGenerateOnce(prompt, latest string, mc ModelConfig, pending []pending
 		}
 		acct, skip = a, s
 	}
-	preferProxy := int64(0)
-	if acct != nil {
-		preferProxy = acct.ProxyID
-	}
 
 	// 出错时也要把「用了哪个号 / 哪个出口」带回去，否则失败记录里全是空白。
 	// picked 是拿到 slot 之后才填的，闭包捕获它，后面每次 attrib 都带上当时的出口。
 	var picked Proxy
 	var cookieID int64
 	var cookieLabel string
+	if acct != nil {
+		// 拿 slot 之前就记上归属：独占代理冷却/全满时 slot 拿不到，但失败记录里
+		// 仍然要能看出是哪个号。
+		cookieID, cookieLabel = acct.ID, accountDisplayName(acct)
+	}
 	attrib := func(err error) (*StreamResult, error) {
 		return &StreamResult{
 			AccountID: cookieID, AccountLabel: cookieLabel,
@@ -489,9 +584,14 @@ func streamGenerateOnce(prompt, latest string, mc ModelConfig, pending []pending
 		}, err
 	}
 
-	// 通过限流器拿一个 slot（代理或直连）。所有 slot 满 → 直接 429。
-	p, slotOK, slotErr := acquireSlot(preferProxy)
+	// 通过限流器拿一个 slot（代理或直连）。独占账号只能拿绑定出口，拿不到就
+	// 直接返回 AccountUnavailableError，绝不回退到别的 IP/直连。
+	p, slotOK, slotErr := acquireSlotForAccount(acct)
 	if !slotOK {
+		// 没有真正拿到 slot，只是把出口归属带进失败记录；不要 release。
+		if aue, ok := slotErr.(*AccountUnavailableError); ok {
+			picked.ID, picked.Name = aue.ProxyID, aue.ProxyName
+		}
 		return attrib(slotErr)
 	}
 	picked = p
@@ -521,13 +621,9 @@ func streamGenerateOnce(prompt, latest string, mc ModelConfig, pending []pending
 		if err == nil {
 			cookieStr, sapisid, xsrfToken = acct.Cookie, extractSAPISID(acct.Cookie), tok
 			authUser = acct.AuthUser
-			// 只在「还没绑过」或「绑的出口已经没了」时写绑定。
-			//
-			// 绝不因为"这次走的是别的出口"就覆盖：出口是按**本次第一个挑中的号**
-			// 的绑定选的，而挑号会换（新加的号 last_used_at=0 排在最前，撞上坏号
-			// 就会换）。拿别人的出口覆盖当前号的绑定，等于每次撞上坏号就把好号的
-			// 粘性打散一次 —— 实测就是这么散掉的。
-			if acct.ProxyID == 0 || !proxyUsableByID(acct.ProxyID) {
+			// 只在「还没绑过」「绑的出口已经没了」或「绑的出口其实是别人独占的」
+			// 时写绑定。独占账号永不自动改绑，见 shouldBindAccountProxy。
+			if shouldBindAccountProxy(acct, picked.ID) {
 				bindAccountProxy(acct.ID, picked.ID)
 			}
 			break
@@ -547,7 +643,7 @@ func streamGenerateOnce(prompt, latest string, mc ModelConfig, pending []pending
 						acct = fresh
 						cookieStr, sapisid, xsrfToken = fresh.Cookie, extractSAPISID(fresh.Cookie), tok2
 						authUser = fresh.AuthUser
-						if fresh.ProxyID == 0 || !proxyUsableByID(fresh.ProxyID) {
+						if shouldBindAccountProxy(fresh, picked.ID) {
 							bindAccountProxy(fresh.ID, picked.ID)
 						}
 						break
@@ -573,7 +669,20 @@ func streamGenerateOnce(prompt, latest string, mc ModelConfig, pending []pending
 		for id := range tried {
 			next[id] = true
 		}
-		acct, _ = pickCookieAccountExcept(next) // 取不到时返回 nil，循环自然结束
+		nextAcct, _ := pickCookieAccountFiltered(next, mc.AllowedAccounts)
+		if nextAcct == nil {
+			break
+		}
+		if !proxyCompatibleWithAccount(picked.ID, nextAcct) {
+			// 这个号必须用别的出口（独占在别的代理上，或当前出口被别人独占）。
+			// 当前 slot 已经按前一个号选好，不能硬把它按到这里；把失败号交给外层
+			// 排除，外层会释放 slot、重新挑号和出口。
+			return attrib(&AccountUnavailableError{
+				Reason: "proxy_conflict", AccountID: acct.ID, AccountLabel: accountDisplayName(acct),
+				ProxyID: picked.ID, ProxyName: picked.Name,
+			})
+		}
+		acct = nextAcct
 	}
 	if lastCookieErr != nil && cookieStr == "" {
 		if mc.PinAccountID > 0 {
@@ -1411,7 +1520,7 @@ type ProbeResult struct {
 
 // probeGemini 直接调 Gemini StreamGenerate（绕过限流），返回详细诊断。
 // 不写 db、不消耗限流 slot。
-func probeGemini(prompt, proxyURL string) ProbeResult {
+func probeGemini(prompt, proxyURL string, proxyID int64) ProbeResult {
 	res := ProbeResult{Impersonate: rtCfg().Impersonate}
 
 	inner := make([]interface{}, innerSlots)
@@ -1452,7 +1561,7 @@ func probeGemini(prompt, proxyURL string) ProbeResult {
 
 	// probe 是旁路探测，不回写 cookie 健康度：它的失败原因跟 cookie 无关。
 	// 但 at 必须带——否则挂了 cookie 之后连通性探测会一直报 400，假报故障。
-	cookieStr, sapisid := loadCookie()
+	cookieStr, sapisid := loadCookieForProxy(proxyID)
 	if tok, e := getXSRF(cookieStr, 0, proxyURL); e == nil && tok != "" {
 		form.Set("at", tok)
 		body = form.Encode()

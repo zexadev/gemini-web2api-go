@@ -80,6 +80,18 @@ func handleAdminVideoQuota(w http.ResponseWriter, r *http.Request) {
 // （配了代理池就不直连，除非开了 fallback_direct），也记进同一份单 IP 预算。
 // 优先用账号绑的出口；拿不到 slot 就报错，不排队等。
 func viaSlot(a CookieAccount, fn func(proxyURL string) error) error {
+	// 独占账号：固定走绑定出口，绕过熔断/容量判断，也不占 slot —— 这是管理端
+	// 只读统计，跟“检测”同一类诊断流量。
+	if a.ProxyExclusive {
+		if a.ProxyID <= 0 {
+			return fmt.Errorf("account #%d has an exclusive binding without a proxy", a.ID)
+		}
+		p, err := diagnosticProxy(a.ProxyID)
+		if err != nil {
+			return err
+		}
+		return fn(p.URL)
+	}
 	p, ok, err := acquireSlot(a.ProxyID)
 	if !ok {
 		return fmt.Errorf("no outbound slot: %w", err)

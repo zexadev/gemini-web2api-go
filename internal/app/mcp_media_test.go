@@ -10,7 +10,7 @@ import (
 func mcpCall(t *testing.T, method string, params any) map[string]interface{} {
 	t.Helper()
 	raw, _ := json.Marshal(params)
-	resp := dispatchMCP(&rpcRequest{JSONRPC: "2.0", ID: json.RawMessage("1"), Method: method, Params: raw})
+	resp := dispatchMCP(&rpcRequest{JSONRPC: "2.0", ID: json.RawMessage("1"), Method: method, Params: raw}, nil)
 	if resp == nil || resp.Error != nil {
 		t.Fatalf("%s: %+v", method, resp)
 	}

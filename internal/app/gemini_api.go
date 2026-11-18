@@ -284,6 +284,13 @@ func writeGeminiCallError(w http.ResponseWriter, err error) {
 			w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(e.RetryAfter.Seconds()))))
 		}
 		writeGeminiError(w, 429, e.Error())
+	case *AccountUnavailableError:
+		if e.RetryAfter > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(e.RetryAfter.Seconds()))))
+		}
+		writeGeminiError(w, e.HTTPStatus(), e.Error())
+	case *KeyAccountForbiddenError:
+		writeGeminiError(w, e.HTTPStatus(), e.Error())
 	case *PromptTooLongError:
 		writeGeminiError(w, 400, e.Error())
 	case *RateLimitError:
@@ -314,7 +321,7 @@ func handleGeminiModels(w http.ResponseWriter, r *http.Request) {
 		writeGeminiError(w, 405, "method not allowed")
 		return
 	}
-	all := availableModels()
+	all := availableModelsForKey(keyFromContext(r.Context()))
 	names := make([]string, 0, len(all))
 	for n := range all {
 		names = append(names, n)
@@ -352,8 +359,12 @@ func handleGeminiModelItem(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case action == "" && r.Method == "GET":
-		name, c, err := resolveModel(model)
+		name, c, err := resolveModelForKey(model, keyFromContext(r.Context()))
 		if err != nil {
+			if status, ok := apiAccountErrorStatus(err); ok {
+				writeGeminiError(w, status, err.Error())
+				return
+			}
 			writeGeminiError(w, 404, err.Error())
 			return
 		}
@@ -486,8 +497,11 @@ func prepareGemini(w http.ResponseWriter, r *http.Request, model string) (*gemin
 	if !ok {
 		return nil, false
 	}
-	modelName, modelCfg, err := resolveModel(model)
+	modelName, modelCfg, err := resolveModelForKey(model, keyFromContext(r.Context()))
 	if err != nil {
+		if writeAPIAccountError(w, err) {
+			return nil, false
+		}
 		writeGeminiError(w, 400, err.Error())
 		return nil, false
 	}

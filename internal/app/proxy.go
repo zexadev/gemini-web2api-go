@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -244,26 +245,41 @@ func pickProxyWithCapacity() (Proxy, bool) {
 }
 
 // pickProxyPreferring 优先挑 preferID 那个出口，它不可用或没容量时才轮询别的。
-//
-// 为什么要粘住：cookie 池和代理池各自独立轮转的话，同一个 Google 账号会在几十个
-// 出口 IP 之间来回跳 —— 这在 Google 眼里正是账号共享的特征。粘不住时宁可换出口
-// 也不排队等，可用性优先。
-// When no route can be selected, reason is either a true slot limit
-// (concurrent/rpm/rph/mixed), or "unavailable" when all proxy circuits
-// are disabled or cooling down. Do not conflate those cases.
+// 这是给没有账号上下文的诊断路径用的包装；正式请求走 pickProxyFor。
 func pickProxyPreferring(preferID int64) (Proxy, bool, string) {
+	return pickProxyFor(preferID, 0, 0)
+}
+
+// pickProxyFor 是带账号上下文的选路：
+//   - requireProxyID > 0：只能用这个出口（独占账号），不可用/满就失败，绝不回退；
+//   - requesterAccountID > 0：可以优先用自己绑定的出口，但不能用别人独占的出口；
+//   - requesterAccountID = 0（匿名）：排除所有被独占的出口。
+//
+// 为什么不持 proxyMu 做过滤：过滤要读 bindingMu，而 accountProxyStatus 会反过来
+// 先读 bindingMu 再读 proxyMu。两把读锁同时等对方释放时，只要有人排队写就会死锁，
+// 所以这里先复制一份代理快照再释放 proxyMu。
+func pickProxyFor(preferID, requesterAccountID, requireProxyID int64) (Proxy, bool, string) {
 	proxyMu.RLock()
-	defer proxyMu.RUnlock()
-	if len(proxyCache) == 0 {
+	cached := make([]Proxy, len(proxyCache))
+	copy(cached, proxyCache)
+	proxyMu.RUnlock()
+	if len(cached) == 0 {
 		return Proxy{}, false, "unavailable"
 	}
 	now := time.Now().Unix()
 	cooldown := rtCfg().ProxyCooldownMin
 	var pool []Proxy
-	for _, p := range proxyCache {
-		if proxyUsable(p, now, cooldown) {
-			pool = append(pool, p)
+	for _, p := range cached {
+		if requireProxyID > 0 && p.ID != requireProxyID {
+			continue
 		}
+		if !proxyUsable(p, now, cooldown) {
+			continue
+		}
+		if !proxyAllowedForAccount(p.ID, requesterAccountID) {
+			continue
+		}
+		pool = append(pool, p)
 	}
 	if len(pool) == 0 {
 		return Proxy{}, false, "unavailable"
@@ -299,6 +315,50 @@ func pickProxyPreferring(preferID int64) (Proxy, bool, string) {
 		}
 	}
 	return Proxy{}, false, blockedReason
+}
+
+// proxyByID 从内存快照里取一条代理。找不到返回 false（已删除或还没加载）。
+func proxyByID(id int64) (Proxy, bool) {
+	if id <= 0 {
+		return Proxy{}, false
+	}
+	proxyMu.RLock()
+	defer proxyMu.RUnlock()
+	for _, p := range proxyCache {
+		if p.ID == id {
+			return p, true
+		}
+	}
+	return Proxy{}, false
+}
+
+// proxyCooldownRemaining 返回熔断冷却还剩多久；不在冷却返回 0。
+func proxyCooldownRemaining(p Proxy, now int64) time.Duration {
+	if !p.Enabled || p.FailCount < proxyFailThreshold {
+		return 0
+	}
+	mins := rtCfg().ProxyCooldownMin
+	if mins <= 0 {
+		return 0
+	}
+	until := p.LastUsed + int64(mins)*60
+	if until <= now {
+		return 0
+	}
+	return time.Duration(until-now) * time.Second
+}
+
+// diagnosticProxy 取一个代理给管理员诊断用：不看 enabled/熔断/容量，也不占 slot。
+// proxyID=0 表示直连。代理已删除时返回错误，调用方不要再退回直连。
+func diagnosticProxy(proxyID int64) (Proxy, error) {
+	if proxyID <= 0 {
+		return Proxy{}, nil
+	}
+	p, ok := proxyByID(proxyID)
+	if !ok {
+		return Proxy{}, fmt.Errorf("proxy #%d not found (deleted)", proxyID)
+	}
+	return p, nil
 }
 
 // recordProxyResult 回写一次请求的结果，并同步更新内存里那一条。
@@ -340,12 +400,49 @@ func recordProxyResult(id int64, success bool, errStr string) {
 
 // CRUD ───────────────────────────────────────────────────────────────────────
 
+// proxyDuplicateURLError 表示同一个物理出口被建成了两条代理。
+// 允许重复的话，同一条 IP 会拿到两个独立 slot，既绕过单 IP 限额，也让“独占 IP”
+// 变得没有意义（ID 1 被独占，ID 2 仍然能打同一个 IP）。
+type proxyDuplicateURLError struct {
+	URL        string
+	ExistingID int64
+}
+
+func (e *proxyDuplicateURLError) Error() string {
+	return fmt.Sprintf("代理 URL 已存在（#%d）：%s", e.ExistingID, e.URL)
+}
+
+// proxyExclusiveDeleteError 表示代理被某个账号独占，不能直接删。
+type proxyExclusiveDeleteError struct {
+	ProxyID      int64
+	AccountID    int64
+	AccountLabel string
+}
+
+func (e *proxyExclusiveDeleteError) Error() string {
+	return fmt.Sprintf("代理 #%d 被账号 %s 独占，请先到 Cookie 池解绑", e.ProxyID, e.AccountLabel)
+}
+
+// proxyFindByURL 按 URL 查重（忽略大小写和首尾空白），excludeID 用于更新时跳过自己。
+func proxyFindByURL(url string, excludeID int64) (Proxy, bool) {
+	want := strings.TrimSpace(url)
+	for _, p := range listProxies() {
+		if p.ID != excludeID && strings.EqualFold(strings.TrimSpace(p.URL), want) {
+			return p, true
+		}
+	}
+	return Proxy{}, false
+}
+
 func proxyCreate(name, url string, weight int) (int64, error) {
 	if name == "" || url == "" {
 		return 0, errors.New("name and url required")
 	}
 	if err := validateProxyURL(url); err != nil {
 		return 0, err
+	}
+	if existing, ok := proxyFindByURL(url, 0); ok {
+		return 0, &proxyDuplicateURLError{URL: url, ExistingID: existing.ID}
 	}
 	if weight <= 0 {
 		weight = 1
@@ -376,6 +473,14 @@ func validateProxyURL(s string) error {
 }
 
 func proxyUpdate(id int64, name, url string, enabled *bool, weight *int) error {
+	if url != "" {
+		if err := validateProxyURL(url); err != nil {
+			return err
+		}
+		if existing, ok := proxyFindByURL(url, id); ok {
+			return &proxyDuplicateURLError{URL: url, ExistingID: existing.ID}
+		}
+	}
 	q := `UPDATE proxies SET `
 	args := []interface{}{}
 	parts := []string{}
@@ -412,9 +517,19 @@ func proxyUpdate(id int64, name, url string, enabled *bool, weight *int) error {
 }
 
 func proxyDelete(id int64) error {
+	if owner, ok := exclusiveOwnerOfProxy(id); ok {
+		label := fmt.Sprintf("#%d", owner)
+		if a := accountByID(owner); a != nil {
+			label = accountDisplayName(a)
+		}
+		return &proxyExclusiveDeleteError{ProxyID: id, AccountID: owner, AccountLabel: label}
+	}
 	_, err := getDB().Exec(`DELETE FROM proxies WHERE id=?`, id)
 	if err == nil {
+		// 非独占的粘性绑定清掉，避免留下悬空 proxy_id；下次成功会重新绑定。
+		_, _ = getDB().Exec(`UPDATE accounts SET proxy_id=0 WHERE proxy_id=? AND proxy_exclusive=0`, id)
 		loadProxies()
+		loadAccountProxyBindings()
 	}
 	return err
 }

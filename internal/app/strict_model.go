@@ -77,11 +77,18 @@ func coolingAccounts(mc ModelConfig) (map[int64]bool, time.Duration) {
 	return out, soonest
 }
 
-// pickAccountForModel 挑号，跳过 exclude（本次请求里已经被降级过的）和正在为 mc 冷却的号。
-// 返回的 skip 是两者合集，换号重取时要接着用它。
+// pickAccountForModel 挑号，跳过：
+//   - exclude（本次请求里已经被降级/出口不可用过的）；
+//   - strict_model 的（账号, 模型）冷却；
+//   - 独占代理当前不可用（熔断/禁用/删除/容量满）的账号；
+//   - Key 白名单之外的账号。
 //
-// 池里有号但全被跳过时报 *ModelDowngradedError，而不是返回 nil 让请求退成匿名：
-// 匿名对登录模型同样是降级，那正是开 strict_model 想避免的。
+// 返回的 skip 是这些集合的并集，换号重取时要接着用它。
+//
+// 池里有号但全被跳过时报错，而不是返回 nil 让请求退成匿名：
+//   - 出口原因优先报 *AccountUnavailableError（带最早解冻时间）；
+//   - 否则报 *ModelDowngradedError（保持 strict_model 原行为）；
+//   - Key 白名单一个 enabled 账号都没有时报 *KeyAccountForbiddenError。
 func pickAccountForModel(mc ModelConfig, exclude map[int64]bool) (*CookieAccount, map[int64]bool, error) {
 	skip := map[int64]bool{}
 	for id := range exclude {
@@ -89,31 +96,113 @@ func pickAccountForModel(mc ModelConfig, exclude map[int64]bool) (*CookieAccount
 	}
 	var soonest time.Duration
 	if rtCfg().StrictModel && mc.Upstream != "" {
-		var cooling map[int64]bool
-		cooling, soonest = coolingAccounts(mc)
+		cooling, d := coolingAccounts(mc)
 		for id := range cooling {
 			skip[id] = true
 		}
+		soonest = d
 	}
-	if a, ok := pickCookieAccountExcept(skip); ok {
+
+	// 独占账号的出口状态在挑号阶段就判掉：这样同一次请求可以直接换下一个号，
+	// 而不是先拿到 slot 再发现代理冷却。真正的 slot 占用仍在 acquireSlotForAccount。
+	proxyInfo := unavailableExclusiveAccounts(mc.AllowedAccounts)
+	for id := range proxyInfo.skip {
+		skip[id] = true
+	}
+
+	if a, ok := pickCookieAccountFiltered(skip, mc.AllowedAccounts); ok {
 		return a, skip, nil
 	}
-	if len(skip) > 0 && hasCookie() {
+	if proxyInfo.sampleID > 0 {
+		err := accountUnavailableFromStatus(proxyInfo.sample, proxyInfo.status)
+		err.PoolExhausted = true
+		return nil, skip, err
+	}
+	if len(skip) > 0 && mc.Upstream != "" && hasCookieForKey(keyForAllowed(mc)) {
 		return nil, skip, &ModelDowngradedError{Requested: mc.Upstream, RetryAfter: soonest}
 	}
+	if mc.AllowedAccounts != nil && !hasCookieForKey(keyForAllowed(mc)) {
+		return nil, skip, &KeyAccountForbiddenError{
+			KeyName: mc.KeyName, Model: mc.Upstream,
+			Detail: "no enabled account is allowed for this key",
+		}
+	}
+	if mc.AllowedAccounts != nil && modelNeedsLogin(mc) {
+		// 受限 key + 需要登录的模型：允许的号都被 exclude/冷却掉了，不能退成匿名。
+		// 媒体模型没有 Upstream，上面的 ModelDowngraded 分支覆盖不到它们。
+		return nil, skip, &AccountUnavailableError{
+			Reason: "account_disabled", PoolExhausted: true,
+			Detail: "no account allowed for this API key is currently available",
+		}
+	}
 	return nil, skip, nil
+}
+
+// keyForAllowed 用请求期的白名单构造一个只用于 hasCookieForKey 的临时 key。
+// AllowAll=false 时 Accounts 必须是非 nil 的 map，才能表达“一个都不允许”。
+func keyForAllowed(mc ModelConfig) *APIKey {
+	if mc.AllowedAccounts == nil {
+		return nil
+	}
+	return &APIKey{Name: mc.KeyName, AllowAll: false, Accounts: mc.AllowedAccounts}
+}
+
+// exclusiveSkipInfo 记录被出口状态跳过的独占账号，用于挑不到号时生成错误。
+type exclusiveSkipInfo struct {
+	skip     map[int64]bool
+	sampleID int64
+	sample   CookieAccount
+	status   AccountProxyStatus
+}
+
+// unavailableExclusiveAccounts 找出当前 enabled 且被 key 允许、但独占出口不可用的账号。
+// 只看独占账号；普通粘性绑定不影响可用性（它可以换出口）。
+func unavailableExclusiveAccounts(allowed map[int64]bool) exclusiveSkipInfo {
+	info := exclusiveSkipInfo{skip: map[int64]bool{}}
+	now := time.Now()
+	for _, a := range accountList() {
+		if a.Status != "enabled" || !a.ProxyExclusive {
+			continue
+		}
+		if !allowedByMap(allowed, a.ID) {
+			continue
+		}
+		st := accountProxyStatus(a, now)
+		if st.State == "ok" {
+			continue
+		}
+		info.skip[a.ID] = true
+		if info.sampleID == 0 {
+			info.sampleID, info.sample, info.status = a.ID, a, st
+		}
+	}
+	return info
 }
 
 // retryOnAnotherAccount 判断一次降级要不要换号重来，要的话先把这个号记进冷却和 exclude。
 // 匿名降级没号可换；已经吐过内容的不能重来（客户端会收到两遍）。
 func retryOnAnotherAccount(res *StreamResult, err error, mc ModelConfig, exclude map[int64]bool) bool {
 	var mde *ModelDowngradedError
-	if !errors.As(err, &mde) || mde.AccountID == 0 {
+	var aue *AccountUnavailableError
+	switch {
+	case errors.As(err, &mde):
+		if mde.AccountID == 0 {
+			return false
+		}
+		markDowngraded(mde.AccountID, mc)
+		exclude[mde.AccountID] = true
+		logf("[strict_model] 账号 #%d 在 %s 上被降级成 %s", mde.AccountID, mc.Upstream, mde.Reported)
+	case errors.As(err, &aue):
+		// 出口不可用/独占冲突：同一个号重试还是同一个出口，直接换下一个号。
+		// pinned（视频续写、会话续接）不能换号，交给上层报错。
+		if aue.AccountID == 0 || mc.PinAccountID > 0 || !aue.RetryableWithAnotherAccount() {
+			return false
+		}
+		exclude[aue.AccountID] = true
+		logf("[proxy] 账号 #%d 的出口不可用（%s），换下一个号", aue.AccountID, aue.Reason)
+	default:
 		return false
 	}
-	markDowngraded(mde.AccountID, mc)
-	exclude[mde.AccountID] = true
-	logf("[strict_model] 账号 #%d 在 %s 上被降级成 %s", mde.AccountID, mc.Upstream, mde.Reported)
 	return res == nil || (res.Emitted == "" && res.EmittedReasoning == "")
 }
 

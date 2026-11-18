@@ -28,6 +28,7 @@
 - [Gemini 原生接口](#gemini-原生接口)
 - [MCP 工具](#mcp-工具)
 - [管理面板](#管理面板)
+- [API Keys（多把 Key）](#api-keys多把-key)
 - [模型](#模型)
 - [配置](#配置)
 - [Cookie（可选）](#cookie可选)
@@ -85,7 +86,7 @@
   - 视频额度换号：某个账号视频额度用完后，新视频会跳过它直到额度重置；任务落到这样的账号时会在同一个任务里换下一个账号。所有账号都在冷却时，`POST /v1/videos` 直接回 `429`（`code: video_quota_exhausted`，带 `Retry-After`），进行中的任务以 `retry_after=N`（距最早重置的秒数）失败
   - `GET /admin/api/video-quota`（管理接口）：每个账号滚动 5 小时窗口内的视频用量、状态和重置时间，读取各账号自己的 Gemini 历史（只读；拒绝消息里带 Google 的重置时间时用它，否则按首个视频 + 5 小时估算）。每次刷新每个号约 2 + N 次上游请求（N = 近几小时有更新的会话数，没变的走缓存），走代理池、计入单 IP 预算，别频繁轮询。开着 `temporary_chat` 或 `auto_delete_conversation` 时本服务生成的视频不在历史里，计数会偏少（响应里有 `history_incomplete` 提示）
 - 真流式：上游每出一帧就转发增量，`/v1/chat/completions`、`/v1/responses`、带 `tools` 的请求都是（工具调用块收完整再发）
-- Bearer token / `x-api-key` / `x-goog-api-key` 鉴权，key 可在面板轮换
+- Bearer token / `x-api-key` / `x-goog-api-key` / `?key=` 鉴权；支持**多把 API Key**，每把可以限制可用账号（见 [API Keys](#api-keys多把-key)）
 - `usage` 用 tiktoken 算，`reasoning_tokens` 单列不计入 `completion_tokens`
 
 **模型**
@@ -99,13 +100,14 @@
 **不被拦 / 跑得久**
 - utls 模拟 Chrome 146 真 TLS 指纹，不是 SDK 默认握手
 - 每个出口 IP 独立限流：并发 / RPM / RPH 三档
-- 代理池：运行时增删改、失败熔断、轮转调度，每个代理是独立限流槽
-- Cookie 池：多个 Google 账号按最久未用优先轮转，自动续期 + 保活，每个账号粘住自己的出口
+- 代理池：运行时增删改、失败熔断、轮转调度，每个代理是独立限流槽；可以把某个 IP **独占绑定**给一个 Cookie，其他账号/匿名不再使用它
+- Cookie 池：多个 Google 账号按最久未用优先轮转，自动续期 + 保活，每个账号粘住自己的出口；独占绑定的账号在 IP 冷却/满额时一起暂不可用
+- 多 Key：每把 Key 可以限制可用 Cookie 账号；异步视频任务按 Key 隔离
 
 **运维**
 - 单二进制，交叉编译 6 平台；容器镜像基于 distroless
 - SQLite 持久化：30 天请求明细 + 永久聚合统计（可选 MySQL / PostgreSQL，设 `SQL_DSN` 即可）
-- 中文管理面板：概览 / 请求记录 / 代理池 / Cookie 池 / 设置 / 关于，配置改完即时生效，有新版本时顶栏提示
+- 中文管理面板：概览 / 请求记录 / 代理池 / Cookie 池 / API Keys / 设置 / 关于，配置改完即时生效，有新版本时顶栏提示
 - **prompt 和回复内容永不入库**，只存元数据（长度、耗时、模型、状态）
 
 ## 快速开始
@@ -181,7 +183,7 @@ gemini-web2api-go v4.29.0
   Retry:       3x / 2s
 ```
 
-首次启动会自动生成 API key（banner 里是打码的，完整值在管理面板「设置」页）。
+首次启动会自动生成 API key（banner 里是打码的，完整值在管理面板「API Keys」页）。
 
 ### 调用
 
@@ -226,7 +228,7 @@ curl.exe --% http://127.0.0.1:8083/v1/chat/completions -H "Content-Type: applica
 | 字段 | 值 |
 |---|---|
 | Base URL / API 地址 | `http://localhost:8083/v1`（部分客户端只要 `http://localhost:8083`，会自己拼 `/v1`） |
-| API Key | 管理面板「设置」页里的那个 `sk-gemini-…` |
+| API Key | 管理面板「API Keys」页里的 `sk-gemini-…`（多把 Key 时选对应那把） |
 | 模型 | `gemini-3.6-flash` |
 
 **newapi / one-api 建渠道**：类型选 OpenAI，Base URL 填 `http://localhost:8083`（跟 newapi 同在
@@ -319,9 +321,10 @@ Claude Code / Cursor 这类 MCP 客户端直接调用。
 
 - **概览** — 24h KPI + 请求量/P50 延迟双轴趋势图 + 模型/代理分组统计 + IP 限流用量 + 一键连通性诊断
 - **请求记录** — 明细列表（仅元数据，无 prompt/response 内容），状态/模型筛选 + 分页
-- **代理池** — 运行时增删改 + 启用/禁用 + 失败次数熔断（每代理是独立 IP slot）
-- **Cookie 池** — 导入多个 Google 登录态账号，请求按**最久未用优先**自动轮转。每个账号一键「检测」是否仍是登录态，**失效的账号标红提示重导**；自动换发 `__Secure-1PSIDTS` + 每 10 分钟保活；每个账号粘住自己的出口；浏览器里登了多个 Google 号时，用「账号序号」指定用哪一个。列表只显示脱敏摘要（cookie 数 / 关键项 / SAPISID 末 4 位 / 失败次数）
-- **设置** — 运行时配置表单（保存即生效）+ API Key 轮换 + 部署期配置只读展示
+- **代理池** — 运行时增删改 + 启用/禁用 + 失败次数熔断（每代理是独立 IP slot）；「专属账号」列显示被哪个 Cookie 独占，熔断时显示冷却倒计时
+- **Cookie 池** — 导入多个 Google 登录态账号，请求按**最久未用优先**自动轮转。每个账号一键「检测」是否仍是登录态，**失效的账号标红提示重导**；自动换发 `__Secure-1PSIDTS` + 每 10 分钟保活；每个账号粘住自己的出口；浏览器里登了多个 Google 号时，用「账号序号」指定用哪一个。可以把某个出口**独占绑定**给账号；IP 冷却/满额时账号显示「IP 冷却中，暂不可用」。列表只显示脱敏摘要（cookie 数 / 关键项 / SAPISID 末 4 位 / 失败次数）
+- **API Keys** — 多把 Key，各自限制可用账号；部署 Key（`--api-key` / `API_KEY`）只读并存；列表脱敏，创建/轮换/「显示」时给出完整值
+- **设置** — 运行时配置表单（保存即生效）+ 部署期配置只读展示
 - **关于** — 当前版本 / 最新版本 + 手动检查更新；有新版时列出更新说明、Docker 升级命令和各平台二进制下载链接（不会自动替换二进制，升级仍由你来做）
 
 面板前端是单个 HTML，Chart.js 随二进制 embed，**不走 CDN**——内网/离线部署也能开。
@@ -330,6 +333,38 @@ Claude Code / Cursor 这类 MCP 客户端直接调用。
 转发到本服务的 `/` 就能用 `https://example.com/gemini/admin` 打开。（访问不带尾斜杠的
 `/admin` 会 301 到 `admin/`——相对地址按文档 URL 的目录解析，两种形式差一层，统一一下
 才不会解析错。）
+
+## API Keys（多把 Key）
+
+面板「API Keys」页可以创建多把 Key。鉴权方式不变：`Authorization: Bearer <key>`、
+`x-api-key`、`x-goog-api-key` 或 `?key=` 都认。
+
+**Key 的来源和优先级**
+- `--api-key` / `API_KEY` 提供的是**部署 Key**：永远启用、允许全部账号，面板只读
+  （不能改值/删除/轮换），不落库；它和面板新增的 Key 同时有效。
+- 面板新增的 Key 存在数据库里，可以命名、启用/停用、轮换、删除。
+- 升级前的老 Key 存在 `kv("api_key")`，启动时自动迁移成一条「默认 Key」；原 kv
+  值保留，回滚到旧版仍可用。旧接口 `GET/POST/PATCH /admin/api/apikey` 继续操作
+  默认 Key。
+- 全新部署且没有部署 Key 时，自动生成一条默认 Key，保持“开箱即用”。
+
+**账号白名单**
+- 默认 `allow_all=1`：这把 Key 可以使用池里的全部账号。
+- 关闭后只使用勾选的 Cookie 账号。一个都不勾是合法的：这把 Key 只能走匿名能力，
+  需要登录的模型会从它的 `/v1/models` 列表里隐藏，请求直接返回
+  `403 key_account_forbidden`。
+- 模型列表按 Key 过滤；同一把 Key 的请求只会在它允许的账号里轮转。
+- 多轮会话和异步视频任务都带 Key 身份：不同 Key 不会续接到彼此的服务端会话；
+  视频任务只有创建它的 Key 能查询/下载/续写（403）。
+
+**管理接口**
+- `GET/POST /admin/api/keys`
+- `PATCH/DELETE /admin/api/keys/{id}`
+- `POST /admin/api/keys/{id}/rotate`（换随机 Key）、`/toggle`、`/reveal`
+- 列表只返回脱敏值；完整 Key 只在创建/轮换/`reveal` 时返回。
+
+**限制**：DB 里的 Key 是明文保存（跟 Cookie 一样），面板列表默认脱敏；能打开管理
+面板的人本来就能 reveal，所以 `ADMIN_TOKEN` 要设好。
 
 ## 模型
 
@@ -500,10 +535,11 @@ curl http://127.0.0.1:8083/v1/chat/completions \
 
 | 项 | 说明 |
 |---|---|
-| API Key | 首次启动自动生成，面板里可轮换或自定义 |
+| API Key | 首次启动自动生成默认 Key；面板「API Keys」页可新增多把、限制可用账号、轮换/停用/删除。部署 Key（`--api-key` / `API_KEY`）只读并存 |
 | Google Cookie | 面板「Cookie 池」页导入，保存即生效，可以导入多个账号。池里有账号后 `gemini-4-hydrogen` 等要登录的模型才会出现在模型列表里 |
 
-两者都存在数据库里。已保存的值不回显（cookie 只显示识别到几个、关键项齐不齐）。
+两者都存在数据库里。API Key 列表只显示脱敏值，创建/轮换/「显示」时才返回完整值；
+cookie 永不回显，只显示识别到几个、关键项齐不齐。
 
 ### 部署期配置 → `docker-compose.yml`
 
@@ -515,7 +551,8 @@ curl http://127.0.0.1:8083/v1/chat/completions \
 | 数据库路径 | `volumes` + `command: --db` |
 | `ADMIN_TOKEN` | `environment`，面板登录 token |
 
-`API_KEY` 环境变量会锁死 API key（面板改不了），用于不希望运行时被改的部署。
+`API_KEY` 环境变量会锁死**部署 Key**（面板改不了它的值/不能删），但面板仍可新增
+其他 DB Key；两者同时有效。
 
 `--proxy` 和 `--cookie-file` 是**播种参数**，不是第二套配置：启动时把值导入代理池 /
 Cookie 池（按 URL、cookie 内容去重），之后一律从面板管理。改了重启即生效。
@@ -536,7 +573,7 @@ Cookie 池（按 URL、cookie 内容去重），之后一律从面板管理。�
 | `--config` | 指定 `config.json` 路径 |
 | `--db` | SQLite 路径，默认 `./data/gemini.db` |
 | `--admin-token` | 面板登录 token，留空 = 面板不鉴权（只有绑 127.0.0.1 才可接受） |
-| `--api-key` | 锁定 `/v1/*` 的 key（面板改不了），等价于 `API_KEY` 环境变量 |
+| `--api-key` | 锁定部署 Key 的值（面板改不了），等价于 `API_KEY` 环境变量；不影响面板新增其他 DB Key |
 | `--cookie-file` | 启动时把文件里的 cookie 导入 Cookie 池 |
 | `--proxy` | 启动时把这个代理导入代理池 |
 | `--impersonate` | TLS 指纹档位 |
@@ -594,6 +631,21 @@ JSON 形式 `{"cookie": "SID=...; ...", "sapisid": "..."}` 也吃。带 `SAPISID
 **每个账号会粘住自己的出口**。cookie 池和代理池如果各自独立轮转，同一个 Google 账号会
 从几十个不同 IP 发出请求，这在 Google 眼里是账号共享的典型特征。账号首次用到哪个出口就
 绑定下来，出口不可用了才换。
+
+**独占绑定**：在 Cookie 池「编辑」里给账号选一个出口并勾选「独占此 IP」后，语义从
+“优先”变成“只允许”：
+
+- 这个代理只给该账号用，其他账号和匿名请求都不会被调度到它；
+- 请求、保活、「检测」、视频额度统计都从绑定出口发出，不再漂到别的 IP 或直连；
+- 代理被禁用/删除/熔断冷却，或该 IP 的并发/RPM/RPH 已满时，账号显示
+  「IP 冷却中，暂不可用」，请求返回 `429 proxy_cooling`（带 `Retry-After`），
+  **不会**换别的出口；
+- 冷却期间「检测」和「保活」仍走绑定 IP，绕过调度限制、不占该 IP 的并发/RPM/RPH
+  名额；失败只记日志，不改变冷却状态；
+- 被独占的代理不能直接删除（409），先去 Cookie 池解绑。
+
+不勾「独占」的 `proxy_id` 仍然是原来的粘性偏好：满了/坏了可以换别的共享出口。
+同一个代理 URL 不能建两条代理（否则独占会绕过），`proxyCreate`/`proxyUpdate` 会拒绝。
 
 **浏览器里登了多个 Google 号？填「账号序号」。** 同一个浏览器里的多个号共用一份 cookie，
 导出的那串 cookie 能当其中任何一个号用，具体是哪个号由请求地址决定（`/u/1/` 是第二个号）。
@@ -718,7 +770,10 @@ internal/app/              全部实现
   app.go                   flag 解析 + 路由注册 + 启动
   config.go                配置加载 + 默认值
   client.go                tls-client (chrome146) + stdlib (走代理) 双 client
-  gemini.go                模型表 + 80 槽 payload + 模型 header + StreamGenerate + wrb.fr 解析
+  gemini.go                模型表 + 80 槽 payload + 模型 header + StreamGenerate + wrb.fr 解析；独占出口调度
+  keys.go                  多 API Key 存储/鉴权/账号白名单/旧 kv 迁移
+  admin_keys.go            /admin/api/keys REST
+  errors.go                账号/Key 限制错误（proxy_cooling、key_account_forbidden 等）
   webchannel.go            新协议 processSession（WebChannel）传输，开关 web_channel
   conversation.go          服务端多轮续接（multi_turn）：按历史前缀认续接，只发最新一句
   media.go                 生图 / 音乐 / 画布 / 视频：工具位 + 产物抽取与下载
@@ -737,7 +792,7 @@ internal/app/              全部实现
   sse.go                   SSE 写出器（懒发 header，失败仍能返回 502 JSON）
   ratelimit.go             每 IP slot 独立并发 / RPM / RPH 限流
   tokenizer.go             tiktoken cl100k_base 单例
-  apikey.go                API key（启动参数锁定 / 面板可轮换 双轨）
+  apikey.go                API key 中间件 + 旧单 Key 接口兼容（多 Key 见 keys.go）
   db.go                    数据库 schema（SQLite / MySQL / PostgreSQL 共用）：sessions / requests / accounts / kv
   dbdialect.go             多数据库方言：SQL_DSN 选 MySQL / PostgreSQL，占位符改写
   proxy.go                 代理池 CRUD + 容量调度 + 熔断
@@ -775,6 +830,9 @@ docker-compose.yml         单容器，默认拉 ghcr 镜像，sqlite 挂 volume
 | 现象 | 多半是什么 | 怎么办 |
 |---|---|---|
 | 我们返回 **429** | 所有 IP slot 的并发/RPM/RPH 都占满了，**不是 Google 拒绝**，没消耗上游配额 | 加代理，或在「设置」页调高限额 |
+| 返回 **429 `proxy_cooling`**，Cookie 页显示「IP 冷却中」 | 独占绑定的代理在熔断冷却，或该 IP 的并发/RPM/RPH 已满；按设计不回退到其他 IP | 等 `Retry-After`，或在代理池「重置」/换一个出口；也可以解绑独占 |
+| 某把 Key 的 `/v1/models` 只有匿名模型，选登录模型报 **403 `key_account_forbidden`** | 这把 Key 关了「允许全部账号」且没勾账号，或勾的账号都被停用了 | 到「API Keys」页编辑这把 Key，勾上至少一个启用的 Cookie 账号 |
+| 用 Key B 查 Key A 建的视频任务报 **403** | 视频任务按 Key 隔离，只有创建它的 Key 能访问 | 用创建任务的那把 Key，或重新建任务 |
 | 面板诊断显示 **302 → `google.com/sorry/index`** | 这个出口 IP 被 Google 拦了（80-180 次请求后，取决于连接策略和出口质量） | 换出口/加代理。**是硬拦不是概率性**（被拦后 60 次探测零成功），原地重试没有意义 |
 | 偶发空响应、面板记为上游拒绝 | 上游瞬时拒绝（`1155`），没有可预测阈值，跟频率/并发/累积次数都无关 | 重发一次通常就好。**降 RPM 解决不了**，实测跟频率无关 |
 | 请求全部超时 | 本机到 `gemini.google.com` 不通 | 配代理（面板「代理池」或 `--proxy`）。注意**不读 `HTTPS_PROXY` 环境变量** |

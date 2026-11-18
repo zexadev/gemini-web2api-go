@@ -88,6 +88,40 @@ func trySlotAcquire(proxyID int64) (bool, string) {
 	return true, ""
 }
 
+// slotAvailability 只读检查某个 slot 现在还有没有容量，**不占用**。
+//
+// 给“独占账号挑号时跳过冷却中的 IP”用：真正的占用仍由 trySlotAcquire 完成。
+// 返回的 retryAfter 是保守估计——RPM/RPH 精确到窗口最早一条过期，
+// concurrent 只能给 1 秒（inflight 没有开始时间）。
+func slotAvailability(proxyID int64) (bool, string, time.Duration) {
+	s := getSlot(proxyID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now().Unix()
+	s.minuteWin = pruneTimestamps(s.minuteWin, now-60)
+	s.hourWin = pruneTimestamps(s.hourWin, now-3600)
+
+	if rtCfg().PerIPConcurrent > 0 && s.inflight >= rtCfg().PerIPConcurrent {
+		return false, "concurrent", time.Second
+	}
+	if rtCfg().PerIPRPM > 0 && len(s.minuteWin) >= rtCfg().PerIPRPM {
+		wait := s.minuteWin[0] + 60 - now
+		if wait < 1 {
+			wait = 1
+		}
+		return false, "rpm", time.Duration(wait) * time.Second
+	}
+	if rtCfg().PerIPRPH > 0 && len(s.hourWin) >= rtCfg().PerIPRPH {
+		wait := s.hourWin[0] + 3600 - now
+		if wait < 1 {
+			wait = 1
+		}
+		return false, "rph", time.Duration(wait) * time.Second
+	}
+	return true, "", 0
+}
+
 // slotRelease 释放并发计数（窗口计数自然过期，不在这里清）。
 func slotRelease(proxyID int64) {
 	s := getSlot(proxyID)
