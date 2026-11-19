@@ -2,6 +2,77 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 4.31.0
+
+上游把 3.1 Pro 的位置换成了新模型 **4 Neon**（网页上描述是「Deeper analysis」）。2026-11-19 付费号的模型选择器是
+Auto（3.5 Flash-Lite）/ 4 Hydrogen / 4 Neon / 4 Carbon。
+
+### 新增
+
+- **`gemini-4-neon` / `gemini-4-neon-thinking`（#84）**。要付费 / Ultra 号的 cookie。实测普通档回报 `4 Neon`，思考版回报
+  `4 Neon High` 并带 `reasoning_content`。Neon 不是 Argon 的继任者：Argon 改名成了 Carbon，`gemini-4-argon` 仍落到 4 Carbon。
+- **`request_timeout_sec` 上限从 600 提到 1200 秒（#83）**。总超时不会被持续输出重置，Carbon 长思考 + 长输出能跑过 600 秒。
+  卡住不出字的请求由 4.30.0 的 `stream_idle_timeout_sec` 掐断，放宽上限不会让它们白等。
+
+### 修复
+
+- **`gemini-3.1-pro` / `-thinking` 恢复可用，现在是 `gemini-4-neon` 的旧名称**。4.29.0 把它们当成已下线、直接返回 400，
+  当时付费号请求 3.1 Pro 被换成 3.5 Flash-Lite、清单里也还没有 Neon；现在同一个位置上是 4 Neon，继续拦等于把 Neon 拦在门外。
+  开着 `strict_model` 时 `3.1 Pro` 和 `4 Neon` 两个回报名互认。
+- 文档更正：免费号请求 `gemini-4-carbon` 现在拿到的是 4 Hydrogen，不再是 3.5 Flash-Lite。
+
+## 4.30.0
+
+### 新增
+
+- **流式空闲超时 `stream_idle_timeout_sec`（#81）**。上游开流后连续这么多秒一个 chunk 都不来，就掐断当瞬时错误重试。
+  「上游超时」（`request_timeout_sec`）是整条请求的总时限，管不到「首字节两秒就到、之后两三分钟一个字不来」这种挂法——
+  报告里实测这样挂了 254 秒、输出 0。新开关专补这个缺口：卡住的请求几十秒就换一次，而不是干等到总超时。掐断后无条件重试
+  （跟空响应重发一个路子，不受「超时后重试」开关影响），所以它触发时首字节其实已经来过、出口是通的，不计进代理健康度。
+  只老协议（StreamGenerate）生效——新协议 processSession 的下行长轮询本就约 60 秒空闲一次，装了会误杀。0=关（默认），建议 60。
+  这是 #72（4.28.1 修的「零输出返 200」）在流式下的残留：非流式早已报错，流式一旦开了流（保活或首帧）状态码就锁 200，
+  这版靠「早掐早重试」在还没吐内容时换一次拿到真结果。
+
+## 4.29.0
+
+2026-11 上游 Gemini 网页端换了一轮模型，这版跟着改。实测：付费号的模型选择器里只剩 3.5 Flash-Lite / 4 Hydrogen /
+4 Carbon；登录号（免费号也是）请求 Flash 路由回报的是 4 Hydrogen；匿名请求 Flash 路由回报的是 3.5 Flash-Lite。
+
+### 新增
+
+- **`gemini-4-hydrogen` / `gemini-4-hydrogen-thinking`（#74、#77，PR #76，@georgelichen）**。跟原来的 3.8 Flash
+  是同一条路由，上游原地改了名。**免费号也能用**，只是免费号的思考版没有 High 档。
+- **`gemini-4-carbon`**：上游把 4 Argon 改名成了 4 Carbon，`gemini-4-argon` 及其思考版照样能用，是同一条路由。
+
+### 修复
+
+- **4 Carbon / 4 Argon 请求卡到超时（PR #71，@plxzy）**。请求里补了浏览器会发的几个参数，起作用的是其中一个，
+  Ultra 号上实测带它 15/15 成功、不带只有 9/27。**代价**：这个参数会关掉思考档，`gemini-4-argon-thinking` 现在回答的是
+  普通档。先保证不卡，两者兼得的办法还在找。
+- **开着 `strict_model` 时，Argon 和 3.6 Flash 的每个请求都被判成降级**。上游改名后它们回报的是 `4 Carbon` / `4 Hydrogen`，
+  现在改名前后的名字互认。匿名请求 `gemini-3.6-flash` 拿到的是 3.5 Flash-Lite，开着 `strict_model` 时仍判降级。
+
+### 变更
+
+- **`gemini-3.1-pro` / `gemini-3.1-pro-thinking` 下线**。上游已经不提供 3.1 Pro：免费号请求会卡到超时，付费号会被换成
+  3.5 Flash-Lite。现在不再发给上游，直接返回 400 说明原因和替代（`gemini-4-hydrogen` / `gemini-4-carbon`），也不出现在
+  模型列表里。默认模型设成了 3.1 Pro 的，启动时自动改成 `gemini-3.6-flash` 并打一行日志，面板里存的其余设置不受影响。
+- **`gemini-3.6-flash` 实际拿到的模型变了**：匿名是 3.5 Flash-Lite，挂 cookie 是 4 Hydrogen。名字没改，免得老配置失效。
+- 两份 README 的模型表按实测重写。
+
+## 4.28.1
+
+### 修复
+
+- **回复只有一个解析不了的 tool_call 块时返回 200 + `content: null`（#72）**。模型把工具调用的 JSON 写坏、或者没写工具名时，
+  去掉这个块后正文为空、也没有工具调用，之前照样回 200，客户端看不出请求失败了。现在直接返回错误，
+  跟多轮续接（`multi_turn`）原来的处理一致。
+- **日志里出现「SIDCC 保活失败: RotateCookies 返回 HTTP 429」（#73）**。这是 Google 对 SIDCC 那条保活限流，
+  同一轮里 `__Secure-1PSIDTS` 照常换发，号没有问题。现在遇到 429 按响应里给的时间（#73 里是 600 秒）暂停这个号的 SIDCC 保活，
+  日志改成一条「被限流，N 秒内不再请求」，不再每轮报失败。
+- **新协议（`web_channel`）连接失败时，错误信息里带着完整请求 URL**。握手 URL 里有 `SAPISIDHASH` 授权头和 API key，
+  会进日志、请求记录和返回给客户端的错误。现在错误里只保留路径，查询串换成 `<redacted>`。
+
 ## 4.28.0
 
 ### 新增

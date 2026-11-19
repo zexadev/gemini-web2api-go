@@ -214,8 +214,8 @@ func webSearchToolDef() map[string]interface{} {
 // mcpWebSearch 执行一次联网搜索，返回"答案 + 来源清单"的文本。
 func mcpWebSearch(query string) (string, error) {
 	mc, ok := Models[rtCfg().DefaultModel]
-	if !ok {
-		mc = Models["gemini-3.6-flash"]
+	if !ok || mc.Retired != "" {
+		mc = Models[fallbackDefaultModel]
 	}
 	res, err := streamGenerate(query, query, mc, nil, nil)
 	if err != nil {

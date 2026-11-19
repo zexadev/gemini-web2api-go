@@ -1020,11 +1020,13 @@ const RT_GROUPS = [
       { k: 'retry_attempts', label: '重试次数', type: 'int', min: 1, max: 10,
         hint: '含首次；流式已吐字后不再重试' },
       { k: 'retry_delay_sec', label: '重试间隔（秒）', type: 'int', min: 0, max: 60 },
-      { k: 'request_timeout_sec', label: '上游超时（秒）', type: 'int', min: 5, max: 600 },
+      { k: 'request_timeout_sec', label: '上游超时（秒）', type: 'int', min: 5, max: 1200 },
       { k: 'retry_on_timeout', label: '超时后重试', type: 'bool',
         hint: '开：上游等满「上游超时」还没回完时，按重试次数再发（默认）。关：超时直接报错——等满一次都没回完，重发多半还是超时，一个请求最坏要等「超时 × 重试次数」，超长输入或慢模型（如 Argon）下能拖十几分钟。其他失败（空响应、出错话术等）照常重试' },
       { k: 'stream_keepalive_sec', label: '流式保活（秒）', type: 'int', min: 0, max: 300,
         hint: '流式请求连续这么多秒没往客户端写东西，就发一次保活，防止前面的 nginx / Cloudflare / newapi 等中间层因连接空闲回 504。建议 15。代价：保活要先开流（HTTP 200），之后再失败只能在流里报错、拿不到 502/429 状态码，依赖状态码换渠道的客户端会受影响；秒级就失败的请求不受影响。非流式请求无效。0=关（默认）' },
+      { k: 'stream_idle_timeout_sec', label: '空闲超时（秒）', type: 'int', min: 0, max: 600,
+        hint: '上游开流后连续这么多秒一个 chunk 都不来，就掐断当瞬时错误重试。「上游超时」是整条请求的总时限，管不到"首字节秒级就到、之后两三分钟一个字不来"这种挂法——这个专补那个缺口，让卡住的请求几十秒就换一次而不是干等到总超时。掐断会无条件重试（不受「超时后重试」开关影响）。建议 60。设得太小会误伤慢模型（如 Argon 首字节本身就慢）。0=关（默认）' },
     ],
   },
   {
@@ -1058,7 +1060,7 @@ const RT_GROUPS = [
       { k: 'image_upscale', label: '生图下载原图/放大', type: 'bool',
         hint: '出图后照网页「下载」按钮那样取图：Ultra 号的图会放大到宽高各 2 倍（1376×768 → 2752×1536），普通号拿到未重新压缩的原始文件（尺寸不变、画质更好）。每张图多一次请求，返回体积大几倍。只登录态生效，取不到就退回原来那张，不会重新生成。默认关' },
       { k: 'anon_first', label: '匿名优先', type: 'bool',
-        hint: '这次请求不需要登录态能力时（纯文本、非思考、无工具、不带图）走匿名、不占用 cookie 账号，省账号额度；用到 3.1 Pro / 3.8 Flash / 扩展思考 / 生图 / 传文件这些才挑号。关掉则只要池里有号就一律用号（默认关）' },
+        hint: '这次请求不需要登录态能力时（纯文本、非思考、无工具、不带图）走匿名、不占用 cookie 账号，省账号额度；用到 4 Hydrogen / 4 Carbon / 扩展思考 / 生图 / 传文件这些才挑号。关掉则只要池里有号就一律用号（默认关）' },
     ],
   },
   {
@@ -1069,7 +1071,7 @@ const RT_GROUPS = [
       { k: 'fallback_direct', label: '无可用代理时退回直连', type: 'bool',
         hint: '关：直接返回 429，本机 IP 不会暴露给上游（默认）。开：可用性优先，但上游会看到本机真实出口' },
       { k: 'fallback_anon', label: 'cookie 失效时降级匿名', type: 'bool',
-        hint: '关：直接报错，能立刻发现该换号了（默认）。开：继续跑，但 3.1 Pro 会被静默降级成 3.5 Flash-Lite、思考链消失，客户端看不出来' },
+        hint: '关：直接报错，能立刻发现该换号了（默认）。开：继续跑，但要登录的模型会被静默降级成 3.5 Flash-Lite、思考链消失，客户端看不出来' },
       { k: 'refusal_as_error', label: '拒答转错误', type: 'bool',
         hint: '默认关。开：普通聊天回复只要出现 gemini.google/policy-guidelines 官方链接，就返回 422 upstream_refusal，不依赖拒答措辞，引用、翻译或代码中的链接也算。仅检查模型回复；不改变请求、不选择其它模型。流式等完整结果检查后再发送，期间不发保活。关：原样返回。保存后对新请求生效' },
       { k: 'strict_model', label: '严格模型校验', type: 'bool',
@@ -1190,7 +1192,7 @@ function escapeHtml(s) {
   return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
-// 服务端会静默降级（例如请求 3.1 Pro 实际给的是 3.6 Flash），只看请求名发现不了。
+// 服务端会静默降级（例如请求 4 Carbon 实际给的是 3.5 Flash-Lite），只看请求名发现不了。
 // upstream_model 取自响应帧里服务端自报的显示名；跟请求的对不上时标黄。
 //
 // 媒体模型例外：生图/音乐的后端名（Nano Banana / Lyria）跟请求名本来就不同，是预期
@@ -2290,8 +2292,8 @@ const I18N_EN = {
     'How long a proxy rests before returning to the pool after 5 consecutive failures. Blocked egresses were measured to self-recover in 106-121 minutes, so the default is 120. 0 = no auto-recovery, reset manually on the Proxy Pool page',
   '关：直接返回 429，本机 IP 不会暴露给上游（默认）。开：可用性优先，但上游会看到本机真实出口':
     'Off: return 429 directly, the host IP is never exposed to upstream (default). On: availability first, but upstream sees the host real egress',
-  '关：直接报错，能立刻发现该换号了（默认）。开：继续跑，但 3.1 Pro 会被静默降级成 3.5 Flash-Lite、思考链消失，客户端看不出来':
-    'Off: error out directly so you immediately notice it is time to swap accounts (default). On: keep running, but 3.1 Pro gets silently downgraded to 3.5 Flash-Lite and the thinking chain vanishes, invisible to the client',
+  '关：直接报错，能立刻发现该换号了（默认）。开：继续跑，但要登录的模型会被静默降级成 3.5 Flash-Lite、思考链消失，客户端看不出来':
+    'Off: error out directly so you immediately notice it is time to swap accounts (default). On: keep running, but login-only models get silently downgraded to 3.5 Flash-Lite and the thinking chain vanishes, invisible to the client',
   '过期只删明细，聚合数据永久保留': 'Expiry deletes only detail rows; aggregate data is kept forever',
   '显示': 'Show',
   '隐藏': 'Hide',
@@ -2375,8 +2377,8 @@ const I18N_EN = {
   '出图后照网页「下载」按钮那样取图：Ultra 号的图会放大到宽高各 2 倍（1376×768 → 2752×1536），普通号拿到未重新压缩的原始文件（尺寸不变、画质更好）。每张图多一次请求，返回体积大几倍。只登录态生效，取不到就退回原来那张，不会重新生成。默认关':
     'Fetches generated images the way the web app\'s Download button does: on Ultra accounts the image is upscaled 2× in each dimension (1376×768 → 2752×1536); other accounts get the original file instead of the recompressed preview (same size, better quality). One extra request per image and a several-times larger response. Signed-in only; if it fails the regular image is returned, nothing is regenerated. Off by default',
   '匿名优先': 'Anonymous first',
-  '这次请求不需要登录态能力时（纯文本、非思考、无工具、不带图）走匿名、不占用 cookie 账号，省账号额度；用到 3.1 Pro / 3.8 Flash / 扩展思考 / 生图 / 传文件这些才挑号。关掉则只要池里有号就一律用号（默认关）':
-    'Routes requests that do not require account capabilities (plain text, non-thinking, no tools, no images) anonymously to save cookie account quota. Picks an account only when using 3.1 Pro, 3.8 Flash, extended thinking, image gen, or file uploads. When off, always uses an account if any are in the pool (default off)',
+  '这次请求不需要登录态能力时（纯文本、非思考、无工具、不带图）走匿名、不占用 cookie 账号，省账号额度；用到 4 Hydrogen / 4 Carbon / 扩展思考 / 生图 / 传文件这些才挑号。关掉则只要池里有号就一律用号（默认关）':
+    'Routes requests that do not require account capabilities (plain text, non-thinking, no tools, no images) anonymously to save cookie account quota. Picks an account only when using 4 Hydrogen, 4 Carbon, extended thinking, image gen, or file uploads. When off, always uses an account if any are in the pool (default off)',
   'Firefox 指纹（实验）': 'Firefox fingerprint (experimental)',
   '开：请求伪装成 Firefox/Zen——直连时 TLS 握手走 Firefox 指纹、UA 换成 Firefox、去掉 Chrome 专有的 Sec-CH-UA；关：用上面「TLS 指纹」的设置（默认 Chrome）。cookie 从 Firefox 导出时建议配套打开。注意：走代理时 TLS 这层是 Go 标准库的、改不成 Firefox（隧道限制），只有 header 变成 Firefox，仅直连才是完整 Firefox 指纹。实验功能，默认关':
     'On: requests impersonate Firefox/Zen — on a direct connection the TLS handshake uses the Firefox profile, the UA becomes Firefox, and the Chromium-only Sec-CH-UA headers are dropped. Off: uses the "TLS fingerprint" field above (Chrome by default). Recommended when cookies are exported from Firefox. Note: over a proxy the TLS layer is still Go stdlib (tunnel limitation) — only headers become Firefox; a full Firefox fingerprint happens only on direct connections. Experimental, off by default.',

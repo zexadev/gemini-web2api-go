@@ -1,8 +1,10 @@
 package app
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 // 下行内容消息：X 是老响应的 inner 数组。正文要够长，textsInLine 对太短的行直接跳过。
@@ -111,5 +113,24 @@ func TestWCInnerWithoutPrompt(t *testing.T) {
 	}
 	if inner[0].([]interface{})[0] != "hello" {
 		t.Errorf("改到了原数组")
+	}
+}
+
+// 连接失败时错误里不能带 URL 查询串（$httpHeaders 里有 SAPISIDHASH）。直连和代理两条路都测。
+func TestWCSendRedactsURL(t *testing.T) {
+	u := "https://127.0.0.1:1/v1/processSession?VER=8&%24httpHeaders=Authorization%3ASAPISIDHASH+secret123"
+	for _, proxy := range []string{"", "http://127.0.0.1:1"} {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, err := wcSend(ctx, "POST", u, "count=0", "", proxy)
+		cancel()
+		if err == nil {
+			t.Fatalf("proxy=%q: want connection error", proxy)
+		}
+		if strings.Contains(err.Error(), "secret123") || strings.Contains(err.Error(), "SAPISIDHASH") {
+			t.Errorf("proxy=%q: error leaks query: %v", proxy, err)
+		}
+		if !strings.Contains(err.Error(), "/v1/processSession") {
+			t.Errorf("proxy=%q: error lost the path: %v", proxy, err)
+		}
 	}
 }

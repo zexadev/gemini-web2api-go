@@ -10,12 +10,12 @@ import (
 
 // 确认每个模型名解析出的 hex id 和 header 值正确。
 func TestModelHeader(t *testing.T) {
-	withPoolCookie(t) // 让 3.1 Pro 可选，见 TestProHiddenWithoutCookie
+	withPoolCookie(t) // 让要登录的模型可选，见 TestProHiddenWithoutCookie
 
 	cases := []struct{ name, wantHex string }{
 		{"gemini-3.6-flash", hexFlash36},
 		{"gemini-3.5-flash-lite", hexFlashLite},
-		{"gemini-3.1-pro", hexPro31},
+		{"gemini-3.8-flash", hexFlash38},
 	}
 	for _, c := range cases {
 		name, mc, err := resolveModel(c.name)
@@ -51,16 +51,17 @@ func TestModelHeader(t *testing.T) {
 		}
 	}
 	// 守的是「不许冒出假模型」：thinking 版复用同样的 hex，所以看**去重后的 hex 数**，
-	// 不是条目数。服务端清单（otAQ7b）里 3.6/3.5-lite/3.1-pro/3.8-flash + 4 Argon（#35）= 5 个。
+	// 不是条目数。3.6/3.5-lite/3.1-pro/3.8-flash + 4 Argon（#35）+ 4 Neon（#84）= 6 个；
+	// 4 Hydrogen（#74）复用原 3.8 Flash 的 hex，不增加独立 hex。
 	hexes := map[string]bool{}
 	for _, m := range Models {
 		hexes[m.HexID] = true
 	}
-	if len(hexes) != 5 {
-		t.Errorf("只应存在 5 个真模型 hex, got %d", len(hexes))
+	if len(hexes) != 6 {
+		t.Errorf("只应存在 6 个真模型 hex, got %d", len(hexes))
 	}
 	// 反过来：每个真 hex 都应该有一个 thinking 版
-	for _, base := range []string{hexFlash36, hexFlashLite, hexPro31, hexFlash38, hexArgon4} {
+	for _, base := range []string{hexFlash36, hexFlashLite, hexPro31, hexFlash38, hexArgon4, hexNeon4} {
 		found := false
 		for _, m := range Models {
 			if m.HexID == base && m.Thinking {
@@ -252,8 +253,8 @@ func TestExtractUpstreamModel(t *testing.T) {
 // （配了有效 cookie 时它是真能用的，见 availableModels 注释。）
 func TestProHiddenWithoutCookie(t *testing.T) {
 	// cookie 池此时是空的（TestMain 给的是全新临时库）
-	if _, ok := availableModels()["gemini-3.1-pro"]; ok {
-		t.Error("无 cookie 时不该暴露 3.1 Pro")
+	if _, ok := availableModels()["gemini-3.8-flash"]; ok {
+		t.Error("无 cookie 时不该暴露 3.8 Flash")
 	}
 	// inner[80]（扩展思考）只在登录态生效，匿名带上服务端静默忽略，
 	// 所以 thinking 版跟 3.1 Pro 一样不能暴露
@@ -265,9 +266,9 @@ func TestProHiddenWithoutCookie(t *testing.T) {
 	if len(availableModels()) != 2 {
 		t.Errorf("无 cookie 时应只剩 2 个模型, got %d", len(availableModels()))
 	}
-	_, _, err := resolveModel("gemini-3.1-pro")
+	_, _, err := resolveModel("gemini-3.8-flash")
 	if err == nil {
-		t.Fatal("无 cookie 时选 3.1 Pro 应该报错")
+		t.Fatal("无 cookie 时选 3.8 Flash 应该报错")
 	}
 	// 错误信息要说清为什么、以及怎么办，不能只是 unknown model
 	if !strings.Contains(err.Error(), "cookie") ||
@@ -277,14 +278,14 @@ func TestProHiddenWithoutCookie(t *testing.T) {
 	}
 
 	withPoolCookie(t)
-	if _, ok := availableModels()["gemini-3.1-pro"]; !ok {
-		t.Error("配了 cookie 时应暴露 3.1 Pro")
+	if _, ok := availableModels()["gemini-3.8-flash"]; !ok {
+		t.Error("配了 cookie 时应暴露 3.8 Flash")
 	}
-	if _, _, err := resolveModel("gemini-3.1-pro"); err != nil {
+	if _, _, err := resolveModel("gemini-3.8-flash"); err != nil {
 		t.Errorf("配了 cookie 时不该报错: %v", err)
 	}
 	for _, n := range []string{"gemini-3.6-flash-thinking", "gemini-3.5-flash-lite-thinking",
-		"gemini-3.1-pro-thinking"} {
+		"gemini-4-hydrogen-thinking"} {
 		if _, ok := availableModels()[n]; !ok {
 			t.Errorf("配了 cookie 时应暴露 %s", n)
 		}
@@ -293,6 +294,63 @@ func TestProHiddenWithoutCookie(t *testing.T) {
 	if _, _, err := resolveModel("no-such-model"); err == nil ||
 		!strings.Contains(err.Error(), "unknown model") {
 		t.Errorf("未知模型应报 unknown model, got %v", err)
+	}
+}
+
+// withRetiredModel 往模型表里临时塞一个已下线的模型，用完删掉。
+// 现在没有真的下线模型（3.1 Pro 的位置被 4 Neon 接替了），但机制要留着给下一次。
+func withRetiredModel(t *testing.T, name string) {
+	t.Helper()
+	Models[name] = ModelConfig{HexID: hexPro31, Mode: 3, Retired: "gone upstream; use gemini-4-hydrogen instead"}
+	t.Cleanup(func() { delete(Models, name) })
+}
+
+// 上游下线的模型：有没有 cookie 都不进列表，请求直接报下线原因，
+// 不能被「要 cookie」或「unknown model」的提示盖掉。
+func TestRetiredModels(t *testing.T) {
+	const n = "gemini-test-retired"
+	withRetiredModel(t, n)
+	check := func(when string) {
+		if _, ok := availableModels()[n]; ok {
+			t.Errorf("%s: 下线模型 %s 不该出现在列表里", when, n)
+		}
+		_, _, err := resolveModel(n)
+		if err == nil || !strings.Contains(err.Error(), "retired") ||
+			!strings.Contains(err.Error(), "gemini-4-hydrogen") {
+			t.Errorf("%s: %s 应报下线并给出替代, got %v", when, n, err)
+		}
+	}
+	check("无 cookie")
+	withPoolCookie(t)
+	check("有 cookie")
+}
+
+// 3.1 Pro 的位置现在是 4 Neon：老名字有 cookie 时照常可用，不再报下线。
+func TestPro31IsNeonAlias(t *testing.T) {
+	withPoolCookie(t)
+	for _, n := range []string{"gemini-3.1-pro", "gemini-3.1-pro-thinking", "gemini-4-neon", "gemini-4-neon-thinking"} {
+		if _, ok := availableModels()[n]; !ok {
+			t.Errorf("%s 应出现在列表里", n)
+		}
+		_, mc, err := resolveModel(n)
+		if err != nil || mc.Mode != 3 {
+			t.Errorf("%s: mode=%d err=%v", n, mc.Mode, err)
+		}
+	}
+}
+
+// 默认模型存的是下线模型时换成 fallbackDefaultModel，其余字段不动。
+func TestReplaceRetiredDefault(t *testing.T) {
+	withRetiredModel(t, "gemini-test-retired")
+	c := RuntimeConfig{DefaultModel: "gemini-test-retired", RetryAttempts: 7}
+	replaceRetiredDefault(&c)
+	if c.DefaultModel != fallbackDefaultModel || c.RetryAttempts != 7 {
+		t.Errorf("got %+v", c)
+	}
+	c = RuntimeConfig{DefaultModel: "gemini-4-carbon"}
+	replaceRetiredDefault(&c)
+	if c.DefaultModel != "gemini-4-carbon" {
+		t.Errorf("没下线的默认模型被改了: %s", c.DefaultModel)
 	}
 }
 

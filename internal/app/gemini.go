@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	fhttp "github.com/bogdanfinn/fhttp"
@@ -31,12 +32,22 @@ const (
 	// "当前 Flash" 泛指针，老批次号发它拿到的是 3.6，会冒充 3.7。老批次号发这个主 hex
 	// 会干净降级成 3.5 Flash-Lite（跟 3.1 Pro 一样），所以 gate 成要 cookie。
 	hexFlash38 = "56fdd199312815e2" // 3.8 Flash（原记 3.7；Google 把这个 hex 原地升成 3.8，HAR 响应帧显示名已是 "3.8 Flash"）
+	// 4 Hydrogen：3.8 Flash 那个槽被原地升级，仍用同一个 hex + Mode=1。2026-11-17 实测免费号（档位 1）
+	// 发 mode 1 也回报 "4 Hydrogen"，不只付费号；匿名发 mode 1 回报 3.5 Flash-Lite。
+	// 来源：上游 issue #74 及公开 otAQ7b 清单样本（2026-11-13）：
+	// https://github.com/azrinaldi/gemini-stealth-bridge/blob/ace32031a4ba9576d9f1d913c996e03d9bb6d087/internal/gemini/registry_names_test.go
+	// 账号清单可能不同；匿名拿不到，所以跟 3.8 一样要登录（modelNeedsLogin 按 hexFlash38 判）。
+	hexHydrogen4 = hexFlash38
 	// 4 Argon（#35）：otAQ7b 清单里主 hex 95a4c0abcba24364、短名 Argon、代号 Argon4p0、
 	// 显示名 "4 Argon"。付费/Ultra 号专属。实测**真正选中它靠的是 MODE=8（header 下标 14 /
 	// inner[79]），不是 hex**：借来的 Ultra 号上，hex=Argon 配 mode=1 回报 "3.8 Flash"（mode 1
 	// 那个模型），hex=3.8Flash 配 mode=8 反而回报 "4 Argon"——mode 决定、hex 被忽略。所以 Argon
 	// 条目的 Mode 必须填 8。仍按浏览器把 hex 配成 Argon 主 hex（最忠实、将来若改回认 hex 也不塌）。
 	hexArgon4 = "95a4c0abcba24364"
+	// 4 Neon（#84）：otAQ7b 里主 hex e6fa609c3fa255c0、短名 Neon、代号 Neon4p0、「Deeper analysis」，Mode=3。
+	// 它接替的是 3.1 Pro 的位置：同一个 mode，compat hex 列表里就有 hexPro31。2026-11-19 Ultra 号实测
+	// mode 3 回报 "4 Neon"、思考档回报 "4 Neon High" 带思考链；免费号 11-17 请求 mode 3 挂到超时。
+	hexNeon4 = "e6fa609c3fa255c0"
 )
 
 // innerSlots 是 payload 里 inner 数组的长度。浏览器发 97-98 槽，我们原来只开 80，
@@ -44,7 +55,7 @@ const (
 //
 // 加长本身是安全的：曾经把它从 80 加到 102 来试 inner[79] 会不会复活，结论是不会
 // —— 模型选择完全由 x-goog-ext-525001261-jspb header 决定，长度不影响。
-const innerSlots = 97
+const innerSlots = 99
 
 // inner[80] / 模型 header 下标 15 的取值：1=普通，2=扩展思考。
 //
@@ -85,6 +96,13 @@ type ModelConfig struct {
 	// "Nano Banana 2" 这类后端名）。只能用显示名：跟它并排的 hex 现在不管实际用了
 	// 哪个模型都回 Flash-Lite 的那个。
 	Upstream string
+	// Retired 非空 = 上游已经不提供这个模型，值是给客户端看的原因。这种模型不进模型列表，
+	// 请求直接 400 回这句话，不发上游（发了要么挂到超时、要么被静默换成别的模型）。
+	// 名字留在表里而不是删掉，是为了让老配置拿到的是「下线了，换 X」而不是「unknown model」。
+	Retired string
+	// UpstreamAliases 仅用于已确认的上游改名：旧客户端名仍接受原显示名和新显示名。
+	// 显式请求新模型时不接受旧显示名，避免把尚未升级的账号当成新模型。
+	UpstreamAliases []string
 	// VideoAspect is the inner[55] aspect code for video: 16 = 16:9 (default), 17 = 9:16.
 	VideoAspect int
 	// PinAccountID forces the request onto one cookie-pool account (no fallback to
@@ -119,32 +137,47 @@ func (mc ModelConfig) thinkWire() int {
 // gemini-flash-lite 别名已移除：它们在服务端没有对应条目，留着只会让人
 // 以为有五种不同的模型可选。
 var Models = map[string]ModelConfig{
-	"gemini-3.6-flash":      {HexID: hexFlash36, Mode: 1, Upstream: "3.6 Flash", Desc: "Latest all-around model"},
+	"gemini-3.6-flash":      {HexID: hexFlash36, Mode: 1, Upstream: "3.6 Flash", UpstreamAliases: []string{"4 Hydrogen"}, Desc: "Flash route: 3.5 Flash-Lite when anonymous, 4 Hydrogen when signed in"},
 	"gemini-3.5-flash-lite": {HexID: hexFlashLite, Mode: 6, Upstream: "3.5 Flash-Lite", Desc: "Fastest, lightweight"},
-	"gemini-3.1-pro":        {HexID: hexPro31, Mode: 3, Upstream: "3.1 Pro", Desc: "Most capable; needs a signed-in cookie (downgraded to Flash-Lite without one)"},
+	// 3.1 Pro 的位置（mode 3）现在是 4 Neon（2026-11-19 Ultra 号实测回报 "4 Neon"）。名字留着兼容老配置，
+	// 跟 gemini-4-neon 是同一条路由。11-16 那次 mode 3 在 Ultra 号上回报 3.5 Flash-Lite，当时清单里还没有 Neon。
+	"gemini-3.1-pro": {HexID: hexPro31, Mode: 3, Upstream: "3.1 Pro", UpstreamAliases: []string{"4 Neon"}, Desc: "alias of gemini-4-neon (upstream replaced 3.1 Pro with 4 Neon); needs a signed-in PAID/Ultra Google account"},
 	// 3.8 Flash：Google 把原 3.7 那个 hex 原地升级了（同 hex，服务端显示名从 3.7 变 3.8）。
-	// 实测是**付费号专属**（不是灰度）：只有付费 Gemini 账号有，免费号降级成 3.5 Flash-Lite。
+	// 现在服务端回报 "4 Hydrogen"，登录号（含免费号）都拿得到，匿名拿不到。
 	// gemini-3.7-flash 保留为别名（同 hex）。
-	"gemini-3.8-flash": {HexID: hexFlash38, Mode: 1, Upstream: "3.8 Flash", Desc: "3.8 Flash; needs a signed-in PAID Google account (free accounts get downgraded to 3.5 Flash-Lite)"},
-	"gemini-3.7-flash": {HexID: hexFlash38, Mode: 1, Upstream: "3.8 Flash", Desc: "alias of gemini-3.8-flash (same hex; Google renamed 3.7→3.8)"},
+	"gemini-3.8-flash":  {HexID: hexFlash38, Mode: 1, Upstream: "3.8 Flash", UpstreamAliases: []string{"4 Hydrogen"}, Desc: "Legacy Flash route, now 4 Hydrogen; needs a signed-in Google account"},
+	"gemini-3.7-flash":  {HexID: hexFlash38, Mode: 1, Upstream: "3.8 Flash", UpstreamAliases: []string{"4 Hydrogen"}, Desc: "alias of gemini-3.8-flash (same route, now 4 Hydrogen)"},
+	"gemini-4-hydrogen": {HexID: hexHydrogen4, Mode: 1, Upstream: "4 Hydrogen", Desc: "4 Hydrogen; needs a signed-in Google account (free accounts work too)"},
 	// 4 Argon（#35）：Mode=8 是真正的选择开关（见 hexArgon4 注释）。付费/Ultra 号专属，
-	// 免费号发它会被静默降级成 3.5 Flash-Lite，所以 gate 成要 cookie（modelNeedsLogin）。
-	"gemini-4-argon": {HexID: hexArgon4, Mode: 8, Upstream: "4 Argon", Desc: "4 Argon (complex tasks); needs a signed-in PAID/Ultra Google account (free accounts get downgraded to 3.5 Flash-Lite)"},
+	// 免费号发它会被静默换成别的模型（11-16 是 3.5 Flash-Lite，11-19 是 4 Hydrogen），所以 gate 成要 cookie（modelNeedsLogin）。
+	// 2026-11-16 Ultra 号实测：mode 8 现在回报 "4 Carbon"（otAQ7b 里 hex 95a4… 显示名「4 Carbon」、
+	// 代号 Carbon4p0）。Argon 这个名字留着兼容老配置，gemini-4-carbon 是同一条路由的新名字。
+	"gemini-4-argon":  {HexID: hexArgon4, Mode: 8, Upstream: "4 Argon", UpstreamAliases: []string{"4 Carbon"}, Desc: "alias of gemini-4-carbon (upstream renamed 4 Argon to 4 Carbon); needs a signed-in PAID/Ultra Google account"},
+	"gemini-4-carbon": {HexID: hexArgon4, Mode: 8, Upstream: "4 Carbon", UpstreamAliases: []string{"4 Argon"}, Desc: "4 Carbon (most complex work); needs a signed-in PAID/Ultra Google account (free accounts get switched to 4 Hydrogen)"},
+	// 4 Neon（#84）：Mode=3 选中它，付费号专属。
+	"gemini-4-neon": {HexID: hexNeon4, Mode: 3, Upstream: "4 Neon", UpstreamAliases: []string{"3.1 Pro"}, Desc: "4 Neon (deeper analysis); needs a signed-in PAID/Ultra Google account"},
 
 	// 扩展思考版。inner[80]=2 跟模型 hex 正交，都能开；但只在登录态生效，
 	// 所以跟 3.1 Pro 一样在没 cookie 时不暴露。
-	"gemini-3.6-flash-thinking":      {HexID: hexFlash36, Mode: 1, Thinking: true, Upstream: "3.6 Flash", Desc: "3.6 Flash with extended thinking; needs a signed-in cookie"},
+	"gemini-3.6-flash-thinking":      {HexID: hexFlash36, Mode: 1, Thinking: true, Upstream: "3.6 Flash", UpstreamAliases: []string{"4 Hydrogen"}, Desc: "3.6 Flash with extended thinking; needs a signed-in cookie"},
 	"gemini-3.5-flash-lite-thinking": {HexID: hexFlashLite, Mode: 6, Thinking: true, Upstream: "3.5 Flash-Lite", Desc: "3.5 Flash-Lite with extended thinking; needs a signed-in cookie"},
-	"gemini-3.1-pro-thinking":        {HexID: hexPro31, Mode: 3, Thinking: true, Upstream: "3.1 Pro", Desc: "3.1 Pro with extended thinking; needs a signed-in cookie"},
-	"gemini-3.8-flash-thinking":      {HexID: hexFlash38, Mode: 1, Thinking: true, Upstream: "3.8 Flash", Desc: "3.8 Flash with extended thinking; needs a signed-in cookie"},
-	"gemini-3.7-flash-thinking":      {HexID: hexFlash38, Mode: 1, Thinking: true, Upstream: "3.8 Flash", Desc: "alias of gemini-3.8-flash-thinking"},
+	"gemini-3.1-pro-thinking":        {HexID: hexPro31, Mode: 3, Thinking: true, Upstream: "3.1 Pro", UpstreamAliases: []string{"4 Neon"}, Desc: "alias of gemini-4-neon-thinking; needs a signed-in PAID/Ultra account"},
+	"gemini-3.8-flash-thinking":      {HexID: hexFlash38, Mode: 1, Thinking: true, Upstream: "3.8 Flash", UpstreamAliases: []string{"4 Hydrogen"}, Desc: "Legacy Flash route with extended thinking, now 4 Hydrogen; needs a signed-in Google account"},
+	"gemini-3.7-flash-thinking":      {HexID: hexFlash38, Mode: 1, Thinking: true, Upstream: "3.8 Flash", UpstreamAliases: []string{"4 Hydrogen"}, Desc: "alias of gemini-3.8-flash-thinking"},
+	// 同一路由的扩展思考（think=2），不是其他账号清单里独立的 Mode=5 Thinking 模型。
+	// 实测 Ultra 号回报 "4 Hydrogen High"；免费号回报普通 "4 Hydrogen"（没有 High 档）。
+	"gemini-4-hydrogen-thinking": {HexID: hexHydrogen4, Mode: 1, Thinking: true, Upstream: "4 Hydrogen", Desc: "4 Hydrogen with extended thinking (High tier on paid accounts; free accounts get the normal tier); needs a signed-in cookie"},
+	// 4 Neon + 扩展思考：实测回报 "4 Neon High"，思考链走 [4][0][37][0][0]。
+	"gemini-4-neon-thinking": {HexID: hexNeon4, Mode: 3, Thinking: true, Upstream: "4 Neon", UpstreamAliases: []string{"3.1 Pro"}, Desc: "4 Neon with extended thinking (High tier); needs a signed-in PAID/Ultra account"},
 	// 4 Argon + 扩展思考：Mode=8（选 Argon）+ inner[80]=2（上游现在把这档叫 "High"）。
 	// 实测回报 "4 Argon High" 且带思考链（硬题 985 字符，走既有 [4][0][37][0][0] 路径，
 	// 无需改抽取代码）→ 映射成 reasoning_content。付费/Ultra 专属。
-	"gemini-4-argon-thinking": {HexID: hexArgon4, Mode: 8, Thinking: true, Upstream: "4 Argon", Desc: "4 Argon with extended thinking (High reasoning tier); emits reasoning_content; needs a signed-in PAID/Ultra account"},
+	// 2026-11-16 起 mode 8 要带 inner[49]=40 才不挂，而它会关掉思考档：现在回报普通 "4 Carbon"
+	// （见 streamGenerateOnce 里 mode 8 那段）。名字留着，等找到兼得的办法。
+	"gemini-4-argon-thinking": {HexID: hexArgon4, Mode: 8, Thinking: true, Upstream: "4 Argon", UpstreamAliases: []string{"4 Carbon"}, Desc: "4 Carbon/Argon with extended thinking; currently answers at the normal tier (the request slot that stops mode 8 from hanging disables High); needs a signed-in PAID/Ultra account"},
 	// 中档：think 线值 4（高档是 2）。中档思考在服务端内部完成、不吐思考链，所以不设
 	// Thinking（不期望 reasoning_content），登录门控靠 hexArgon4 + thinkWire。
-	"gemini-4-argon-thinking-medium": {HexID: hexArgon4, Mode: 8, ThinkWire: thinkingMedium, Upstream: "4 Argon", Desc: "4 Argon at the Medium thinking tier (thinks server-side, no reasoning_content); needs a signed-in PAID/Ultra account"},
+	"gemini-4-argon-thinking-medium": {HexID: hexArgon4, Mode: 8, ThinkWire: thinkingMedium, Upstream: "4 Argon", UpstreamAliases: []string{"4 Carbon"}, Desc: "4 Argon at the Medium thinking tier (thinks server-side, no reasoning_content); needs a signed-in PAID/Ultra account"},
 
 	// 媒体生成。inner[49] 一填，服务端换后端模型出图/出乐；产物走 hNvQHb + 下载 host
 	// 取回，以 base64 data URL 塞进 content 返回。都要登录态，没 cookie 时不暴露。
@@ -154,6 +187,9 @@ var Models = map[string]ModelConfig{
 	// 画布：生成 immersive 交互 HTML 文档，内联返回（不是二进制、不用下载）。要登录态。
 	"gemini-canvas": {HexID: hexFlash36, Mode: 1, Tool: toolCanvas, Desc: "Canvas: generates an interactive HTML document (returned inline as a ```html block); needs a signed-in cookie"},
 }
+
+// fallbackDefaultModel 是默认模型被下线时换上的那个。
+const fallbackDefaultModel = "gemini-3.6-flash"
 
 // hasCookie 表示 cookie 池里有没有可用账号。决定 3.1 Pro 是否出现在模型列表里。
 func hasCookie() bool {
@@ -170,7 +206,7 @@ func hasCookie() bool {
 // 逐模型核对等价：那三个正名的 HexID 就是 hexPro31 / hexFlash38，其余登录模型都被
 // Thinking 或 Tool 覆盖。
 func modelNeedsLogin(mc ModelConfig) bool {
-	return mc.HexID == hexPro31 || mc.HexID == hexFlash38 || mc.HexID == hexArgon4 || mc.Thinking || mc.ThinkWire > 0 || mc.Tool > 0
+	return mc.HexID == hexPro31 || mc.HexID == hexFlash38 || mc.HexID == hexArgon4 || mc.HexID == hexNeon4 || mc.Thinking || mc.ThinkWire > 0 || mc.Tool > 0
 }
 
 // anonFirstEligible 判断「匿名优先」开关下这次请求能不能走匿名（不占 cookie 账号）：
@@ -193,20 +229,14 @@ func temporaryChatEligible() bool {
 
 // availableModels 返回当前配置下值得暴露的模型。
 //
-// 没配 cookie 时排除 3.1 Pro：实测匿名请求它会被静默降级成 3.5 Flash-Lite，
-// 客户端还以为自己用上了 Pro。与其让它"成功"，不如直接不提供、让选型时就报错。
-//
-// 配了有效 cookie 时它是真能用的：连打 6 次服务端回报的都是 "3.1 Pro" 本身，
-// 且每次都带思考链（118-152 字符，普通 3.6 Flash 为 0）。早前记录的「免费号
-// 登录也只能拿到 3.6 Flash 扩展」是在缺 XSRF token 的条件下测的，那时候带
-// cookie 的请求根本发不出去（见 xsrf.go）。
+// 没配 cookie 时排除要登录的模型：匿名请求它们会被静默降级成 3.5 Flash-Lite，
+// 客户端还以为自己用上了。与其让它"成功"，不如直接不提供、让选型时就报错。
+// 上游已下线的（Retired）不管有没有 cookie 都排除。
 func availableModels() map[string]ModelConfig {
-	if hasCookie() {
-		return Models
-	}
+	cookie := hasCookie()
 	out := make(map[string]ModelConfig, len(Models))
 	for k, v := range Models {
-		if modelNeedsLogin(v) {
+		if v.Retired != "" || (!cookie && modelNeedsLogin(v)) {
 			continue
 		}
 		out[k] = v
@@ -226,6 +256,9 @@ func resolveModel(modelName string) (string, ModelConfig, error) {
 	}
 	mc, ok := availableModels()[modelName]
 	if !ok {
+		if full, exists := Models[modelName]; exists && full.Retired != "" {
+			return "", ModelConfig{}, fmt.Errorf("%s is retired: %s", modelName, full.Retired)
+		}
 		if full, exists := Models[modelName]; exists && !hasCookie() {
 			downgrade := "are silently downgraded to 3.5 Flash-Lite"
 			if full.Tool > 0 {
@@ -677,6 +710,23 @@ func streamGenerateOnce(prompt, latest string, mc ModelConfig, pending []pending
 	if tw != thinkingNormal {
 		inner[96] = 1
 	}
+	// 4 Argon（mode 8）：按浏览器 processSession 抓包补齐槽位（protobuf 字段 N == inner[N-1]，
+	// 2026-11-09 实测）。不补的话付费号上请求会挂起没有回应。BotGuard 槽位 inner[3]/[4] 留空。
+	//
+	// 起作用的是 inner[49]=40（2026-11-16 Ultra 号，同一程序逐槽交替实测）：带它 15/15 成功，
+	// 只带另外 7 个槽 0/3，什么都不带 9/27。代价是它会关掉思考档——带它时 -thinking 回报普通
+	// "4 Carbon"，不带才回 "4 Carbon High"。两者怎么兼得要浏览器选 High 时的上行帧才能对，
+	// 现在先保证不挂。其余 7 个槽照抓包保留，单独测过无害。
+	if mc.Mode == 8 {
+		inner[6] = []interface{}{1}
+		inner[30] = []interface{}{}
+		inner[49] = 40
+		inner[68] = 2
+		inner[83] = 1
+		inner[91] = 1
+		inner[96] = 1
+		inner[98] = 1
+	}
 	// 媒体工具开关。填了服务端就换后端模型出图/出乐（响应里带产物引用，字节要另取）。
 	if mc.Tool > 0 {
 		inner[49] = mc.Tool
@@ -801,7 +851,8 @@ func streamGenerateOnce(prompt, latest string, mc ModelConfig, pending []pending
 		if err != nil {
 			lastErr = err
 			// 出错话术不记进代理健康度：匿名直连也一样出，跟出口无关，算进去会误熔断。
-			if pickedOK && !errors.Is(err, errUpstreamFailureReply) {
+			// 空闲超时同理不记：首字节已经到了（出口通的），是上游开流后自己卡住，不是出口的锅。
+			if pickedOK && !errors.Is(err, errUpstreamFailureReply) && !errors.Is(err, errIdleTimeout) {
 				recordProxyResult(picked.ID, false, err.Error())
 			}
 			// 已经往客户端吐过内容就不能重试，否则会重复（思考链也算吐过）。
@@ -1030,6 +1081,7 @@ func setAuthUserHeaders(h map[string]string, authuser int) {
 func doGeminiRequest(endpoint, body string, headers map[string]string, proxyURL string,
 	onLine func(string) error) (int, []byte, int64, []string, error) {
 	sendAt := time.Now()
+	idle := time.Duration(rtCfg().StreamIdleTimeoutSec) * time.Second
 	if proxyURL != "" {
 		// 走 stdlib 的 http.ProxyURL，已知能过 socks5/socks5h。
 		req, err := http.NewRequest("POST", endpoint, strings.NewReader(body))
@@ -1046,7 +1098,7 @@ func doGeminiRequest(endpoint, body string, headers map[string]string, proxyURL 
 			return 0, nil, 0, nil, err
 		}
 		defer resp.Body.Close()
-		raw, ttfb, err := readBody(resp.Body, onLine, sendAt)
+		raw, ttfb, err := readBodyWithIdle(resp.Body, onLine, sendAt, idle)
 		if err != nil {
 			return resp.StatusCode, nil, ttfb, resp.Header.Values("Set-Cookie"), err
 		}
@@ -1067,7 +1119,7 @@ func doGeminiRequest(endpoint, body string, headers map[string]string, proxyURL 
 		return 0, nil, 0, nil, err
 	}
 	defer resp.Body.Close()
-	raw, ttfb, err := readBody(resp.Body, onLine, sendAt)
+	raw, ttfb, err := readBodyWithIdle(resp.Body, onLine, sendAt, idle)
 	if err != nil {
 		return resp.StatusCode, nil, ttfb, resp.Header.Values("Set-Cookie"), err
 	}
@@ -1085,12 +1137,21 @@ func doGeminiRequest(endpoint, body string, headers map[string]string, proxyURL 
 // start 必须是**请求发出前**的时刻，由调用方传入。放在本函数里取 time.Now()
 // 是不对的：那时 client.Do 已经返回、响应头甚至部分 body 都到了，测出来恒为 0。
 func readBody(r io.Reader, onLine func(string) error, start time.Time) ([]byte, int64, error) {
+	return readBodyActivity(r, onLine, start, nil)
+}
+
+// readBodyActivity 同 readBody，但每扫到一行先调一次 onActivity —— 空闲看门狗靠它
+// 记"最后一次收到数据的时刻"。onActivity 为 nil 时跟 readBody 完全一样。
+func readBodyActivity(r io.Reader, onLine func(string) error, start time.Time, onActivity func()) ([]byte, int64, error) {
 	var buf bytes.Buffer
 	sc := bufio.NewScanner(io.TeeReader(r, &buf))
 	// 单帧可能很大（实测见过 40 万字节的响应），默认 64KB 上限不够。
 	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	var ttfb int64 = -1
 	for sc.Scan() {
+		if onActivity != nil {
+			onActivity()
+		}
 		if ttfb < 0 {
 			ttfb = time.Since(start).Milliseconds()
 		}
@@ -1107,6 +1168,74 @@ func readBody(r io.Reader, onLine func(string) error, start time.Time) ([]byte, 
 		return buf.Bytes(), ttfb, err
 	}
 	return buf.Bytes(), ttfb, nil
+}
+
+// readBodyWithIdle 在 readBody 外面套一个空闲超时看门狗（#81）。
+//
+// 为什么要：总超时（request_timeout_sec）是整条请求的 deadline。上游"首字节 2 秒就到、
+// 之后 200 多秒一个 chunk 都不来"这种挂法落在它射程之外——首字节一到，整体 deadline
+// 还远着，请求就那么挂着，客户端只能等到自己超时（#81 实测 254 秒、输出 0）。空闲看门狗
+// 盯的是帧与帧之间隔了多久，超过 idle 就 Close 掉 body 打断阻塞的读取。
+//
+// 掐断后报 errIdleTimeout（瞬时错误、无条件重试）：空闲多半是上游抖动，重发通常就拿到
+// 内容，跟空响应 1155 同一套路。idle<=0 时不装看门狗，退回普通 readBody。
+//
+// 只给老协议（StreamGenerate）用：新协议 processSession 的下行长轮询本来就约 60 秒空闲
+// 一次、靠 AID 重连，空闲是正常的，装了会误杀。
+func readBodyWithIdle(body io.ReadCloser, onLine func(string) error, start time.Time, idle time.Duration) ([]byte, int64, error) {
+	if idle <= 0 {
+		return readBody(body, onLine, start)
+	}
+	var mu sync.Mutex
+	last := time.Now()
+	fired := false
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		tick := idle / 4
+		if tick > time.Second {
+			tick = time.Second
+		}
+		if tick < 50*time.Millisecond {
+			tick = 50 * time.Millisecond
+		}
+		t := time.NewTicker(tick)
+		defer t.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case now := <-t.C:
+				mu.Lock()
+				idleFor := now.Sub(last)
+				mu.Unlock()
+				if idleFor >= idle {
+					mu.Lock()
+					fired = true
+					mu.Unlock()
+					body.Close() // 打断阻塞在 Read 上的 Scan
+					return
+				}
+			}
+		}
+	}()
+	raw, ttfb, err := readBodyActivity(body, onLine, start, func() {
+		mu.Lock()
+		last = time.Now()
+		mu.Unlock()
+	})
+	close(stop)
+	<-done
+	mu.Lock()
+	f := fired
+	mu.Unlock()
+	if f {
+		// 看门狗 Close 导致的读错误（"use of closed connection"之类）对上层没意义，
+		// 统一报成空闲超时。
+		return raw, ttfb, errIdleTimeout
+	}
+	return raw, ttfb, err
 }
 
 // reasoningInLine 从单个 wrb.fr 行里取出思考链。
@@ -1226,6 +1355,11 @@ var errUpstreamFailureReply = errors.New("upstream returned a failure reply (inn
 // errUpstreamTimeout 标记新协议（processSession）等满 request_timeout_sec 的超时；
 // 老协议的超时由 http 客户端报出，靠 net.Error.Timeout() 认（见 isUpstreamTimeout）。
 var errUpstreamTimeout = errors.New("upstream timeout")
+
+// errIdleTimeout 标记上游开流后长时间不来 chunk、被空闲看门狗掐断（#81，见 readBodyWithIdle）。
+// 故意不让 isUpstreamTimeout 认它：空闲是瞬时抖动（跟空响应 1155 同类，重发通常就好），
+// 要无条件重试，而不是被 retry_on_timeout=关 一起挡掉（那是给"等满总超时多半还超时"用的）。
+var errIdleTimeout = errors.New("upstream idle timeout (no chunk within stream_idle_timeout_sec)")
 
 // isUpstreamTimeout 判断这次失败是不是上游超时（等满 request_timeout_sec 没收完）。
 // 两种 http 客户端（stdlib、tls-client 的 fhttp）超时都返回 Timeout()=true 的错误，

@@ -225,7 +225,7 @@ func wcSend(ctx context.Context, method, u, body, cookie, proxyURL string) (*wcR
 		}
 		resp, err := getStdlibClient(proxyURL).Do(req)
 		if err != nil {
-			return nil, err
+			return nil, wcRedactErr(err)
 		}
 		return &wcResp{resp.StatusCode, resp.Header.Values("Set-Cookie"),
 			resp.Header.Get("X-HTTP-Session-Id"), resp.Body}, nil
@@ -239,10 +239,25 @@ func wcSend(ctx context.Context, method, u, body, cookie, proxyURL string) (*wcR
 	}
 	resp, err := getTLSClient().Do(req)
 	if err != nil {
-		return nil, err
+		return nil, wcRedactErr(err)
 	}
 	return &wcResp{resp.StatusCode, resp.Header.Values("Set-Cookie"),
 		resp.Header.Get("X-HTTP-Session-Id"), resp.Body}, nil
+}
+
+// wcRedactErr 去掉连接层错误里 URL 的查询串。stdlib 和 fhttp 的 Do 失败时返回 *url.Error，
+// Error() 会带完整 URL：握手 URL 的 $httpHeaders 里有 SAPISIDHASH 和 API key，上下行 URL 里有
+// 会话 id，原样上抛会进日志、请求记录和返回给客户端的错误信息。保留 Err，超时判断不受影响。
+func wcRedactErr(err error) error {
+	ue, ok := err.(*url.Error)
+	if !ok {
+		return err
+	}
+	cp := *ue
+	if i := strings.IndexByte(cp.URL, '?'); i >= 0 {
+		cp.URL = cp.URL[:i] + "?<redacted>"
+	}
+	return &cp
 }
 
 // --- 帧 ---
