@@ -2,6 +2,25 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 4.31.0
+
+上游把 3.1 Pro 的位置换成了新模型 **4 Neon**（网页上描述是「Deeper analysis」）。2026-11-19 付费号的模型选择器是
+Auto（3.5 Flash-Lite）/ 4 Hydrogen / 4 Neon / 4 Carbon。
+
+### 新增
+
+- **`gemini-4-neon` / `gemini-4-neon-thinking`（#84）**。要付费 / Ultra 号的 cookie。实测普通档回报 `4 Neon`，思考版回报
+  `4 Neon High` 并带 `reasoning_content`。Neon 不是 Argon 的继任者：Argon 改名成了 Carbon，`gemini-4-argon` 仍落到 4 Carbon。
+- **`request_timeout_sec` 上限从 600 提到 1200 秒（#83）**。总超时不会被持续输出重置，Carbon 长思考 + 长输出能跑过 600 秒。
+  卡住不出字的请求由 4.30.0 的 `stream_idle_timeout_sec` 掐断，放宽上限不会让它们白等。
+
+### 修复
+
+- **`gemini-3.1-pro` / `-thinking` 恢复可用，现在是 `gemini-4-neon` 的旧名称**。4.29.0 把它们当成已下线、直接返回 400，
+  当时付费号请求 3.1 Pro 被换成 3.5 Flash-Lite、清单里也还没有 Neon；现在同一个位置上是 4 Neon，继续拦等于把 Neon 拦在门外。
+  开着 `strict_model` 时 `3.1 Pro` 和 `4 Neon` 两个回报名互认。
+- 文档更正：免费号请求 `gemini-4-carbon` 现在拿到的是 4 Hydrogen，不再是 3.5 Flash-Lite。
+
 ## 4.30.0
 
 ### 新增
