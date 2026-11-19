@@ -57,11 +57,11 @@ func TestModelHeader(t *testing.T) {
 	for _, m := range Models {
 		hexes[m.HexID] = true
 	}
-	if len(hexes) != 5 {
-		t.Errorf("只应存在 5 个真模型 hex, got %d", len(hexes))
+	if len(hexes) != 6 {
+		t.Errorf("只应存在 6 个真模型 hex, got %d", len(hexes))
 	}
 	// 反过来：每个真 hex 都应该有一个 thinking 版
-	for _, base := range []string{hexFlash36, hexFlashLite, hexPro31, hexFlash38, hexArgon4} {
+	for _, base := range []string{hexFlash36, hexFlashLite, hexPro31, hexFlash38, hexArgon4, hexNeon4} {
 		found := false
 		for _, m := range Models {
 			if m.HexID == base && m.Thinking {
