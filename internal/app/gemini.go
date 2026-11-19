@@ -138,6 +138,11 @@ var Models = map[string]ModelConfig{
 	// 3.1 Pro 已下线（2026-11-16/17 实测）：Ultra 号的 otAQ7b 清单里没有它了，请求回报
 	// 3.5 Flash-Lite；免费号请求挂到超时（2/2）。
 	"gemini-3.1-pro": {HexID: hexPro31, Mode: 3, Upstream: "3.1 Pro", Retired: retiredPro31, Desc: "Retired upstream"},
+	// 4 Neon(2026-11-19 本地探测):Google 把 3.1 Pro 的槽位(mode 3)原地换芯成 4 Neon——
+	// 这就是 3.1 Pro "下线"的真相。探测方法:带 Pro 号 cookie 发 hexPro31+Mode=3 的
+	// StreamGenerate,上游回报 "4 Neon"(extractUpstreamModel 的正则原样命中)。
+	// 官方定位编程/agent 前沿模型,网页端要 AI Pro/Ultra 订阅;免费号行为未验证。
+	"gemini-4-neon": {HexID: hexPro31, Mode: 3, Upstream: "4 Neon", Desc: "4 Neon (frontier coding/agent model, 2026-11-18); needs a signed-in PAID Google account"},
 	// 3.8 Flash：Google 把原 3.7 那个 hex 原地升级了（同 hex，服务端显示名从 3.7 变 3.8）。
 	// 现在服务端回报 "4 Hydrogen"，登录号（含免费号）都拿得到，匿名拿不到。
 	// gemini-3.7-flash 保留为别名（同 hex）。
@@ -156,6 +161,9 @@ var Models = map[string]ModelConfig{
 	"gemini-3.6-flash-thinking":      {HexID: hexFlash36, Mode: 1, Thinking: true, Upstream: "3.6 Flash", UpstreamAliases: []string{"4 Hydrogen"}, Desc: "3.6 Flash with extended thinking; needs a signed-in cookie"},
 	"gemini-3.5-flash-lite-thinking": {HexID: hexFlashLite, Mode: 6, Thinking: true, Upstream: "3.5 Flash-Lite", Desc: "3.5 Flash-Lite with extended thinking; needs a signed-in cookie"},
 	"gemini-3.1-pro-thinking":        {HexID: hexPro31, Mode: 3, Thinking: true, Upstream: "3.1 Pro", Retired: retiredPro31, Desc: "Retired upstream"},
+	// 4 Neon 扩展思考档(think=2)。沿用既有 thinking 机制,thinking 档在 Neon 上游
+	// 的实际行为(是否有 High 档/思考链)未抓包验证,以实测为准。
+	"gemini-4-neon-thinking":        {HexID: hexPro31, Mode: 3, Thinking: true, Upstream: "4 Neon", Desc: "4 Neon with extended thinking; needs a signed-in PAID Google account"},
 	"gemini-3.8-flash-thinking":      {HexID: hexFlash38, Mode: 1, Thinking: true, Upstream: "3.8 Flash", UpstreamAliases: []string{"4 Hydrogen"}, Desc: "Legacy Flash route with extended thinking, now 4 Hydrogen; needs a signed-in Google account"},
 	"gemini-3.7-flash-thinking":      {HexID: hexFlash38, Mode: 1, Thinking: true, Upstream: "3.8 Flash", UpstreamAliases: []string{"4 Hydrogen"}, Desc: "alias of gemini-3.8-flash-thinking"},
 	// 同一路由的扩展思考（think=2），不是其他账号清单里独立的 Mode=5 Thinking 模型。
@@ -180,8 +188,8 @@ var Models = map[string]ModelConfig{
 	"gemini-canvas": {HexID: hexFlash36, Mode: 1, Tool: toolCanvas, Desc: "Canvas: generates an interactive HTML document (returned inline as a ```html block); needs a signed-in cookie"},
 }
 
-const retiredPro31 = "Gemini web no longer offers 3.1 Pro: signed-in free accounts hang until timeout and paid accounts " +
-	"are downgraded to 3.5 Flash-Lite. Use gemini-4-hydrogen (any signed-in account) or gemini-4-carbon (paid/Ultra) instead"
+const retiredPro31 = "Gemini web no longer offers 3.1 Pro: the slot was retooled into 4 Neon (mode 3 now answers \"4 Neon\"). " +
+	"Use gemini-4-neon (paid account; the direct successor), gemini-4-hydrogen (any signed-in account) or gemini-4-carbon (paid/Ultra) instead"
 
 // fallbackDefaultModel 是默认模型被下线时换上的那个。
 const fallbackDefaultModel = "gemini-3.6-flash"
