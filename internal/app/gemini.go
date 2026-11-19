@@ -139,9 +139,9 @@ func (mc ModelConfig) thinkWire() int {
 var Models = map[string]ModelConfig{
 	"gemini-3.6-flash":      {HexID: hexFlash36, Mode: 1, Upstream: "3.6 Flash", UpstreamAliases: []string{"4 Hydrogen"}, Desc: "Flash route: 3.5 Flash-Lite when anonymous, 4 Hydrogen when signed in"},
 	"gemini-3.5-flash-lite": {HexID: hexFlashLite, Mode: 6, Upstream: "3.5 Flash-Lite", Desc: "Fastest, lightweight"},
-	// 3.1 Pro 已下线（2026-11-16/17 实测）：Ultra 号的 otAQ7b 清单里没有它了，请求回报
-	// 3.5 Flash-Lite；免费号请求挂到超时（2/2）。
-	"gemini-3.1-pro": {HexID: hexPro31, Mode: 3, Upstream: "3.1 Pro", Retired: retiredPro31, Desc: "Retired upstream"},
+	// 3.1 Pro 的位置（mode 3）现在是 4 Neon（2026-11-19 Ultra 号实测回报 "4 Neon"）。名字留着兼容老配置，
+	// 跟 gemini-4-neon 是同一条路由。11-16 那次 mode 3 在 Ultra 号上回报 3.5 Flash-Lite，当时清单里还没有 Neon。
+	"gemini-3.1-pro": {HexID: hexPro31, Mode: 3, Upstream: "3.1 Pro", UpstreamAliases: []string{"4 Neon"}, Desc: "alias of gemini-4-neon (upstream replaced 3.1 Pro with 4 Neon); needs a signed-in PAID/Ultra Google account"},
 	// 3.8 Flash：Google 把原 3.7 那个 hex 原地升级了（同 hex，服务端显示名从 3.7 变 3.8）。
 	// 现在服务端回报 "4 Hydrogen"，登录号（含免费号）都拿得到，匿名拿不到。
 	// gemini-3.7-flash 保留为别名（同 hex）。
@@ -155,20 +155,20 @@ var Models = map[string]ModelConfig{
 	"gemini-4-argon":  {HexID: hexArgon4, Mode: 8, Upstream: "4 Argon", UpstreamAliases: []string{"4 Carbon"}, Desc: "alias of gemini-4-carbon (upstream renamed 4 Argon to 4 Carbon); needs a signed-in PAID/Ultra Google account"},
 	"gemini-4-carbon": {HexID: hexArgon4, Mode: 8, Upstream: "4 Carbon", UpstreamAliases: []string{"4 Argon"}, Desc: "4 Carbon (most complex work); needs a signed-in PAID/Ultra Google account (free accounts get downgraded to 3.5 Flash-Lite)"},
 	// 4 Neon（#84）：Mode=3 选中它，付费号专属。
-	"gemini-4-neon": {HexID: hexNeon4, Mode: 3, Upstream: "4 Neon", Desc: "4 Neon (deeper analysis); needs a signed-in PAID/Ultra Google account"},
+	"gemini-4-neon": {HexID: hexNeon4, Mode: 3, Upstream: "4 Neon", UpstreamAliases: []string{"3.1 Pro"}, Desc: "4 Neon (deeper analysis); needs a signed-in PAID/Ultra Google account"},
 
 	// 扩展思考版。inner[80]=2 跟模型 hex 正交，都能开；但只在登录态生效，
 	// 所以跟 3.1 Pro 一样在没 cookie 时不暴露。
 	"gemini-3.6-flash-thinking":      {HexID: hexFlash36, Mode: 1, Thinking: true, Upstream: "3.6 Flash", UpstreamAliases: []string{"4 Hydrogen"}, Desc: "3.6 Flash with extended thinking; needs a signed-in cookie"},
 	"gemini-3.5-flash-lite-thinking": {HexID: hexFlashLite, Mode: 6, Thinking: true, Upstream: "3.5 Flash-Lite", Desc: "3.5 Flash-Lite with extended thinking; needs a signed-in cookie"},
-	"gemini-3.1-pro-thinking":        {HexID: hexPro31, Mode: 3, Thinking: true, Upstream: "3.1 Pro", Retired: retiredPro31, Desc: "Retired upstream"},
+	"gemini-3.1-pro-thinking":        {HexID: hexPro31, Mode: 3, Thinking: true, Upstream: "3.1 Pro", UpstreamAliases: []string{"4 Neon"}, Desc: "alias of gemini-4-neon-thinking; needs a signed-in PAID/Ultra account"},
 	"gemini-3.8-flash-thinking":      {HexID: hexFlash38, Mode: 1, Thinking: true, Upstream: "3.8 Flash", UpstreamAliases: []string{"4 Hydrogen"}, Desc: "Legacy Flash route with extended thinking, now 4 Hydrogen; needs a signed-in Google account"},
 	"gemini-3.7-flash-thinking":      {HexID: hexFlash38, Mode: 1, Thinking: true, Upstream: "3.8 Flash", UpstreamAliases: []string{"4 Hydrogen"}, Desc: "alias of gemini-3.8-flash-thinking"},
 	// 同一路由的扩展思考（think=2），不是其他账号清单里独立的 Mode=5 Thinking 模型。
 	// 实测 Ultra 号回报 "4 Hydrogen High"；免费号回报普通 "4 Hydrogen"（没有 High 档）。
 	"gemini-4-hydrogen-thinking": {HexID: hexHydrogen4, Mode: 1, Thinking: true, Upstream: "4 Hydrogen", Desc: "4 Hydrogen with extended thinking (High tier on paid accounts; free accounts get the normal tier); needs a signed-in cookie"},
 	// 4 Neon + 扩展思考：实测回报 "4 Neon High"，思考链走 [4][0][37][0][0]。
-	"gemini-4-neon-thinking": {HexID: hexNeon4, Mode: 3, Thinking: true, Upstream: "4 Neon", Desc: "4 Neon with extended thinking (High tier); needs a signed-in PAID/Ultra account"},
+	"gemini-4-neon-thinking": {HexID: hexNeon4, Mode: 3, Thinking: true, Upstream: "4 Neon", UpstreamAliases: []string{"3.1 Pro"}, Desc: "4 Neon with extended thinking (High tier); needs a signed-in PAID/Ultra account"},
 	// 4 Argon + 扩展思考：Mode=8（选 Argon）+ inner[80]=2（上游现在把这档叫 "High"）。
 	// 实测回报 "4 Argon High" 且带思考链（硬题 985 字符，走既有 [4][0][37][0][0] 路径，
 	// 无需改抽取代码）→ 映射成 reasoning_content。付费/Ultra 专属。
@@ -187,9 +187,6 @@ var Models = map[string]ModelConfig{
 	// 画布：生成 immersive 交互 HTML 文档，内联返回（不是二进制、不用下载）。要登录态。
 	"gemini-canvas": {HexID: hexFlash36, Mode: 1, Tool: toolCanvas, Desc: "Canvas: generates an interactive HTML document (returned inline as a ```html block); needs a signed-in cookie"},
 }
-
-const retiredPro31 = "Gemini web no longer offers 3.1 Pro: signed-in free accounts hang until timeout and paid accounts " +
-	"are downgraded to 3.5 Flash-Lite. Use gemini-4-hydrogen (any signed-in account) or gemini-4-carbon (paid/Ultra) instead"
 
 // fallbackDefaultModel 是默认模型被下线时换上的那个。
 const fallbackDefaultModel = "gemini-3.6-flash"

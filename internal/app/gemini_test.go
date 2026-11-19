@@ -51,7 +51,7 @@ func TestModelHeader(t *testing.T) {
 		}
 	}
 	// 守的是「不许冒出假模型」：thinking 版复用同样的 hex，所以看**去重后的 hex 数**，
-	// 不是条目数。3.6/3.5-lite/3.1-pro/3.8-flash + 4 Argon（#35）= 5 个；
+	// 不是条目数。3.6/3.5-lite/3.1-pro/3.8-flash + 4 Argon（#35）+ 4 Neon（#84）= 6 个；
 	// 4 Hydrogen（#74）复用原 3.8 Flash 的 hex，不增加独立 hex。
 	hexes := map[string]bool{}
 	for _, m := range Models {
@@ -297,19 +297,27 @@ func TestProHiddenWithoutCookie(t *testing.T) {
 	}
 }
 
-// 上游下线的模型（3.1 Pro）：有没有 cookie 都不进列表，请求直接报下线原因，
+// withRetiredModel 往模型表里临时塞一个已下线的模型，用完删掉。
+// 现在没有真的下线模型（3.1 Pro 的位置被 4 Neon 接替了），但机制要留着给下一次。
+func withRetiredModel(t *testing.T, name string) {
+	t.Helper()
+	Models[name] = ModelConfig{HexID: hexPro31, Mode: 3, Retired: "gone upstream; use gemini-4-hydrogen instead"}
+	t.Cleanup(func() { delete(Models, name) })
+}
+
+// 上游下线的模型：有没有 cookie 都不进列表，请求直接报下线原因，
 // 不能被「要 cookie」或「unknown model」的提示盖掉。
 func TestRetiredModels(t *testing.T) {
+	const n = "gemini-test-retired"
+	withRetiredModel(t, n)
 	check := func(when string) {
-		for _, n := range []string{"gemini-3.1-pro", "gemini-3.1-pro-thinking"} {
-			if _, ok := availableModels()[n]; ok {
-				t.Errorf("%s: 下线模型 %s 不该出现在列表里", when, n)
-			}
-			_, _, err := resolveModel(n)
-			if err == nil || !strings.Contains(err.Error(), "retired") ||
-				!strings.Contains(err.Error(), "gemini-4-hydrogen") {
-				t.Errorf("%s: %s 应报下线并给出替代, got %v", when, n, err)
-			}
+		if _, ok := availableModels()[n]; ok {
+			t.Errorf("%s: 下线模型 %s 不该出现在列表里", when, n)
+		}
+		_, _, err := resolveModel(n)
+		if err == nil || !strings.Contains(err.Error(), "retired") ||
+			!strings.Contains(err.Error(), "gemini-4-hydrogen") {
+			t.Errorf("%s: %s 应报下线并给出替代, got %v", when, n, err)
 		}
 	}
 	check("无 cookie")
@@ -317,9 +325,24 @@ func TestRetiredModels(t *testing.T) {
 	check("有 cookie")
 }
 
+// 3.1 Pro 的位置现在是 4 Neon：老名字有 cookie 时照常可用，不再报下线。
+func TestPro31IsNeonAlias(t *testing.T) {
+	withPoolCookie(t)
+	for _, n := range []string{"gemini-3.1-pro", "gemini-3.1-pro-thinking", "gemini-4-neon", "gemini-4-neon-thinking"} {
+		if _, ok := availableModels()[n]; !ok {
+			t.Errorf("%s 应出现在列表里", n)
+		}
+		_, mc, err := resolveModel(n)
+		if err != nil || mc.Mode != 3 {
+			t.Errorf("%s: mode=%d err=%v", n, mc.Mode, err)
+		}
+	}
+}
+
 // 默认模型存的是下线模型时换成 fallbackDefaultModel，其余字段不动。
 func TestReplaceRetiredDefault(t *testing.T) {
-	c := RuntimeConfig{DefaultModel: "gemini-3.1-pro", RetryAttempts: 7}
+	withRetiredModel(t, "gemini-test-retired")
+	c := RuntimeConfig{DefaultModel: "gemini-test-retired", RetryAttempts: 7}
 	replaceRetiredDefault(&c)
 	if c.DefaultModel != fallbackDefaultModel || c.RetryAttempts != 7 {
 		t.Errorf("got %+v", c)
