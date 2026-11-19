@@ -1,6 +1,6 @@
 # gemini-web2api-go
 
-**Gemini web → OpenAI-compatible API.** A self-hosted proxy that turns the free [gemini.google.com](https://gemini.google.com) web app into `/v1/chat/completions` — **no Google API key, no paid quota**. Single Go binary, real Chrome TLS fingerprint, cookie pool with automatic renewal, proxy pool, built-in admin dashboard, SQLite / MySQL / PostgreSQL. Image, music, canvas and video generation (`/v1/videos`) included. Models track the web app, **Gemini 4 Hydrogen** (any signed-in account) and **4 Carbon** (formerly 4 Argon, paid account) included.
+**Gemini web → OpenAI-compatible API.** A self-hosted proxy that turns the free [gemini.google.com](https://gemini.google.com) web app into `/v1/chat/completions` — **no Google API key, no paid quota**. Single Go binary, real Chrome TLS fingerprint, cookie pool with automatic renewal, proxy pool, built-in admin dashboard, SQLite / MySQL / PostgreSQL. Image, music, canvas and video generation (`/v1/videos`) included. Models track the web app, **Gemini 4 Hydrogen** (any signed-in account), **4 Neon** and **4 Carbon** (formerly 4 Argon) (paid account) included.
 
 <img src="docs/banner.svg" alt="gemini-web2api-go — Gemini web to OpenAI-compatible API, native Gemini API and MCP" width="100%">
 
@@ -70,7 +70,7 @@ The projects most often compared with this one are the Python [Sophomoresty/gemi
 | Exit IPs | Proxy pool: circuit breaker, rotation, each proxy its own rate-limit slot | One proxy | One proxy | — (official API quota) |
 | Silent downgrade | `strict_model`: a downgraded answer does not count, retry on the next account, `429` when the whole pool is downgraded | README notes that a free account asking for Pro gets Flash | Not mentioned in README | — (official API quota) |
 | Admin panel | Built in | Not mentioned in README | Not mentioned in README | Companion project CPAMC, installed separately |
-| Gemini 4 Carbon (formerly 4 Argon) | With a paid-account cookie | Not mentioned in README | Models discovered per account, not named in README | Yes, depending on channel |
+| Gemini 4 Neon / 4 Carbon (formerly 4 Argon) | With a paid-account cookie | Not mentioned in README | Models discovered per account, not named in README | Yes, depending on channel |
 
 ## Features
 
@@ -92,9 +92,9 @@ The projects most often compared with this one are the Python [Sophomoresty/gemi
 **Models**
 - `gemini-3.6-flash` and `gemini-3.5-flash-lite` work anonymously, web search included (anonymously both are actually 3.5 Flash-Lite, see [Models](#models))
 - `gemini-4-hydrogen` works with any Google account's cookie (free accounts included)
-- `gemini-4-carbon` (formerly 4 Argon) needs a cookie from a paid / Ultra account
+- `gemini-4-neon` (successor of 3.1 Pro) and `gemini-4-carbon` (formerly 4 Argon) need a cookie from a paid / Ultra account
 - Every model has a `-thinking` variant (extended thinking), available with a cookie
-- `gemini-3.1-pro` has been retired upstream; requests get a 400 with an explanation
+- The old names `gemini-3.1-pro` and `gemini-4-argon` still work and land on 4 Neon and 4 Carbon
   (`reasoning_content`)
 - Every response records which model the backend **actually** used, so silent
   downgrades are visible
@@ -342,14 +342,14 @@ The frontend is a single HTML file and Chart.js is embedded in the binary, **not
 ## Models
 
 Models follow the Gemini web app's model picker (the list comes from `batchexecute?rpcids=otAQ7b`). Upstream reshuffled in 2026-11:
-a paid account's picker now lists only **3.5 Flash-Lite / 4 Hydrogen / 4 Carbon**; 3.1 Pro and 3.6 Flash are gone.
-What a request on the Flash route (`gemini-3.6-flash` / `gemini-3.8-flash` / `gemini-4-hydrogen`) actually gets, measured per identity:
+a paid account's picker now lists **Auto (3.5 Flash-Lite) / 4 Hydrogen / 4 Neon / 4 Carbon**. 4 Neon took over 3.1 Pro's slot,
+4 Carbon is 4 Argon renamed, and 3.6 Flash is gone. What each identity actually gets (measured 2026-11-19):
 
-| Identity | Flash route actually is | 3.1 Pro | 4 Carbon |
+| Identity | Flash route (`gemini-3.6-flash` / `gemini-4-hydrogen`) | `gemini-4-neon` | `gemini-4-carbon` |
 |---|---|---|---|
 | Anonymous | 3.5 Flash-Lite | not exposed | not exposed |
-| Free account cookie | **4 Hydrogen** (no High tier for thinking) | retired | downgraded to 3.5 Flash-Lite |
-| Paid / Ultra account cookie | **4 Hydrogen** (thinking is the High tier) | retired | 4 Carbon |
+| Free account cookie | **4 Hydrogen** (no High tier for thinking) | unverified (on 11-17 a free account's request hung until timeout) | switched to 4 Hydrogen |
+| Paid / Ultra account cookie | **4 Hydrogen** (thinking is the High tier) | **4 Neon** | **4 Carbon** |
 
 | Model | Description |
 |---|---|
@@ -357,21 +357,23 @@ What a request on the Flash route (`gemini-3.6-flash` / `gemini-3.8-flash` / `ge
 | `gemini-3.5-flash-lite` | Fast and lightweight |
 | `gemini-4-hydrogen` | 4 Hydrogen, **needs a cookie** (free accounts work) |
 | `gemini-3.8-flash` | Legacy name, same route as `gemini-4-hydrogen`. `gemini-3.7-flash` remains an alias |
-| `gemini-4-carbon` | 4 Carbon (most complex work; renamed upstream from 4 Argon), **needs a cookie from a PAID/Ultra Gemini account** (free accounts get downgraded to 3.5 Flash-Lite) |
+| `gemini-4-carbon` | 4 Carbon (most complex work; renamed upstream from 4 Argon), **needs a cookie from a PAID/Ultra Gemini account** (free accounts get switched to 4 Hydrogen) |
 | `gemini-4-argon` | Legacy name, same route as `gemini-4-carbon` |
+| `gemini-4-neon` | 4 Neon (deeper analysis; took over 3.1 Pro's slot), **needs a cookie from a PAID/Ultra Gemini account** |
+| `gemini-3.1-pro` | Legacy name, same route as `gemini-4-neon` |
 | `gemini-3.6-flash-thinking` | Flash route with extended thinking; **needs a cookie** |
 | `gemini-3.5-flash-lite-thinking` | 3.5 Flash-Lite with extended thinking; **needs a cookie** |
 | `gemini-4-hydrogen-thinking` | 4 Hydrogen with extended thinking: High tier with `reasoning_content` on paid accounts, normal tier only on free accounts. **Needs a cookie** |
+| `gemini-4-neon-thinking` | 4 Neon with extended thinking (High tier), with `reasoning_content`. **Needs a PAID/Ultra account cookie**. `gemini-3.1-pro-thinking` is the legacy name |
 | `gemini-3.8-flash-thinking` | Legacy name, same as `gemini-4-hydrogen-thinking` (`gemini-3.7-flash-thinking` is an alias) |
 | `gemini-4-argon-thinking` | Carbon with extended thinking. **Currently answers at the normal tier**: the request parameter that keeps Carbon from hanging also disables the thinking tier, and the two can't be combined yet. **Needs a PAID/Ultra account cookie** |
 | `gemini-4-argon-thinking-medium` | Carbon at the Medium thinking tier (upstream Medium, no `reasoning_content`); **needs a PAID/Ultra account cookie** (the request carries the same parameter as above; whether Medium still takes effect is unverified) |
-| `gemini-3.1-pro` / `-thinking` | **Retired upstream**: requests get a 400 explaining why and what to use instead, and are not sent upstream (a free account would hang until timeout, a paid one would be switched to 3.5 Flash-Lite) |
 | `gemini-image` | Image generation (Nano Banana); base64 output; **needs a cookie** |
 | `gemini-music` | Music (Lyria, ~30s); base64 output; **needs a cookie** |
 | `gemini-canvas` | Canvas: generates an interactive HTML document (returned inline as a ```html block); **needs a cookie** |
 | `gemini-video` | Video generation (async, tens of seconds to a few minutes); base64 MP4 output; **needs a Pro/paid account** (free accounts are refused by the upstream content policy) |
 
-With `strict_model` enabled, the names from before and after the upstream renames accept each other: `gemini-3.6-flash` / `gemini-3.8-flash` accept `4 Hydrogen`, `gemini-4-argon` accepts `4 Carbon`, and `gemini-4-carbon` also accepts `4 Argon`; an explicit `gemini-4-hydrogen` request only accepts `4 Hydrogen`. An anonymous `gemini-3.6-flash` request gets 3.5 Flash-Lite, which `strict_model` treats as a downgrade. Hydrogen exposes the web app's normal and extended/High tiers, not the official API's `xhigh` tier.
+With `strict_model` enabled, the names from before and after the upstream renames accept each other: `gemini-3.6-flash` / `gemini-3.8-flash` accept `4 Hydrogen`, `gemini-4-argon` accepts `4 Carbon`, `gemini-4-carbon` also accepts `4 Argon`, and `gemini-3.1-pro` / `gemini-4-neon` accept both `3.1 Pro` and `4 Neon`; an explicit `gemini-4-hydrogen` request only accepts `4 Hydrogen`. An anonymous `gemini-3.6-flash` request gets 3.5 Flash-Lite, which `strict_model` treats as a downgrade. Hydrogen exposes the web app's normal and extended/High tiers, not the official API's `xhigh` tier.
 
 Without a cookie, `/v1/models` returns only `gemini-3.6-flash` and `gemini-3.5-flash-lite`, and asking for a login-only model fails with an explanation. An anonymous request for one is always silently downgraded to 3.5 Flash-Lite — better to fail at model selection than to hand back a reply that "succeeded" but isn't that model.
 
@@ -451,7 +453,7 @@ Saving takes effect **immediately**, no restart. Values live in the database and
 | Auto-delete conversation (`auto_delete_conversation`) | off by default. When on, each finished request deletes the conversation it left on gemini.google.com, so signed-in accounts don't pile them up. Signed-in only; async best-effort, a failed delete doesn't affect the response. |
 | Temporary chat (`temporary_chat`) | off by default. When on, uses Gemini web's native **Temporary Chat** (`inner[45]=1`): the conversation never enters the account's chat list and isn't used for model training — cleaner than auto-delete, and it saves that extra delete request. Only meaningful signed-in; automatically inactive when server-side multi-turn is on (a temporary chat leaves no list entry, while multi-turn relies on the server keeping the conversation). |
 | Full-size image download (`image_upscale`) | off by default. When on, generated images are fetched the way the web app's Download button does: upscaled 2× in each dimension on Ultra accounts, the original (not recompressed) file on other accounts. One extra request per image; falls back to the default image if it fails. See "Image & music" above. |
-| Anonymous-first (`anon_first`) | off by default. When on, requests that don't need a signed-in session (plain text, no thinking, no tool, no image) go out anonymously without consuming a cookie account, saving account quota; only 4 Hydrogen / 4 Carbon / extended thinking / image gen / file upload etc. pick an account. When off, any request uses an account as long as the pool has one. |
+| Anonymous-first (`anon_first`) | off by default. When on, requests that don't need a signed-in session (plain text, no thinking, no tool, no image) go out anonymously without consuming a cookie account, saving account quota; only 4 Hydrogen / 4 Neon / 4 Carbon / extended thinking / image gen / file upload etc. pick an account. When off, any request uses an account as long as the pool has one. |
 | Strict model check (`strict_model`) | off by default. When an account runs out of quota for a tier, upstream doesn't error — it silently switches to a weaker model and still returns 200. When on, if the model the server reports differs from the one requested, the downgraded answer is not treated as a success: the request retries on the next account, and if the whole pool is downgraded it returns `429 insufficient_quota` (`code: model_downgraded`, with `Retry-After`). For streaming this is decided before the first token is sent, so you never get half an answer followed by an error. Media models (image/music/video/canvas) are not checked. |
 | Downgrade cooldown (`strict_model_cooldown_min`) | Works with strict model check: how long a downgraded account rests for that model before being used again. Default 300 minutes (web usage is counted over a 5-hour window). 0 = do not remember, retry on every request. |
 | Retry attempts / retry delay / upstream timeout | |
@@ -545,7 +547,7 @@ Note that "last success" only means a request involving this cookie succeeded; i
 
 **Each account is pinned to its own exit.** If the cookie pool and proxy pool rotated independently, one Google account would emit requests from dozens of different IPs, which is exactly what account sharing looks like to Google. An account binds to the first exit it uses and stays there until that exit becomes unusable.
 
-**Several Google accounts signed in to one browser? Set the "account index".** Accounts signed in to the same browser share one cookie jar, so the exported cookie string can act as any of them; which one a request uses is decided by the URL (`/u/1/` is the second account). If you leave it unset, every request lands on the **default account** (the one signed in first). If your subscription is on another account, paid models are silently downgraded to 3.5 Flash-Lite while "check" still says the session is valid.
+**Several Google accounts signed in to one browser? Set the "account index".** Accounts signed in to the same browser share one cookie jar, so the exported cookie string can act as any of them; which one a request uses is decided by the URL (`/u/1/` is the second account). If you leave it unset, every request lands on the **default account** (the one signed in first). If your subscription is on another account, paid models are silently switched to another model while "check" still says the session is valid.
 
 - In the browser, switch to the account you want and open Gemini. If the address bar shows `gemini.google.com/u/1/app`, enter `1`; no `/u/` means `0` (the default). Set it as "Account index" when importing or editing the cookie
 - To use one cookie string as several accounts, import it once per account, each with its own index
@@ -707,10 +709,9 @@ docker-compose.yml         single container, pulls the ghcr image by default, sq
 | Every request times out | This host can't reach `gemini.google.com` | Configure a proxy (panel or `--proxy`). Note that **`HTTPS_PROXY` is not read** |
 | Exits at startup with `unable to open database file (14)` | The container runs as nonroot (uid 65532) but the bind-mounted host directory is owned by root, so it can't be written | Use a named volume (the default in compose), or `sudo chown -R 65532:65532 ./data` |
 | `gemini-4-hydrogen` etc. error out immediately | Login-only models aren't exposed without a cookie, by design | Add an account on the Cookie pool page and they become available |
-| `gemini-3.1-pro` reports "retired" | Upstream retired 3.1 Pro | Use `gemini-4-hydrogen` or `gemini-4-carbon` |
 | Every request returns 502 after attaching a cookie | The cookie expired, so the XSRF token can't be fetched | Re-export the cookie. Quick check: if `gemini-4-hydrogen` reports 3.5 Flash-Lite, it's expired |
 | Cookie dies in about 30 minutes; keepalive does nothing | Chrome device-bound session; rotating `__Secure-1PSIDTS` returns 401 | Re-login in **Firefox** and export again. The panel Keep-alive button should report that `__Secure-1PSIDTS` was refreshed |
-| Cookie from a paid account, but paid models report 3.5 Flash-Lite and "check" says the session is valid | Several Google accounts are signed in to the browser and the subscription isn't on the default one, so requests land on the default account | Set the "account index" for that entry in the Cookie pool (`/u/1/` in that account's Gemini address bar means 1); see above |
+| Cookie from a paid account, but paid models report 4 Hydrogen or 3.5 Flash-Lite and "check" says the session is valid | Several Google accounts are signed in to the browser and the subscription isn't on the default one, so requests land on the default account | Set the "account index" for that entry in the Cookie pool (`/u/1/` in that account's Gemini address bar means 1); see above |
 | Panel won't open / 401 | `--admin-token` (or `ADMIN_TOKEN`) doesn't match | An empty token disables auth, which is only acceptable when bound to 127.0.0.1 |
 
 With Docker's default bridge network, upstream may return empty content (Google rejects certain NAT ranges). We have **never reproduced it here**. If you hit it, try `network_mode: host` to confirm whether that is the cause.
@@ -751,7 +752,7 @@ spread requests across exits with the proxy pool rather than adding accounts.
 Anonymous (no cookie): `gemini-3.6-flash` and `gemini-3.5-flash-lite`, web search included; both are actually 3.5 Flash-Lite.
 A free account's cookie additionally unlocks 4 Hydrogen (`gemini-4-hydrogen`; `gemini-3.6-flash` / `gemini-3.8-flash` land on it too), the `-thinking` variants (no High tier on free accounts),
 image / video input, image generation, music and canvas.
-A paid account additionally unlocks 4 Carbon (`gemini-4-carbon` / `gemini-4-argon`), Hydrogen's High thinking tier,
+A paid account additionally unlocks 4 Neon (`gemini-4-neon` / `gemini-3.1-pro`), 4 Carbon (`gemini-4-carbon` / `gemini-4-argon`), Hydrogen's High thinking tier,
 and video generation (`gemini-video` / `/v1/videos`).
 
 ### Why does every message create a new conversation on gemini.google.com?
@@ -786,7 +787,7 @@ Yes, and without a Gemini API key. The model is `gemini-4-carbon`; the old name 
 There is one requirement: the account behind the cookie must show "4 Carbon" in the model picker on gemini.google.com.
 If it does, the account is eligible (Google AI Pro / Ultra tier; a Pro plan that came bundled or through a student offer
 counts), so add its cookie in the admin dashboard and request `gemini-4-carbon`.
-Requests from a free account, or from one without access, are **silently downgraded to 3.5 Flash-Lite** upstream with no
+Requests from a free account, or from one without access, are **silently switched to another model** upstream (a free account currently gets 4 Hydrogen) with no
 error, which is why the model is not exposed when no cookie is configured and never runs anonymously. If you have a cookie
 and still get downgraded, check the web app first for "4 Carbon" on that account; if the browser has several accounts signed in,
 also check that the entry's "account index" in the Cookie pool is right.
@@ -795,12 +796,17 @@ The thinking variant has a limitation for now: Carbon needs one extra request pa
 from v4.29.0), but that parameter disables the thinking tier, so `gemini-4-argon-thinking` currently answers at the normal tier.
 Not hanging comes first until a way to have both is found.
 
-### What about 3.1 Pro?
+### What about 3.1 Pro? Can I use Gemini 4 Neon?
 
-Retired upstream in 2026-11: it is gone from a paid account's model picker and requests are switched to 3.5 Flash-Lite; a free
-account's request hangs until timeout. From v4.29.0, `gemini-3.1-pro` / `-thinking` return a 400 with the reason and are not sent
-upstream. Use `gemini-4-hydrogen` (any signed-in account) or `gemini-4-carbon` (paid account) instead. If the default model was set
-to 3.1 Pro, it is switched to `gemini-3.6-flash` at startup with a log line.
+3.1 Pro's slot is now **4 Neon** (described as "Deeper analysis" in the web app). The model is `gemini-4-neon`, with
+`gemini-4-neon-thinking` for thinking (High tier, with `reasoning_content`); the old names `gemini-3.1-pro` / `-thinking` still work
+and use the same route. It needs a cookie from a paid / Ultra account, with the same condition as Carbon: the account must show
+"4 Neon" in the model picker on gemini.google.com.
+
+v4.29.0 treated `gemini-3.1-pro` as retired and returned a 400: at that time a paid account's request was switched to 3.5 Flash-Lite
+and Neon wasn't in the list yet. It works again from v4.31.0.
+
+Neon is not Argon's successor: Argon was renamed to Carbon (`gemini-4-argon` lands on 4 Carbon), and Neon is a separate model.
 
 ### Which model does image generation use? Can it output 2K?
 
