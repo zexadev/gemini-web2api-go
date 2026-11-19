@@ -179,7 +179,7 @@ func validateRuntimeConfig(c RuntimeConfig) error {
 	for _, r := range []rangeCheck{
 		{"retry_attempts", c.RetryAttempts, 1, 10},
 		{"retry_delay_sec", c.RetryDelaySec, 0, 60},
-		{"request_timeout_sec", c.RequestTimeout, 5, 600},
+		{"request_timeout_sec", c.RequestTimeout, 5, 1200},
 		{"per_ip_concurrent", c.PerIPConcurrent, 0, 1000},
 		{"per_ip_rpm", c.PerIPRPM, 0, 10000},
 		{"per_ip_rph", c.PerIPRPH, 0, 100000},
