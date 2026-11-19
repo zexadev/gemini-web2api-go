@@ -149,11 +149,11 @@ var Models = map[string]ModelConfig{
 	"gemini-3.7-flash":  {HexID: hexFlash38, Mode: 1, Upstream: "3.8 Flash", UpstreamAliases: []string{"4 Hydrogen"}, Desc: "alias of gemini-3.8-flash (same route, now 4 Hydrogen)"},
 	"gemini-4-hydrogen": {HexID: hexHydrogen4, Mode: 1, Upstream: "4 Hydrogen", Desc: "4 Hydrogen; needs a signed-in Google account (free accounts work too)"},
 	// 4 Argon（#35）：Mode=8 是真正的选择开关（见 hexArgon4 注释）。付费/Ultra 号专属，
-	// 免费号发它会被静默降级成 3.5 Flash-Lite，所以 gate 成要 cookie（modelNeedsLogin）。
+	// 免费号发它会被静默换成别的模型（11-16 是 3.5 Flash-Lite，11-19 是 4 Hydrogen），所以 gate 成要 cookie（modelNeedsLogin）。
 	// 2026-11-16 Ultra 号实测：mode 8 现在回报 "4 Carbon"（otAQ7b 里 hex 95a4… 显示名「4 Carbon」、
 	// 代号 Carbon4p0）。Argon 这个名字留着兼容老配置，gemini-4-carbon 是同一条路由的新名字。
 	"gemini-4-argon":  {HexID: hexArgon4, Mode: 8, Upstream: "4 Argon", UpstreamAliases: []string{"4 Carbon"}, Desc: "alias of gemini-4-carbon (upstream renamed 4 Argon to 4 Carbon); needs a signed-in PAID/Ultra Google account"},
-	"gemini-4-carbon": {HexID: hexArgon4, Mode: 8, Upstream: "4 Carbon", UpstreamAliases: []string{"4 Argon"}, Desc: "4 Carbon (most complex work); needs a signed-in PAID/Ultra Google account (free accounts get downgraded to 3.5 Flash-Lite)"},
+	"gemini-4-carbon": {HexID: hexArgon4, Mode: 8, Upstream: "4 Carbon", UpstreamAliases: []string{"4 Argon"}, Desc: "4 Carbon (most complex work); needs a signed-in PAID/Ultra Google account (free accounts get switched to 4 Hydrogen)"},
 	// 4 Neon（#84）：Mode=3 选中它，付费号专属。
 	"gemini-4-neon": {HexID: hexNeon4, Mode: 3, Upstream: "4 Neon", UpstreamAliases: []string{"3.1 Pro"}, Desc: "4 Neon (deeper analysis); needs a signed-in PAID/Ultra Google account"},
 
