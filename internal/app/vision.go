@@ -160,6 +160,7 @@ func fetchImage(src, proxyURL string, idx int) (pendingUpload, error) {
 		if err != nil {
 			return pendingUpload{}, err
 		}
+		applyBrowserFHeaders(req)
 		resp, err := getTLSClient().Do(req)
 		if err != nil {
 			return pendingUpload{}, fmt.Errorf("image %d: fetch failed: %w", idx, err)

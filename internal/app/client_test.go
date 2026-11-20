@@ -3,6 +3,8 @@ package app
 import (
 	"net/http"
 	"testing"
+
+	fhttp "github.com/bogdanfinn/fhttp"
 )
 
 func TestBrowserHeadersProfileSwitch(t *testing.T) {
@@ -26,6 +28,12 @@ func TestBrowserHeadersProfileSwitch(t *testing.T) {
 	}
 	if req.Header.Get("Sec-CH-UA") == "" {
 		t.Errorf("expected Sec-CH-UA to be set for chrome_146")
+	}
+
+	reqF, _ := fhttp.NewRequest("GET", "https://gemini.google.com/app", nil)
+	applyBrowserFHeaders(reqF)
+	if reqF.Header.Get("User-Agent") != ChromeUA {
+		t.Errorf("expected ChromeUA on fhttp for chrome_146, got %s", reqF.Header.Get("User-Agent"))
 	}
 
 	// 2. Test Firefox impersonation
