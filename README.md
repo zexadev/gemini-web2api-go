@@ -166,7 +166,7 @@ go build -o gemini-web2api-go .
 启动后会看到 banner：
 
 ```
-gemini-web2api-go v4.31.1
+gemini-web2api-go v4.32.0
   Listening:   http://0.0.0.0:8083
   Base URL:    http://localhost:8083/v1
   API key:     sk-gemini-XX...XXXX  (mutable in admin UI)
