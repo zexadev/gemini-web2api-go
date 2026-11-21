@@ -121,7 +121,7 @@ CREATE INDEX IF NOT EXISTS idx_accounts_pick ON accounts(status, last_used_at);
 
 func getDB() *dbx {
 	dbOnce.Do(func() {
-		var driver, connStr, sqliteDir string
+		var driver, connStr, sqliteDir, sqlitePath string
 		if dsnEnv := strings.TrimSpace(os.Getenv("SQL_DSN")); dsnEnv != "" {
 			curDialect, driver, connStr = detectDSN(dsnEnv)
 		} else {
@@ -131,10 +131,14 @@ func getDB() *dbx {
 			if path == "" {
 				path = "./data/gemini.db"
 			}
+			sqlitePath = path
 			sqliteDir = filepath.Dir(path)
-			if err := os.MkdirAll(sqliteDir, 0o755); err != nil {
+			if err := os.MkdirAll(sqliteDir, 0o700); err != nil {
 				fmt.Fprintf(os.Stderr, "[db] 建目录 %s 失败: %v\n%s", sqliteDir, err, dbPermHint(sqliteDir))
 				os.Exit(1)
+			}
+			if sqliteDir != "." && sqliteDir != "" {
+				_ = os.Chmod(sqliteDir, 0o700)
 			}
 			connStr = fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)", path)
 		}
@@ -174,6 +178,9 @@ func getDB() *dbx {
 		// authuser 列三种库的老库都要补：缺这一列时查账号的 SELECT 整条失败、池子直接空掉。
 		// 这句语法三种库通用，已有该列时报错忽略。
 		_, _ = conn.Exec(`ALTER TABLE accounts ADD COLUMN authuser INTEGER NOT NULL DEFAULT 0`)
+		if curDialect == dialectSQLite && sqlitePath != "" {
+			_ = os.Chmod(sqlitePath, 0o600)
+		}
 		db = conn
 		dbw = &dbx{conn}
 		logf("[db] opened dialect=%d driver=%s", curDialect, driver)

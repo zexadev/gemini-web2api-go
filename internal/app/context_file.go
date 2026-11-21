@@ -31,6 +31,10 @@ import (
 // contextFileName 是历史附件在模型那边显示的文件名，指令里会引用它。
 const contextFileName = "message.txt"
 
+// MaxContextFileBytes 是模型通过附件实际能读取的内容总量上限（约 16 万 UTF-8 字节，~40,000 tokens）。
+// 超过此总量上游摄取管线将静默忽略后半部分，因此明确报错拒绝。
+const MaxContextFileBytes = 160000
+
 // latestInlineLimit 是「最新那问」还能内联多少字节。
 //
 // 超过就不内联，让模型去文件末尾读 —— 否则最新提问本身就能把请求撑爆，
@@ -83,6 +87,11 @@ func prepareContextFile(prompt, latest string, budget int, cookie string, authus
 	}
 	if cookie == "" {
 		return prompt, nil, false, nil // 匿名：引用会被回 1100，转了也没用
+	}
+	if len(prompt) > MaxContextFileBytes {
+		return prompt, nil, false, &PromptTooLongError{
+			Bytes: len(prompt), Budget: MaxContextFileBytes, HasCookie: true,
+		}
 	}
 	ref, err := uploadBytes(cookie, authuser, proxyURL, []byte(prompt), contextFileName)
 	if err != nil {

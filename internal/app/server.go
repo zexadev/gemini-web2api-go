@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -128,6 +129,28 @@ func rejectUnsupported(req map[string]interface{}, messages []map[string]interfa
 		}
 	}
 	return nil
+}
+
+func writeRateLimitError(w http.ResponseWriter, err error) {
+	msg := fmt.Sprintf("Rate limit exceeded: %v", err)
+	code := "ip_slot_full"
+	if rle, ok := err.(*RateLimitError); ok {
+		if rle.Reason == "concurrent" {
+			msg = "Rate limit exceeded (concurrency = 1 enforced for Google web session safety). Another request is currently in-flight. Wait for it to finish."
+		} else if rle.Reason == "rph" {
+			msg = "Rate limit exceeded (RPH ceiling = 30 reached to prevent Google account ban). Please wait before sending new requests."
+		} else if rle.Reason == "rpm" {
+			msg = "Rate limit exceeded (RPM limit reached). Please wait before sending new requests."
+			code = "rpm_limit_exceeded"
+		}
+	}
+	writeJSON(w, http.StatusTooManyRequests, map[string]interface{}{
+		"error": map[string]string{
+			"message": msg,
+			"type":    "rate_limit_exceeded",
+			"code":    code,
+		},
+	})
 }
 
 func callGemini(prompt, latest string, mc ModelConfig, tools []map[string]interface{},
@@ -289,6 +312,18 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	cid := "chatcmpl-" + randHex(12)
 	created := time.Now().Unix()
 
+	projectID := r.Header.Get("X-Project-ID")
+	if projectID == "" {
+		projectID = r.RemoteAddr
+	}
+	priority := PriorityP2Standard
+	if pStr := r.Header.Get("X-Priority"); pStr != "" {
+		if pVal := atoiDefault(pStr, 2); pVal >= 0 && pVal <= 3 {
+			priority = Priority(pVal)
+		}
+	}
+	promptTokens := countTokens(prompt)
+
 	// 带 tools 时正文过一道围栏闸门：```tool_call``` 块要完整文本才能解析，
 	// 直接转发会把围栏原文推给客户端，所以只放行确定不在围栏里的部分。
 	// 思考链跟围栏无关，两种情况都直接流。
@@ -305,6 +340,30 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			gate = newToolFenceGate(sse.SendContent)
 			onDelta = gate.Push
 		}
+	}
+
+	onQueuedTick := func(pos, depth, etaSec int) {
+		if sse != nil {
+			sse.SendComment(fmt.Sprintf("status=queued pos=%d depth=%d eta_sec=%d job_id=%s", pos, depth, etaSec, cid))
+		}
+	}
+
+	sched := GetScheduler()
+	if qerr := sched.Enqueue(r.Context(), cid, projectID, modelName, priority, promptTokens, stream, "chat.completions", onQueuedTick); qerr != nil {
+		if errors.Is(qerr, context.Canceled) {
+			return
+		}
+		if sse != nil && sse.Started() {
+			sse.Fail(qerr)
+		} else {
+			writeRateLimitError(w, qerr)
+		}
+		return
+	}
+	defer sched.Release(cid, rtCfg().PacingDelaySec)
+
+	// Start keepalive only after acquiring the slot so queued ticks aren't preempted by Ping
+	if stream {
 		ka = startKeepalive(sse.Ping)
 		onDelta, onReasoning = ka.guard(onDelta), ka.guard(onReasoning)
 	}
@@ -318,7 +377,12 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	} else {
 		text, toolCalls, res, err = callGemini(prompt, latest, modelCfg, tools, images, onDelta, onReasoning)
 	}
-	ka.Stop() // 之后的收尾回到单 goroutine 写；Started() 也要在保活停下后再看
+	if res != nil {
+		sched.UpdateActive(cid, res.UpstreamModel, countTokens(text))
+	}
+	if ka != nil {
+		ka.Stop() // 之后的收尾回到单 goroutine 写；Started() 也要在保活停下后再看
+	}
 	if err != nil {
 		mde, downgraded := err.(*ModelDowngradedError)
 		status := 502
@@ -342,12 +406,8 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				"code": "context_length_exceeded"}})
 			return
 		}
-		if rle, ok := err.(*RateLimitError); ok {
-			writeJSON(w, 429, map[string]interface{}{"error": map[string]string{
-				"message": rle.Error(),
-				"type":    "rate_limit_exceeded",
-				"code":    "ip_slot_full",
-			}})
+		if _, ok := err.(*RateLimitError); ok {
+			writeRateLimitError(w, err)
 			return
 		}
 		writeJSON(w, 502, map[string]interface{}{"error": map[string]string{"message": "upstream error: " + err.Error()}})
@@ -606,18 +666,23 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 	// 流式要先把头和 response.created 发出去，才能边收边推 delta。
 	// 代价是一旦开了流 HTTP 状态码就改不了了，上游失败只能用 response.failed
 	// 事件告知 —— 跟 /v1/chat/completions 那条路的取舍一致。
+	var flusher http.Flusher
+	if f, ok := w.(http.Flusher); ok {
+		flusher = f
+	}
 	var writeEvent func(string, interface{})
 	var emitDelta func(string)
 	var gate *toolFenceGate
 	var onDelta func(string)
 	var ka *streamKeepalive
+	var headersSent bool
 	if stream {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("X-Accel-Buffering", "no") // 关掉反代对 SSE 的缓冲，见 sse.go
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.WriteHeader(200)
-		flusher, _ := w.(http.Flusher)
+		headersSent = true
 		writeEvent = func(eventType string, payload interface{}) {
 			pj, _ := json.Marshal(payload)
 			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventType, pj)
@@ -672,7 +737,62 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 			gate = newToolFenceGate(emitDelta)
 			onDelta = gate.Push
 		}
-		// 这条路响应头一开始就发了，保活没有锁状态码的代价。
+	}
+
+	var onQueuedTick func(pos, depth, etaSec int)
+	if stream {
+		onQueuedTick = func(pos, depth, etaSec int) {
+			if !headersSent {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				w.Header().Set("X-Accel-Buffering", "no")
+				w.WriteHeader(http.StatusOK)
+				headersSent = true
+			}
+			fmt.Fprintf(w, ": status=queued pos=%d depth=%d eta_sec=%d job_id=%s\n\n", pos, depth, etaSec, rid)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}
+
+	// onReasoning 传 nil：Responses API 有自己的 reasoning 事件形状，跟 chat 的
+	// reasoning_content 不通用，这条路目前不暴露思考链。
+	sched := GetScheduler()
+	projectID := r.RemoteAddr
+	promptTokens := countTokens(prompt)
+	if qerr := sched.Enqueue(r.Context(), rid, projectID, modelName, PriorityP2Standard, promptTokens, stream, "responses", onQueuedTick); qerr != nil {
+		if errors.Is(qerr, context.Canceled) {
+			return
+		}
+		if stream && headersSent {
+			writeEvent("response.failed", map[string]interface{}{
+				"type": "response.failed",
+				"response": map[string]interface{}{
+					"id":     rid,
+					"object": "response",
+					"status": "failed",
+					"model":  modelName,
+					"error":  map[string]string{"message": fmt.Sprintf("Rate limit exceeded: %v", qerr), "code": "ip_slot_full"},
+				},
+			})
+		} else {
+			writeRateLimitError(w, qerr)
+		}
+		return
+	}
+	defer sched.Release(rid, rtCfg().PacingDelaySec)
+
+	if stream {
+		if !headersSent {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			w.Header().Set("X-Accel-Buffering", "no")
+			w.WriteHeader(http.StatusOK)
+			headersSent = true
+		}
 		ka = startKeepalive(func() {
 			fmt.Fprint(w, ": ping\n\n")
 			if flusher != nil {
@@ -682,8 +802,6 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 		onDelta = ka.guard(onDelta)
 	}
 
-	// onReasoning 传 nil：Responses API 有自己的 reasoning 事件形状，跟 chat 的
-	// reasoning_content 不通用，这条路目前不暴露思考链。
 	var text string
 	var toolCalls []ToolCall
 	var res *StreamResult
@@ -692,7 +810,9 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 	} else {
 		text, toolCalls, res, err = callGemini(prompt, latest, modelCfg, tools, images, onDelta, nil)
 	}
-	ka.Stop()
+	if ka != nil {
+		ka.Stop()
+	}
 	if err != nil {
 		mde, downgraded := err.(*ModelDowngradedError)
 		status := 502
@@ -729,12 +849,8 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 				"code": "context_length_exceeded"}})
 			return
 		}
-		if rle, ok := err.(*RateLimitError); ok {
-			writeJSON(w, 429, map[string]interface{}{"error": map[string]string{
-				"message": rle.Error(),
-				"type":    "rate_limit_exceeded",
-				"code":    "ip_slot_full",
-			}})
+		if _, ok := err.(*RateLimitError); ok {
+			writeRateLimitError(w, err)
 			return
 		}
 		writeJSON(w, 502, map[string]interface{}{"error": map[string]string{"message": "upstream error: " + err.Error()}})

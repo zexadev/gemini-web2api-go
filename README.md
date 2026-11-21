@@ -11,129 +11,145 @@
 [![Go Version](https://img.shields.io/badge/go-1.21%2B-00ADD8.svg)](https://golang.org)
 [![Docker](https://img.shields.io/badge/docker-distroless-blue)](Dockerfile)
 
-中文 | [English](README_EN.md)
+English | [中文文档](README_ZH.md)
 
-> 官方仓库：**[github.com/zexadev/gemini-web2api-go](https://github.com/zexadev/gemini-web2api-go)** —— 发版、issue、文档都在这里；各 fork 不由本仓维护。
+> **Enhanced Fork Features (Agentic Harness & Parallel Project Optimization)**:
+> - **In-Memory OS-Style FIFO Request Queue**: Safely handles concurrent requests from multi-project agent harnesses (Cursor, Claude Code, autonomous agents) without tripping Google's anti-bot checks (`identity.hfcr`).
+> - **Strict Concurrency = 1 & 20s Anti-Ban Pacing**: Enforces strict single-query execution with automatic 20-second idle pacing windows between dispatches.
+> - **Zero Client Read Timeouts**: Instant `HTTP 200` stream response with periodic SSE keepalive comments (`: status=queued pos=1 wait=12s`) keeps client TCP connections active while queued.
+> - **Lossless Large-Context Ingestion (~40k Tokens / 160 KB)**: Prompts $> 20,000$ bytes automatically convert into push document attachments (`message.txt`), preventing silent inline truncation and supporting up to 10-minute reasoning timeouts.
+> - **Real-Time Admin UI Monitoring & Live Logs**: Live tracking of in-progress requests, queued jobs, cooldown countdown banners, plus an integrated dark terminal **System Logs** viewer with subsystem filtering and auto-refresh.
+> - **Autonomous Agent Log REST API**: AI agents and CLI tools can query live bridge runtime logs directly via `GET /admin/api/logs` (in plain text or structured JSON).
+> - **Hot-Configurable Runtime Settings**: Queue depth, pacing cooldown, keepalive frequency, and strict model checks are dynamically tunable from the Admin UI without container restarts.
 
-把 Google Gemini 网页端反代成 OpenAI 兼容 API，同一端口还提供 Gemini 原生接口和 MCP 工具。**单二进制**，**零账号**（匿名可跑），**Chrome 146 真指纹**，**SQLite / MySQL / PostgreSQL**，自带**中文管理面板**。
+> Upstream repository: **[github.com/zexadev/gemini-web2api-go](https://github.com/zexadev/gemini-web2api-go)** — upstream releases and issues live here.
+
+Turn the Google Gemini web app into an OpenAI-compatible API, with a native Gemini API and MCP tools on the same port. **Single binary**, **no account needed** (anonymous works), **real Chrome 146 fingerprint**, **SQLite / MySQL / PostgreSQL**, ships with an **admin dashboard**.
 
 ---
 
-## 目录
+## Contents
 
-- [这是什么](#这是什么)
-- [功能](#功能)
-- [快速开始](#快速开始)
-- [客户端接入](#客户端接入)
-- [Gemini 原生接口](#gemini-原生接口)
-- [MCP 工具](#mcp-工具)
-- [管理面板](#管理面板)
-- [模型](#模型)
-- [配置](#配置)
-- [Cookie（可选）](#cookie可选)
-- [代理池（白嫖路线核心）](#代理池白嫖路线核心)
-- [指纹模拟](#指纹模拟)
-- [隐私](#隐私)
-- [OpenAI 协议覆盖](#openai-协议覆盖)
-- [项目结构](#项目结构)
-- [限制](#限制)
-- [故障排查](#故障排查)
-- [常见问题（FAQ）](#常见问题faq)
+- [What this is](#what-this-is)
+- [Features](#features)
+- [Quick start](#quick-start)
+- [Connecting clients](#connecting-clients)
+- [Gemini native API](#gemini-native-api)
+- [MCP tools](#mcp-tools)
+- [Admin panel](#admin-panel)
+- [Models](#models)
+- [Configuration](#configuration)
+- [Cookie (optional)](#cookie-optional)
+- [Proxy pool (the core of running this for free)](#proxy-pool-the-core-of-running-this-for-free)
+- [Fingerprint simulation](#fingerprint-simulation)
+- [Privacy](#privacy)
+- [OpenAI protocol coverage](#openai-protocol-coverage)
+- [Project layout](#project-layout)
+- [Limitations](#limitations)
+- [Troubleshooting](#troubleshooting)
+- [FAQ](#faq)
 - [Star History](#star-history)
-- [致谢](#致谢)
+- [Acknowledgments](#acknowledgments)
 - [License](#license)
-- [友情链接](#友情链接)
+- [Links](#links)
 
-## 这是什么
+## What this is
 
-把这种调用：
+It turns a call like this:
 ```
 [OpenAI SDK / Cherry Studio / Cursor / dify / newapi / ...]
     ↓ http://localhost:8083/v1/chat/completions
 [gemini-web2api-go]
-    ↓ 逆向 gemini.google.com 网页协议
-[Google Gemini 网页端]
+    ↓ reverse-engineered gemini.google.com web protocol
+[Google Gemini web app]
 ```
 
-不是 Google 官方 API（[generativelanguage.googleapis.com](https://generativelanguage.googleapis.com)）的二次封装——**直接反代浏览器协议**，所以**不需要 Google API Key、不需要付费配额**。
+This is not a wrapper around Google's official API ([generativelanguage.googleapis.com](https://generativelanguage.googleapis.com)) — it proxies **the browser protocol directly**, so **no Google API key and no paid quota are required**.
 
-### 和同类项目的区别
+### Compared with similar projects
 
-常被拿来比较的是 Python 版 [Sophomoresty/gemini-web2api](https://github.com/Sophomoresty/gemini-web2api)、Python 库 [HanaokaYuzu/Gemini-API](https://github.com/HanaokaYuzu/Gemini-API) 和 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)。按各自 README（2026-11-03）对照，只列能从 README 核实的差异：
+The projects most often compared with this one are the Python [Sophomoresty/gemini-web2api](https://github.com/Sophomoresty/gemini-web2api), the Python library [HanaokaYuzu/Gemini-API](https://github.com/HanaokaYuzu/Gemini-API) and [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI). Going by their READMEs (2026-11-03), listing only what those READMEs let us verify:
 
-| | gemini-web2api-go（本仓） | Sophomoresty/gemini-web2api | HanaokaYuzu/Gemini-API | CLIProxyAPI |
+| | gemini-web2api-go (this repo) | Sophomoresty/gemini-web2api | HanaokaYuzu/Gemini-API | CLIProxyAPI |
 |---|---|---|---|---|
-| 上游 | gemini.google.com 网页协议，不要 API key | 同左 | 同左 | 官方 Gemini API / AI Studio / Gemini CLI / Antigravity 等渠道的账号（OAuth / API key） |
-| 形态 | Go 单二进制，distroless 容器镜像 | Python 单文件 | Python 库（在代码里 import）+ CLI | Go 服务 |
-| 对外接口 | OpenAI 兼容 + Gemini 原生 + `/v1/videos` + MCP 工具 | OpenAI 兼容 + Gemini 原生 | Python API，不提供 HTTP 服务 | OpenAI / Gemini / Claude 兼容 |
-| 多账号 | Cookie 池轮转、自动续期、每个账号粘住自己的出口 | 单个 cookie 文件（`cookie_file` + `auth_user`） | 单组 cookie，后台自动续期 | 多账号负载均衡 |
-| 出口 IP | 代理池：熔断、轮转，每个代理是独立限流槽 | 单个代理 | 单个代理 | —（走官方 API 额度） |
-| 静默降级 | `strict_model`：降级回答不算成功，换号重试，全池降级回 `429` | README 注明免费号请求 Pro 会落到 Flash | README 未提 | —（走官方 API 额度） |
-| 管理面板 | 内置 | README 未提 | README 未提 | 配套项目 CPAMC，另装 |
-| Gemini 4 Neon / 4 Carbon（原 4 Argon） | 付费号 cookie 可用 | README 未提 | 模型按账号动态发现，README 未点名 | 有，取决于渠道 |
+| Upstream | gemini.google.com web protocol, no API key | Same | Same | Accounts on official channels: Gemini API / AI Studio / Gemini CLI / Antigravity (OAuth / API key) |
+| Form | Single Go binary, distroless container image | Single Python file | Python library (imported in code) + CLI | Go service |
+| API surface | OpenAI-compatible + native Gemini + `/v1/videos` + MCP tools | OpenAI-compatible + native Gemini | Python API, no HTTP server | OpenAI / Gemini / Claude compatible |
+| Multiple accounts | Cookie pool with rotation, automatic renewal, each account pinned to its own exit | One cookie file (`cookie_file` + `auth_user`) | One cookie set, refreshed in the background | Multi-account load balancing |
+| Exit IPs | Proxy pool: circuit breaker, rotation, each proxy its own rate-limit slot | One proxy | One proxy | — (official API quota) |
+| Silent downgrade | `strict_model`: a downgraded answer does not count, retry on the next account, `429` when the whole pool is downgraded | README notes that a free account asking for Pro gets Flash | Not mentioned in README | — (official API quota) |
+| Admin panel | Built in | Not mentioned in README | Not mentioned in README | Companion project CPAMC, installed separately |
+| Gemini 4 Neon / 4 Carbon (formerly 4 Argon) | With a paid-account cookie | Not mentioned in README | Models discovered per account, not named in README | Yes, depending on channel |
 
-## 功能
+## Features
 
-**接口**
-- OpenAI 兼容：`/v1/chat/completions`、`/v1/models`、`/v1/responses`
-- Gemini 原生格式：`/v1beta/models/{model}:generateContent` / `:streamGenerateContent`，Google SDK 和网关的 Google provider 直接能用，含 function calling（见 [Gemini 原生接口](#gemini-原生接口)）
-- `/v1/videos`：OpenAI(Sora) 形状的异步视频生成——`POST` 建任务、`GET /v1/videos/{id}` 轮询、`GET /v1/videos/{id}/content` 下 MP4（要登录态 Pro 号）
-  - 图生视频：`input_reference`（首帧），可以是 data/http(s) URL、`{"image_url": …}`，或 multipart 文件（OpenAI SDK 的形状）
-  - `size`（`1280x720` / `720x1280`）或 `aspect_ratio`（`16:9` / `9:16`）
-  - `POST /v1/videos/{id}/extend` `{"prompt": "接下来发生什么"}`：在原视频所在的 Gemini 会话里续写（同一账号），返回加长后的完整 MP4。需要 `temporary_chat` 和 `auto_delete_conversation` 都关着（会话要留在账号里）
-  - 失败立即给出原因：`video_quota_exhausted`（所有账号的视频额度都用完了，见下）、`video_refused: <Gemini 的回复>`（Gemini 用文字回答而不是生成视频）
-  - 视频额度换号：某个账号视频额度用完后，新视频会跳过它直到额度重置；任务落到这样的账号时会在同一个任务里换下一个账号。所有账号都在冷却时，`POST /v1/videos` 直接回 `429`（`code: video_quota_exhausted`，带 `Retry-After`），进行中的任务以 `retry_after=N`（距最早重置的秒数）失败
-  - `GET /admin/api/video-quota`（管理接口）：每个账号滚动 5 小时窗口内的视频用量、状态和重置时间，读取各账号自己的 Gemini 历史（只读；拒绝消息里带 Google 的重置时间时用它，否则按首个视频 + 5 小时估算）。每次刷新每个号约 2 + N 次上游请求（N = 近几小时有更新的会话数，没变的走缓存），走代理池、计入单 IP 预算，别频繁轮询。开着 `temporary_chat` 或 `auto_delete_conversation` 时本服务生成的视频不在历史里，计数会偏少（响应里有 `history_incomplete` 提示）
-- 真流式：上游每出一帧就转发增量，`/v1/chat/completions`、`/v1/responses`、带 `tools` 的请求都是（工具调用块收完整再发）
-- Bearer token / `x-api-key` / `x-goog-api-key` 鉴权，key 可在面板轮换
-- `usage` 用 tiktoken 算，`reasoning_tokens` 单列不计入 `completion_tokens`
+**API**
+- OpenAI-compatible: `/v1/chat/completions`, `/v1/models`, `/v1/responses`
+- Gemini native format: `/v1beta/models/{model}:generateContent` / `:streamGenerateContent`, usable directly by Google's SDKs and gateways' Google providers, function calling included (see [Gemini native API](#gemini-native-api))
+- `/v1/videos`: OpenAI (Sora)-shaped async video generation — `POST` to create, `GET /v1/videos/{id}` to poll, `GET /v1/videos/{id}/content` to download the MP4 (needs a signed-in Pro cookie)
+  - image → video: `input_reference` (start frame) as a data/http(s) URL, `{"image_url": …}`, or a multipart file (OpenAI SDK shape)
+  - `size` (`1280x720` / `720x1280`) or `aspect_ratio` (`16:9` / `9:16`)
+  - `POST /v1/videos/{id}/extend` `{"prompt": "what happens next"}` continues a finished video in its own Gemini conversation (same account) and returns the whole lengthened MP4. Needs `temporary_chat` and `auto_delete_conversation` both off (the conversation has to stay in the account)
+  - failed jobs say why at once: `video_quota_exhausted` (every account's video budget is used up, see below) and `video_refused: <Gemini's reply>` (Gemini answered with text instead of a video)
+  - video quota routing: an account whose video budget runs out is skipped for new videos until it resets, and a job that lands on one moves to the next account inside the same job. When every account is cooling down, `POST /v1/videos` answers `429` with `code: video_quota_exhausted` and `Retry-After`, and a running job fails with `retry_after=N` (seconds until the first reset)
+  - `GET /admin/api/video-quota` (admin): per-account video usage in the rolling 5-hour window, status and reset time, read from each account's own Gemini history (read-only; Google's own reset time when a refusal carries it, otherwise first video + 5 h). Each refresh costs about 2 + N upstream requests per account (N = conversations updated in the last few hours; unchanged ones are cached), sent through the proxy pool and counted against the per-IP budget, so don't poll it. With `temporary_chat` or `auto_delete_conversation` on, videos made through this proxy aren't in the history and are undercounted (the response carries a `history_incomplete` note)
+- Real incremental streaming: every upstream frame is forwarded as a delta, on `/v1/chat/completions`, `/v1/responses` and requests with `tools` alike (a tool-call block is sent once complete)
+- Bearer token / `x-api-key` / `x-goog-api-key` auth; the key can be rotated from the panel
+- `usage` computed with tiktoken; `reasoning_tokens` counted separately, not folded
+  into `completion_tokens`
 
-**模型**
-- 匿名可用 `gemini-3.6-flash`、`gemini-3.5-flash-lite`，含联网搜索（匿名下两者实际都是 3.5 Flash-Lite，见[模型](#模型)）
-- `gemini-4-hydrogen` 挂任意 Google 账号 cookie 可用（免费号也行）
-- `gemini-4-neon`（接替 3.1 Pro）、`gemini-4-carbon`（原 4 Argon）要付费 / Ultra 账号的 cookie
-- 各模型都有 `-thinking` 版（扩展思考），挂 cookie 后可用
-- 老名字 `gemini-3.1-pro`、`gemini-4-argon` 照样能用，分别落到 4 Neon 和 4 Carbon
-- 响应里记录服务端**实际**用了哪个模型，被静默降级一眼可见
+**Models**
+- `gemini-3.6-flash` and `gemini-3.5-flash-lite` work anonymously, web search included (anonymously both are actually 3.5 Flash-Lite, see [Models](#models))
+- `gemini-4-hydrogen` works with any Google account's cookie (free accounts included)
+- `gemini-4-neon` (successor of 3.1 Pro) and `gemini-4-carbon` (formerly 4 Argon) need a cookie from a paid / Ultra account
+- Every model has a `-thinking` variant (extended thinking), available with a cookie
+- The old names `gemini-3.1-pro` and `gemini-4-argon` still work and land on 4 Neon and 4 Carbon
+  (`reasoning_content`)
+- Every response records which model the backend **actually** used, so silent
+  downgrades are visible
 
-**不被拦 / 跑得久**
-- utls 模拟 Chrome 146 真 TLS 指纹，不是 SDK 默认握手
-- 每个出口 IP 独立限流：并发 / RPM / RPH 三档
-- 代理池：运行时增删改、失败熔断、轮转调度，每个代理是独立限流槽
-- Cookie 池：多个 Google 账号按最久未用优先轮转，自动续期 + 保活，每个账号粘住自己的出口
+**Staying unblocked, and scaling past one IP**
+- Real Chrome 146 TLS fingerprint via utls, not a default SDK handshake
+- Per-exit-IP limits: concurrency / RPM / RPH
+- Proxy pool: runtime CRUD, failure circuit breaker, rotation — each proxy is its
+  own rate-limit slot
+- Cookie pool: several Google accounts rotated least-recently-used first, auto-refreshed and kept alive, each account pinned to its own exit
 
-**运维**
-- 单二进制，交叉编译 6 平台；容器镜像基于 distroless
-- SQLite 持久化：30 天请求明细 + 永久聚合统计（可选 MySQL / PostgreSQL，设 `SQL_DSN` 即可）
-- 中文管理面板：概览 / 请求记录 / 代理池 / Cookie 池 / 设置 / 关于，配置改完即时生效，有新版本时顶栏提示
-- **prompt 和回复内容永不入库**，只存元数据（长度、耗时、模型、状态）
+**Operations**
+- Single binary, cross-compiled for 6 platforms; container image built on distroless
+- SQLite persistence: 30 days of per-request detail plus permanent aggregates (optional MySQL / PostgreSQL via `SQL_DSN`)
+- Admin panel: overview / requests / proxy pool / cookie pool / settings / about, with
+  config changes applied without a restart and a top-bar notice when a new release is out
+- **Prompt and response bodies are never stored** — metadata only (length, latency,
+  model, status)
 
-## 快速开始
+## Quick start
 
-### 下载二进制（最省事）
+### Prebuilt binary (simplest)
 
-[Releases](https://github.com/zexadev/gemini-web2api-go/releases) 里挑对应平台的下载，
-不用 Go、不用 Docker，单个文件就是全部：
+Grab the one for your platform from
+[Releases](https://github.com/zexadev/gemini-web2api-go/releases). No Go, no Docker —
+the single file is the whole thing:
 
 ```bash
 chmod +x gemini-web2api-go_*
 ./gemini-web2api-go_* --port 8083 --admin-token your-admin-token
 ```
 
-数据默认落在 `./data/gemini.db`，换位置加 `--db /your/path.db`。
+Data lands in `./data/gemini.db` by default; pass `--db /your/path.db` to move it.
 
-想用 MySQL / PostgreSQL，设 `SQL_DSN` 环境变量即可（不设就是 SQLite，无需改动）：
+To use MySQL / PostgreSQL, just set the `SQL_DSN` env var (unset = SQLite, nothing to change):
 
 ```bash
-# MySQL（也接受 go-sql-driver 原生 user:pass@tcp(host:3306)/dbname）
+# MySQL (also accepts the native go-sql-driver form user:pass@tcp(host:3306)/dbname)
 SQL_DSN="mysql://user:pass@host:3306/dbname"
 # PostgreSQL
 SQL_DSN="postgres://user:pass@host:5432/dbname?sslmode=disable"
 ```
 
-建表自动完成，三种库共用同一套 schema。单机就用默认 SQLite 最省事，多实例共享一个池子才需要 MySQL/PG。
+Tables are created automatically; all three backends share one schema. Single instance? Stick with the default SQLite. You only need MySQL/PG when several instances share one pool.
 
-### Docker（不用源码）
+### Docker (no source needed)
 
 ```bash
 docker run -d --name gemini-web2api \
@@ -143,16 +159,16 @@ docker run -d --name gemini-web2api \
   ghcr.io/zexadev/gemini-web2api-go:latest
 ```
 
-用 compose 的话把 `docker-compose.yml` 单独下下来就行，也不用 clone：
+For compose, just grab the file — no clone required:
 
 ```bash
 curl -O https://raw.githubusercontent.com/zexadev/gemini-web2api-go/main/docker-compose.yml
 ADMIN_TOKEN=your-admin-token docker compose up -d
 ```
 
-### 从源码跑
+### From source
 
-装了 Go 就不必绕 Docker：
+If you have Go, skip Docker entirely:
 
 ```bash
 git clone https://github.com/zexadev/gemini-web2api-go
@@ -161,9 +177,10 @@ go build -o gemini-web2api-go .
 ./gemini-web2api-go --port 8083 --admin-token your-admin-token
 ```
 
-改了代码想用容器跑，把 `docker-compose.yml` 里 `build:` 那两行的注释去掉，再 `docker compose up -d --build`。
+Changed the code and want it in a container? Uncomment the two `build:` lines in
+`docker-compose.yml`, then `docker compose up -d --build`.
 
-启动后会看到 banner：
+The startup banner:
 
 ```
 gemini-web2api-go v4.31.0
@@ -181,9 +198,9 @@ gemini-web2api-go v4.31.0
   Retry:       3x / 2s
 ```
 
-首次启动会自动生成 API key（banner 里是打码的，完整值在管理面板「设置」页）。
+An API key is generated on first boot. The banner masks it; the full value is on the **Settings** page of the admin panel.
 
-### 调用
+### Making a call
 
 ```bash
 curl http://localhost:8083/v1/chat/completions \
@@ -195,77 +212,77 @@ curl http://localhost:8083/v1/chat/completions \
   }'
 ```
 
-OpenAI Python SDK 也直接能用：
+The OpenAI Python SDK works as-is:
 
 ```python
 from openai import OpenAI
 client = OpenAI(
     base_url="http://localhost:8083/v1",
-    api_key="sk-gemini-..."  # admin 面板里看
+    api_key="sk-gemini-..."  # find it in the admin panel
 )
 resp = client.chat.completions.create(
     model="gemini-3.6-flash",
-    messages=[{"role": "user", "content": "解释量子纠缠"}]
+    messages=[{"role": "user", "content": "Explain quantum entanglement"}]
 )
 print(resp.choices[0].message.content)
 ```
 
-Windows PowerShell 下 `curl` 是 `Invoke-WebRequest` 的别名，会把 JSON 引号重新解释，要用
-`curl.exe` 加 `--%`：
+On Windows PowerShell, `curl` is an alias for `Invoke-WebRequest` and will reinterpret the JSON quoting, so use `curl.exe` with `--%`:
 
 ```powershell
 curl.exe --% http://127.0.0.1:8083/v1/chat/completions -H "Content-Type: application/json" -H "Authorization: Bearer sk-gemini-..." -d "{\"model\":\"gemini-3.6-flash\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello!\"}]}"
 ```
 
-> 跑通了？顺手点个 ⭐。GitHub 的 topic 页按 star 排，这是别人找到这个项目的主要入口。有问题或想法开 issue；在 fork 里改好的功能，欢迎提 PR 回来。
+> Got it running? A ⭐ helps: GitHub topic pages rank by stars, and that is how most people find this project. Issues and ideas are welcome, and if you have improved something in a fork, send it back as a PR.
 
-## 客户端接入
+## Connecting clients
 
-任何 OpenAI 兼容客户端（Cherry Studio / ChatBox / Open WebUI / dify / Cursor / …）都是同一套填法：
+Every OpenAI-compatible client (Cherry Studio / ChatBox / Open WebUI / dify / Cursor / …) is configured the same way:
 
-| 字段 | 值 |
+| Field | Value |
 |---|---|
-| Base URL / API 地址 | `http://localhost:8083/v1`（部分客户端只要 `http://localhost:8083`，会自己拼 `/v1`） |
-| API Key | 管理面板「设置」页里的那个 `sk-gemini-…` |
-| 模型 | `gemini-3.6-flash` |
+| Base URL | `http://localhost:8083/v1` (some clients want just `http://localhost:8083` and append `/v1` themselves) |
+| API key | the `sk-gemini-…` shown on the admin panel's Settings page |
+| Model | `gemini-3.6-flash` |
 
-**newapi / one-api 建渠道**：类型选 OpenAI，Base URL 填 `http://localhost:8083`（跟 newapi 同在
-docker 里就写 `http://host.docker.internal:8083` 或容器名），密钥填 API key，模型填
-`gemini-3.6-flash,gemini-3.5-flash-lite`。
+**newapi / one-api channel**: pick the OpenAI type, set the base URL to `http://localhost:8083` (use `http://host.docker.internal:8083` or the container name if newapi runs in Docker too), paste the API key, and list the models as `gemini-3.6-flash,gemini-3.5-flash-lite`.
 
-**Codex CLI** 走 `/v1/responses`，把 base url 指到 `http://localhost:8083/v1` 即可。
+**Codex CLI** uses `/v1/responses` — point its base URL at `http://localhost:8083/v1`.
 
-**Google 格式的客户端**（`google-genai` SDK、网关的 Google provider）走 `/v1beta`，见下面的
-[Gemini 原生接口](#gemini-原生接口)。Gemini CLI 没实测过。
+**Google-format clients** (the `google-genai` SDK, gateways' Google providers) use `/v1beta`; see [Gemini native API](#gemini-native-api) below. Gemini CLI has not been tested.
 
-另有一个不鉴权的健康检查 `GET /`，返回 `{"status":"ok","version":…,"models":[…]}`，给探活用。
+There is also an unauthenticated health check at `GET /` returning `{"status":"ok","version":…,"models":[…]}`.
 
-## Gemini 原生接口
+## Gemini native API
 
-同一个端口也说 Google Gemini API 的格式，给只认 Google 格式的客户端用（Google 的 `google-genai` SDK、
-Bifrost 等网关的 Google provider）：
+The same port also speaks the Google Gemini API format, for clients that only talk Google's wire format (Google's
+`google-genai` SDK, the Google provider in gateways such as Bifrost):
 
-| 路径 | 说明 |
+| Path | Notes |
 |---|---|
-| `POST /v1beta/models/{model}:generateContent` | 非流式 |
-| `POST /v1beta/models/{model}:streamGenerateContent` | 真流式；带 `?alt=sse`（SDK 默认）回 SSE，不带回 JSON 数组 |
-| `POST /v1beta/models/{model}:countTokens` | 本地 tiktoken 估算 |
-| `GET /v1beta/models`、`GET /v1beta/models/{model}` | 模型清单，跟 `/v1/models` 同一份 |
-| `POST /v1/models/{model}:generateContent` 等 | 上面三个动作的 `/v1` 写法，同一套处理。`google-genai` 3.x 配自定义 `base_url` 时默认走 `/v1` |
+| `POST /v1beta/models/{model}:generateContent` | Non-streaming |
+| `POST /v1beta/models/{model}:streamGenerateContent` | Real streaming; SSE with `?alt=sse` (the SDK default), a JSON array without it |
+| `POST /v1beta/models/{model}:countTokens` | Local tiktoken estimate |
+| `GET /v1beta/models`, `GET /v1beta/models/{model}` | Model list, same as `/v1/models` |
+| `POST /v1/models/{model}:generateContent` etc. | The `/v1` form of the three actions above, handled the same way. `google-genai` 3.x uses `/v1` by default when given a custom `base_url` |
 
-- **鉴权**：API key 放 `x-goog-api-key` 头或 `?key=` 参数（SDK 默认这么带），`Authorization: Bearer` 也认。
-- **模型名**用本项目的（`gemini-3.6-flash`、`gemini-4-hydrogen` 等，见[模型](#模型)），不是官方 API 的 `gemini-2.5-flash` 那些。
-- **function calling**：`tools[].functionDeclarations`、`toolConfig.functionCallingConfig`（`AUTO` / `ANY` / `NONE`、
-  `allowedFunctionNames`）、历史里的 `functionCall` / `functionResponse` 都认，模型的调用以 `functionCall` part 返回，
-  SDK 的自动函数调用也能用。底下跟 OpenAI 接口是同一套 prompt 级实现，限制也一样（见[协议覆盖](#openai-协议覆盖)
-  里 Function calling 那一行）。
-- **思考**：带 `generationConfig.thinkingConfig.includeThoughts: true` 时，思考摘要以 `thought: true` 的 part 返回
-  （只有会出思考链的模型才有）。
-- **图片 / 视频输入**：`inlineData`，或 `fileData` 填 http(s) 链接，需要 cookie。没有 Files API，`files/…` 形式的
-  `fileUri` 和其它类型（PDF、音频）回 400。
-- **生图 / 音乐**：用 `gemini-image` / `gemini-music` 时，产物以 `inlineData` part 返回。
-- `generationConfig` 里的采样参数（`temperature`、`maxOutputTokens` 等）收下即忽略；`candidateCount` > 1 回 400。
-- 错误体是 Google 的形状 `{"error":{"code","message","status"}}`，状态码跟 OpenAI 接口一致。
+- **Auth**: send the API key as the `x-goog-api-key` header or the `?key=` query parameter (what the SDKs do);
+  `Authorization: Bearer` works too.
+- **Model names** are this project's (`gemini-3.6-flash`, `gemini-4-hydrogen`, …, see [Models](#models)), not the official
+  API's `gemini-2.5-flash` and so on.
+- **Function calling**: `tools[].functionDeclarations`, `toolConfig.functionCallingConfig` (`AUTO` / `ANY` / `NONE`,
+  `allowedFunctionNames`), and `functionCall` / `functionResponse` in the history are all accepted; the model's calls
+  come back as `functionCall` parts, and the SDK's automatic function calling works. Underneath it is the same
+  prompt-level implementation as the OpenAI endpoints, with the same limits (see the Function calling row in
+  [protocol coverage](#openai-protocol-coverage)).
+- **Thinking**: with `generationConfig.thinkingConfig.includeThoughts: true`, the thought summary comes back as a part
+  with `thought: true` (only for models that produce one).
+- **Image / video input**: `inlineData`, or `fileData` with an http(s) link; needs a cookie. There is no Files API, so
+  `files/…` URIs and other types (PDF, audio) return 400.
+- **Image / music generation**: with `gemini-image` / `gemini-music`, the output comes back as `inlineData` parts.
+- Sampling settings in `generationConfig` (`temperature`, `maxOutputTokens`, …) are accepted and ignored;
+  `candidateCount` > 1 returns 400.
+- Errors use Google's shape `{"error":{"code","message","status"}}`, with the same status codes as the OpenAI endpoints.
 
 ```python
 from google import genai
@@ -276,632 +293,571 @@ client = genai.Client(api_key="sk-gemini-...",
 print(client.models.generate_content(model="gemini-3.6-flash", contents="Hello!").text)
 ```
 
-## MCP 工具
+## MCP tools
 
-除了 OpenAI 接口，同一个进程、同一个端口还挂了一个 **MCP server**，在 `/mcp` 上，
-把 Gemini 网页端的**联网搜索**、**生图**、**音乐**、**视频**暴露成工具，让 Claude Desktop /
-Claude Code / Cursor 这类 MCP 客户端直接调用。
+Besides the OpenAI API, the same process and port also serves an **MCP server** at `/mcp`,
+exposing Gemini's web-grounded **search**, **image**, **music** and **video** generation as
+tools that MCP clients (Claude Desktop / Claude Code / Cursor) can call directly.
 
-不用单独起进程、不用额外部署——起了后端就有。传输是 HTTP（Streamable HTTP），
-所以远程客户端连 URL 就能用，复用后端的账号池 / 代理池 / 限流。搜索匿名即可，生图 / 音乐 / 视频要配 cookie（视频要付费号）。
+No separate process or deployment — running the backend gives you this. The transport is
+HTTP (Streamable HTTP), so remote clients just point at the URL, reusing the backend's
+account pool / proxy pool / rate limiting. Search works anonymously; image / music / video
+need a cookie (video needs a paid account).
 
-**客户端配置**（以 Claude Desktop 的 `claude_desktop_config.json` 为例）：
+**Client config** (Claude Desktop's `claude_desktop_config.json`):
 
 ```json
 {
   "mcpServers": {
     "gemini-search": {
-      "url": "http://你的服务器:8083/mcp",
-      "headers": { "Authorization": "Bearer sk-gemini-你的key" }
+      "url": "http://your-server:8083/mcp",
+      "headers": { "Authorization": "Bearer sk-gemini-your-key" }
     }
   }
 }
 ```
 
-- `url` 指向后端的 `/mcp`；本机跑就是 `http://localhost:8083/mcp`。
-- `Authorization` 填 OpenAI 接口那把同样的 API key（面板「设置」页里看）。
-- Claude Code：`claude mcp add --transport http gemini-search http://localhost:8083/mcp --header "Authorization: Bearer sk-gemini-你的key"`。
+- `url` points at the backend's `/mcp`; locally it's `http://localhost:8083/mcp`.
+- `Authorization` is the same API key as the OpenAI endpoint (shown on the Settings page).
+- Claude Code: `claude mcp add --transport http gemini-search http://localhost:8083/mcp --header "Authorization: Bearer sk-gemini-your-key"`.
 
-| 工具 | 参数 | 返回 |
+| Tool | Arguments | Returns |
 |---|---|---|
-| `web_search` | `query` | Gemini 联网查证后的答案，末尾附 `Sources:` 来源清单 |
-| `generate_image` | `prompt`，可选 `image_urls`（参考图，data: 或 http(s) 链接） | 图片（MCP `image` 内容） |
-| `generate_music` | `prompt` | 约 30 秒音乐（MCP `audio` 内容；上游给的不是 `audio/*` 时用 embedded resource） |
-| `create_video_task` | `prompt`，可选 `size`（`1280x720` / `720x1280`）、`input_reference`（首帧） | 任务 id，跟 `/v1/videos` 是同一套任务 |
-| `get_video_status` | `id`，可选 `include_video` | 任务状态；完成且 `include_video=true` 时附上 MP4（embedded resource，几 MB） |
+| `web_search` | `query` | Gemini's web-grounded answer with a `Sources:` list appended |
+| `generate_image` | `prompt`, optional `image_urls` (reference images: data: or http(s) links) | the image (MCP `image` content) |
+| `generate_music` | `prompt` | a ~30 s clip (MCP `audio` content; an embedded resource when upstream doesn't serve `audio/*`) |
+| `create_video_task` | `prompt`, optional `size` (`1280x720` / `720x1280`), `input_reference` (start frame) | a task id, the same jobs as `/v1/videos` |
+| `get_video_status` | `id`, optional `include_video` | the task status; with `include_video=true` on a finished task, the MP4 attached (embedded resource, several MB) |
 
-产物用 MCP 原生的媒体内容类型返回（base64 在 `data` / `blob` 字段，带 `mimeType`），不写进文本，
-支持的客户端会当附件渲染。读取指定 URL 的 `url_context` 暂未做。
+Results use MCP's native media content types (base64 in `data` / `blob`, with `mimeType`), not
+text, so clients that support them render an attachment. `url_context` (reading a specific
+URL's content) is not implemented yet.
 
-## 管理面板
+## Admin panel
 
-`http://localhost:8083/admin`，用 `--admin-token` 登录。
+`http://localhost:8083/admin`, log in with `--admin-token`.
 
-- **概览** — 24h KPI + 请求量/P50 延迟双轴趋势图 + 模型/代理分组统计 + IP 限流用量 + 一键连通性诊断
-- **请求记录** — 明细列表（仅元数据，无 prompt/response 内容），状态/模型筛选 + 分页
-- **代理池** — 运行时增删改 + 启用/禁用 + 失败次数熔断（每代理是独立 IP slot）
-- **Cookie 池** — 导入多个 Google 登录态账号，请求按**最久未用优先**自动轮转。每个账号一键「检测」是否仍是登录态，**失效的账号标红提示重导**；自动换发 `__Secure-1PSIDTS` + 每 10 分钟保活；每个账号粘住自己的出口；浏览器里登了多个 Google 号时，用「账号序号」指定用哪一个。列表只显示脱敏摘要（cookie 数 / 关键项 / SAPISID 末 4 位 / 失败次数）
-- **设置** — 运行时配置表单（保存即生效）+ API Key 轮换 + 部署期配置只读展示
-- **关于** — 当前版本 / 最新版本 + 手动检查更新；有新版时列出更新说明、Docker 升级命令和各平台二进制下载链接（不会自动替换二进制，升级仍由你来做）
+- **Overview** — 24h KPIs, request volume / P50 latency dual-axis chart, per-model and per-proxy breakdowns, IP rate-limit usage, one-click connectivity check
+- **Requests** — request log (metadata only, no prompt/response content), status/model filters, pagination
+- **Proxy pool** — runtime CRUD, enable/disable, circuit breaker on repeated failures (each proxy is its own IP slot)
+- **Cookie pool** — import multiple signed-in Google accounts; requests rotate through them **least-recently-used first**. One-click "check" tells you whether an account is still signed in, and **dead accounts are flagged in red** so you know which to re-import; `__Secure-1PSIDTS` is rotated automatically plus a 10-minute keepalive; each account is pinned to its own exit; when several Google accounts are signed in to one browser, the "account index" picks which one to use. The list shows redacted summaries only (cookie count / key entries / last 4 of SAPISID / failure count)
+- **Settings** — runtime config form (saved settings take effect immediately), API key rotation, read-only view of deploy-time config
+- **About** — current and latest version plus a manual update check; when a newer release exists it shows the release notes, the Docker upgrade command and per-platform binary download links (the binary is never replaced automatically; upgrading is still up to you)
 
-面板前端是单个 HTML，Chart.js 随二进制 embed，**不走 CDN**——内网/离线部署也能开。
+The frontend is a single HTML file and Chart.js is embedded in the binary, **not loaded from a CDN**, so the panel also works on air-gapped or intranet deployments.
 
-**反代到子路径不用额外配置**：面板里的地址全是相对的，把 `https://example.com/gemini/`
-转发到本服务的 `/` 就能用 `https://example.com/gemini/admin` 打开。（访问不带尾斜杠的
-`/admin` 会 301 到 `admin/`——相对地址按文档 URL 的目录解析，两种形式差一层，统一一下
-才不会解析错。）
+**Serving it under a path prefix needs no extra configuration**: every URL in the panel is relative, so forwarding `https://example.com/gemini/` to this service's `/` is enough to open `https://example.com/gemini/admin`. (Requesting `/admin` without the trailing slash 301s to `admin/` — relative URLs resolve against the document URL's *directory*, and the two forms differ by one level, so they have to be normalised first.)
 
-## 模型
+## Models
 
-模型跟着 Gemini 网页端的模型选择器走（清单来自 `batchexecute?rpcids=otAQ7b`）。2026-11 上游换了一轮：
-付费号的选择器里现在是 **Auto（3.5 Flash-Lite）/ 4 Hydrogen / 4 Neon / 4 Carbon**。4 Neon 接替了 3.1 Pro 的位置，
-4 Carbon 是 4 Argon 改名而来，3.6 Flash 没了。实测各身份实际拿到的模型（2026-11-19）：
+Models follow the Gemini web app's model picker (the list comes from `batchexecute?rpcids=otAQ7b`). Upstream reshuffled in 2026-11:
+a paid account's picker now lists **Auto (3.5 Flash-Lite) / 4 Hydrogen / 4 Neon / 4 Carbon**. 4 Neon took over 3.1 Pro's slot,
+4 Carbon is 4 Argon renamed, and 3.6 Flash is gone. What each identity actually gets (measured 2026-11-19):
 
-| 身份 | Flash 路由（`gemini-3.6-flash` / `gemini-4-hydrogen`） | `gemini-4-neon` | `gemini-4-carbon` |
+| Identity | Flash route (`gemini-3.6-flash` / `gemini-4-hydrogen`) | `gemini-4-neon` | `gemini-4-carbon` |
 |---|---|---|---|
-| 匿名 | 3.5 Flash-Lite | 不暴露 | 不暴露 |
-| 免费号 cookie | **4 Hydrogen**（思考版没有 High 档） | 未验证（11-17 免费号请求会卡到超时） | 降级成 4 Hydrogen |
-| 付费 / Ultra 号 cookie | **4 Hydrogen**（思考版是 High 档） | **4 Neon** | **4 Carbon** |
+| Anonymous | 3.5 Flash-Lite | not exposed | not exposed |
+| Free account cookie | **4 Hydrogen** (no High tier for thinking) | unverified (on 11-17 a free account's request hung until timeout) | switched to 4 Hydrogen |
+| Paid / Ultra account cookie | **4 Hydrogen** (thinking is the High tier) | **4 Neon** | **4 Carbon** |
 
-| 模型 | 描述 |
+| Model | Description |
 |---|---|
-| `gemini-3.6-flash` | 默认。匿名时实际是 3.5 Flash-Lite，挂 cookie 后实际是 4 Hydrogen |
-| `gemini-3.5-flash-lite` | 极速、轻量 |
-| `gemini-4-hydrogen` | 4 Hydrogen，**要配 cookie**（免费号也行） |
-| `gemini-3.8-flash` | 旧名称，跟 `gemini-4-hydrogen` 同一条路由。`gemini-3.7-flash` 仍为别名 |
-| `gemini-4-carbon` | 4 Carbon（最复杂的任务，上游从 4 Argon 改名而来），**要付费/Ultra Gemini 账号的 cookie**（免费号会被换成 4 Hydrogen）|
-| `gemini-4-argon` | 旧名称，跟 `gemini-4-carbon` 同一条路由 |
-| `gemini-4-neon` | 4 Neon（深度分析，接替原 3.1 Pro 的位置），**要付费/Ultra Gemini 账号的 cookie** |
-| `gemini-3.1-pro` | 旧名称，跟 `gemini-4-neon` 同一条路由 |
-| `gemini-3.6-flash-thinking` | Flash 路由开扩展思考，**要配 cookie** |
-| `gemini-3.5-flash-lite-thinking` | 3.5 Flash-Lite 开扩展思考，**要配 cookie** |
-| `gemini-4-hydrogen-thinking` | 4 Hydrogen 扩展思考，付费号是 High 档、带 `reasoning_content`；免费号只有普通档。**要配 cookie** |
-| `gemini-3.8-flash-thinking` | 旧名称，同 `gemini-4-hydrogen-thinking`（`gemini-3.7-flash-thinking` 为别名）|
-| `gemini-4-neon-thinking` | 4 Neon 扩展思考（High 档），带 `reasoning_content`。**要付费/Ultra 号 cookie**。`gemini-3.1-pro-thinking` 为旧名称 |
-| `gemini-4-argon-thinking` | Carbon 开扩展思考。**目前拿到的是普通档**：让 Carbon 不卡住的那个请求参数会关掉思考档，两者暂时不能兼得。**要付费/Ultra 号 cookie** |
-| `gemini-4-argon-thinking-medium` | Carbon 的中等思考档（上游 Medium，不带 `reasoning_content`），**要付费/Ultra 号 cookie**（请求里同样带着上一条说的参数，中档还生不生效没验证）|
-| `gemini-image` | 生图（Nano Banana），产物 base64，**要配 cookie** |
-| `gemini-music` | 音乐（Lyria，约 30 秒），产物 base64，**要配 cookie** |
-| `gemini-canvas` | 画布，生成交互 HTML 文档（内联返回 ```html 块），**要配 cookie** |
-| `gemini-video` | 生视频（异步，几十秒~几分钟），产物 base64 MP4，**要 Pro/付费号**；免费号被上游内容政策拒 |
+| `gemini-3.6-flash` | Default. Actually 3.5 Flash-Lite when anonymous, 4 Hydrogen with a cookie |
+| `gemini-3.5-flash-lite` | Fast and lightweight |
+| `gemini-4-hydrogen` | 4 Hydrogen, **needs a cookie** (free accounts work) |
+| `gemini-3.8-flash` | Legacy name, same route as `gemini-4-hydrogen`. `gemini-3.7-flash` remains an alias |
+| `gemini-4-carbon` | 4 Carbon (most complex work; renamed upstream from 4 Argon), **needs a cookie from a PAID/Ultra Gemini account** (free accounts get switched to 4 Hydrogen) |
+| `gemini-4-argon` | Legacy name, same route as `gemini-4-carbon` |
+| `gemini-4-neon` | 4 Neon (deeper analysis; took over 3.1 Pro's slot), **needs a cookie from a PAID/Ultra Gemini account** |
+| `gemini-3.1-pro` | Legacy name, same route as `gemini-4-neon` |
+| `gemini-3.6-flash-thinking` | Flash route with extended thinking; **needs a cookie** |
+| `gemini-3.5-flash-lite-thinking` | 3.5 Flash-Lite with extended thinking; **needs a cookie** |
+| `gemini-4-hydrogen-thinking` | 4 Hydrogen with extended thinking: High tier with `reasoning_content` on paid accounts, normal tier only on free accounts. **Needs a cookie** |
+| `gemini-4-neon-thinking` | 4 Neon with extended thinking (High tier), with `reasoning_content`. **Needs a PAID/Ultra account cookie**. `gemini-3.1-pro-thinking` is the legacy name |
+| `gemini-3.8-flash-thinking` | Legacy name, same as `gemini-4-hydrogen-thinking` (`gemini-3.7-flash-thinking` is an alias) |
+| `gemini-4-argon-thinking` | Carbon with extended thinking. **Currently answers at the normal tier**: the request parameter that keeps Carbon from hanging also disables the thinking tier, and the two can't be combined yet. **Needs a PAID/Ultra account cookie** |
+| `gemini-4-argon-thinking-medium` | Carbon at the Medium thinking tier (upstream Medium, no `reasoning_content`); **needs a PAID/Ultra account cookie** (the request carries the same parameter as above; whether Medium still takes effect is unverified) |
+| `gemini-image` | Image generation (Nano Banana); base64 output; **needs a cookie** |
+| `gemini-music` | Music (Lyria, ~30s); base64 output; **needs a cookie** |
+| `gemini-canvas` | Canvas: generates an interactive HTML document (returned inline as a ```html block); **needs a cookie** |
+| `gemini-video` | Video generation (async, tens of seconds to a few minutes); base64 MP4 output; **needs a Pro/paid account** (free accounts are refused by the upstream content policy) |
 
-启用 `strict_model` 后，上游改名前后的两个名字互认：`gemini-3.6-flash` / `gemini-3.8-flash` 接受 `4 Hydrogen`，
-`gemini-4-argon` 接受 `4 Carbon`，`gemini-4-carbon` 也接受 `4 Argon`，`gemini-3.1-pro` 和 `gemini-4-neon` 互认 `3.1 Pro` / `4 Neon`；显式请求 `gemini-4-hydrogen` 只接受 `4 Hydrogen`。
-匿名请求 `gemini-3.6-flash` 回的是 3.5 Flash-Lite，开着 `strict_model` 时会被判成降级。
-Hydrogen 仅提供网页端普通档和扩展/High 档，不提供官方 API 的 `xhigh`。
+With `strict_model` enabled, the names from before and after the upstream renames accept each other: `gemini-3.6-flash` / `gemini-3.8-flash` accept `4 Hydrogen`, `gemini-4-argon` accepts `4 Carbon`, `gemini-4-carbon` also accepts `4 Argon`, and `gemini-3.1-pro` / `gemini-4-neon` accept both `3.1 Pro` and `4 Neon`; an explicit `gemini-4-hydrogen` request only accepts `4 Hydrogen`. An anonymous `gemini-3.6-flash` request gets 3.5 Flash-Lite, which `strict_model` treats as a downgrade. Hydrogen exposes the web app's normal and extended/High tiers, not the official API's `xhigh` tier.
 
-没配 cookie 时 `/v1/models` 只返回 `gemini-3.6-flash` 和 `gemini-3.5-flash-lite`，选要登录的模型会直接报错并说明
-原因。因为匿名请求它们必然被静默降级成 3.5 Flash-Lite——与其让客户端拿到一个
-"成功但其实不是那个模型"的回复，不如在选型时就失败。
+Without a cookie, `/v1/models` returns only `gemini-3.6-flash` and `gemini-3.5-flash-lite`, and asking for a login-only model fails with an explanation. An anonymous request for one is always silently downgraded to 3.5 Flash-Lite — better to fail at model selection than to hand back a reply that "succeeded" but isn't that model.
 
-`-thinking` 是网页 UI 上「扩展思考」的开关，跟模型正交——每个模型都能开，
-不是额外的模型。服务端回报的名字会带 `High`（如 `4 Hydrogen High`，上游早期叫 `Extended`），
-思考链明显变长。
-**只在登录态生效**：匿名请求带上这个开关会被服务端静默忽略，所以没 cookie 时不暴露。
+The `-thinking` variants are the web UI's "extended thinking" switch, orthogonal to the model, not extra models. The backend then reports a `High` suffix (e.g. `4 Hydrogen High`; earlier upstream called it `Extended`). **Only effective when signed in**: anonymous requests have the switch silently ignored, so they aren't exposed without a cookie.
 
-旧的 `gemini-3.5-flash`、`gemini-3.5-flash-thinking`、
-`gemini-3.5-flash-thinking-lite`、`gemini-auto`、`gemini-flash-lite` **已移除**
-（传了会返回 400）——它们在服务端没有对应条目，留着只会让人以为有五种不同
-的模型可选。
+The old names `gemini-3.5-flash`, `gemini-3.5-flash-thinking`, `gemini-3.5-flash-thinking-lite`, `gemini-auto` and `gemini-flash-lite` were **removed** (they now return 400): the backend has no entries for them, and keeping them only suggested there were five distinct models to choose from.
 
-> **`@think=N` 已废弃。** 该后缀写进请求的 `inner[17]`，一直被当作"思考深度"，
-> 但抓包证明它是**会话内的轮次索引**（首轮 `[[0]]`，带会话 id 的第二轮 `[[1]]`，
-> 逐轮递增），跟思考深度无关，所以这个参数从来没有生效过。后缀仍被接受但直接忽略，不影响路由。
+> **`@think=N` is deprecated.** The suffix was written into `inner[17]` and long treated as "thinking depth", but captures show it is the **turn index within a conversation** (first turn `[[0]]`, the follow-up carrying a conversation id `[[1]]`, incrementing from there) — nothing to do with reasoning depth, so the parameter never did anything. The suffix is still accepted and ignored, so existing client configs don't break.
 
-### 思考链（reasoning_content）
+### Reasoning chain (`reasoning_content`)
 
-开扩展思考的模型（如付费号上的 `gemini-4-hydrogen-thinking`）回答前会先输出一段自己的推理过程，本项目把它按事实标准的
-`reasoning_content` 字段暴露出来，newapi、Cherry Studio、ChatBox 等客户端会渲染成
-可折叠的「思考过程」。普通档不产出思考链，太简单的问题即使开了思考也可能没有，此时不会出现这个字段。
+Models with extended thinking on (such as `gemini-4-hydrogen-thinking` on a paid account) emit their own reasoning before answering. The project exposes it
+as `reasoning_content`, the de-facto standard field, so clients like newapi, Cherry
+Studio and ChatBox render it as a collapsible "thinking" panel. The normal tier produces no reasoning chain,
+and a very easy question may produce none even with thinking on; the field is then omitted entirely.
 
-非流式：
+Non-streaming:
 
 ```json
 {"choices":[{"message":{
   "role":"assistant",
   "content":"The core rule of this classic puzzle is...",
-  "reasoning_content":"**Defining the Constraints**
-
-I've successfully defined..."
+  "reasoning_content":"**Defining the Constraints**\n\nI've successfully defined..."
 }}],
  "usage":{"prompt_tokens":26,"completion_tokens":337,"reasoning_tokens":77,"total_tokens":363}}
 ```
 
-流式按 `delta.reasoning_content` 推，且**思考块全部推完才开始推正文**（上游就是这个
-顺序），客户端观感跟网页端一致。
+Streaming sends it as `delta.reasoning_content`, and **the whole reasoning chain is
+streamed before any answer text** — that is the order the upstream itself uses, so the
+experience matches the Gemini web UI.
 
-`reasoning_tokens` **单独计数、不含在 `completion_tokens` 里**：思考链默认被客户端
-折叠不展示，算进去等于让用户为看不见的输出买单（下游 newapi 按 `completion_tokens`
-计费）。要计费的自己把两者相加。
+`reasoning_tokens` is counted **separately and is not included in `completion_tokens`**:
+clients collapse the reasoning by default, so billing it would charge users for output
+they never see (newapi bills on `completion_tokens`). Add the two together yourself if
+you do want to bill for it.
 
-### 已知的能力边界
+### Known capability boundaries
 
-匿名调用（不挂 cookie）只能拿到 3.5 Flash-Lite + Gemini 自带的联网搜索。
-要登录的模型匿名时被静默降级成 3.5 Flash-Lite，所以干脆不暴露。
+Anonymous calls (no cookie) only reach 3.5 Flash-Lite plus Gemini's built-in web search. Login-only models are silently downgraded to 3.5 Flash-Lite anonymously, which is why they aren't exposed at all in that case.
 
-挂上 cookie 额外解锁：**4 Hydrogen**、**扩展思考版（`-thinking`）**、**读图 / 读视频**、
-**更长的上下文**（超长对话自动转成文本附件发，见下文），以及 **生图（`gemini-image`）**、
-**音乐（`gemini-music`）**、**画布（`gemini-canvas`）**、**生视频（`gemini-video`，要 Pro 号）**。
+Attaching a cookie additionally unlocks **4 Hydrogen**, **the extended-thinking (`-thinking`) variants**, **image / video input**, **a longer context** (over-long conversations are sent as a text attachment, see below), and **image generation (`gemini-image`), music (`gemini-music`), canvas (`gemini-canvas`), video generation (`gemini-video`, needs a Pro account)**.
 
-深度研究仍**未实现**（多步异步流程）。管理面板的「实际模型」列会把服务端实际用了哪个
-模型标出来，降级一眼可见。
+Deep research is still **not implemented** (a multi-step async flow). The panel's "actual model" column always shows which model the backend really used, so any downgrade is visible.
 
-### 生图 / 音乐
+### Image & music
 
-`gemini-image`（Nano Banana）和 `gemini-music`（Lyria，约 30 秒）跟普通对话一样走
-`/v1/chat/completions`，user 消息里写要画什么 / 要什么曲子。产物字节以 **base64
-data URL** 放进返回的 `content`：图片是 `![image](data:image/png;base64,…)`、音频是
-`[audio](data:audio/mpeg;base64,…)`。支持 markdown 的客户端能直接把图渲染出来；要存
-文件就 decode 逗号后面那段 base64。
+`gemini-image` (Nano Banana) and `gemini-music` (Lyria, ~30s) go through `/v1/chat/completions` just like a normal chat — put the image/music description in the user message. The bytes come back as a **base64 data URL** inside `content`: images as `![image](data:image/png;base64,…)`, audio as `[audio](data:audio/mpeg;base64,…)`. Markdown-capable clients render the image inline; to save a file, decode the base64 after the comma.
 
 ```bash
 curl http://127.0.0.1:8083/v1/chat/completions \
   -H "Authorization: Bearer sk-gemini-..." -H "Content-Type: application/json" \
-  -d '{"model":"gemini-image","messages":[{"role":"user","content":"画一只戴宇航员头盔的橘猫"}]}'
+  -d '{"model":"gemini-image","messages":[{"role":"user","content":"an orange cat in an astronaut helmet"}]}'
 ```
 
-不转外链是有意的——Gemini 的产物链要带 cookie 才下得到，直接把链给客户端它打不开，
-所以服务端下回字节再转 base64。产物的 base64 **不计进 `completion_tokens`**（否则一张图
-上百万 token，下游按它计费就离谱了），只算模型附带的说明文字。都要登录态，没 cookie
-时这俩模型不进 `/v1/models`。参数如 `size` / `n` 上游没有对应旋钮，传了会被忽略。
+Not returning a URL is deliberate — Gemini's artifact links need the cookie to download, so a bare link would be dead on the client side; the server fetches the bytes and inlines them. The base64 is **not counted in `completion_tokens`** (a single image is millions of tokens; billing that downstream would be absurd), only the caption text is. Both need a cookie, so they don't appear in `/v1/models` without one. Params like `size` / `n` have no upstream knob and are ignored.
 
-**要更大、更清楚的图**，在管理面板「设置」页打开 **生图下载原图/放大**（`image_upscale`）。
-打开后照网页「下载」按钮那样取图：**Ultra 号**的图会放大到宽高各 2 倍（1376×768 → 2752×1536，
-约 3-4.5MB）；**普通号**拿不到放大，但拿到的是没被重新压缩的原始文件（尺寸不变，约 0.8MB，
-默认那张约 0.2MB）。每张图多一次请求，返回体积大几倍。取不到就退回默认那张，不会重新生成。
+**For bigger, sharper images**, turn on **Full-size image download** (`image_upscale`) on the admin panel's Settings page. Images are then fetched the way the web app's Download button does it: on **Ultra accounts** the image is upscaled 2× in each dimension (1376×768 → 2752×1536, about 3-4.5 MB); **other accounts** don't get the upscale, but they get the original file instead of the recompressed one (same size, about 0.8 MB vs about 0.2 MB by default). It costs one extra request per image and a several-times larger response. If it fails, the default image is returned; nothing is regenerated.
 
-**多轮上下文默认是把 `messages` 拼成单个 prompt 发的**（打开「设置」里的服务端多轮续接
-`multi_turn` 后，认出是续接就只发最新一句、历史留在服务端，见[配置](#配置)）。拼接的代价是每轮重发全部历史，于是撞上
-单次输入的长度墙：**约 13 万 UTF-8 字节**，超了上游**从尾部静默截断且不报错**——而最新
-消息拼在末尾，被吃掉的正是你刚问的那句，表现像"模型突然变笨"。
+**By default, multi-turn context is sent by flattening `messages` into a single prompt** (turn on server-side multi-turn, `multi_turn`, in Settings and a recognised continuation sends only the latest message while the history stays server-side; see [Configuration](#configuration)). The cost of flattening is that every turn resends the whole history, which runs into the single-request length wall: about **130,000 UTF-8 bytes**. Past that the upstream **silently truncates from the tail without an error** — and since the newest message sits at the end, what gets eaten is exactly what you just asked, which reads as "the model suddenly got dumb".
 
-挂 cookie 时超长对话会自动转成 `message.txt` 附件发上去，绕开请求体那堵墙；**但附件
-另有一堵墙**：模型能看到的内容合计约 **16 万字节**，超出部分传上去了也读不到（实测总量
-固定、只挪暗号偏移：157,833 处读得到、163,371 处读不到；切成多份附件不涨额度）。
-所以挂 cookie 把可用长度从 13 万提到约 16 万，**真正的长对话仍需客户端自己压缩**。
-没挂 cookie 时直接返回 400 `context_length_exceeded`，不静默丢数据。
+With a cookie, an over-long conversation is uploaded as a `message.txt` attachment instead, which gets around the request-body wall — **but the attachment has a wall of its own**: the model only ever sees about **160,000 bytes** of content in total; anything past that is uploaded but never read (measured with the total size held fixed and only the marker's offset moved: readable at 157,833, not readable at 163,371; splitting into several attachments does not raise the budget). So a cookie takes the usable length from 130K to about 160K — **a genuinely long conversation still has to be compacted by the client**. Without a cookie the request is rejected with 400 `context_length_exceeded` rather than losing data silently.
 
-## 配置
+## Configuration
 
-配置只有两个地方，按"改了要不要重启"分：
+There are only two places to configure things, split by whether a change needs a restart.
 
-### 运行时配置 → 管理面板「设置」页
+### Runtime config → admin panel, Settings page
 
-保存**立刻生效**，不用重启。存在数据库里，优先级高于 `config.json` 和命令行参数。
+Saving takes effect **immediately**, no restart. Values live in the database and take precedence over `config.json` and command-line flags.
 
-| 项 | 说明 |
+| Item | Notes |
 |---|---|
-| 默认模型 | 客户端没传 `model` 时用哪个 |
-| 每 slot 并发 / RPM / RPH | 限流额度，0 = 不限 |
-| Prompt 字节上限 | 超了：挂 cookie 时转成文本附件发（可用长度到约 16 万字节），没挂时返回 400 `context_length_exceeded`。都不静默截断。按 UTF-8 字节算（上游的墙跟 token 无关），默认 128000。0 = 不限 |
-| 多轮（`multi_turn`） | 默认关。开启后走 Gemini 原生 conversation_id 服务端续接——客户端每轮重发全历史，服务端识别续接后只发最新一句、历史留服务端，长会话不再撞单请求字节墙。登录/匿名都可用。**注意**：不放大模型上下文窗口，超窗的早期内容仍会被挤出，解决的是"长对话不撞墙 + 保住最近上下文"，不是"喂超长文档"。 |
-| 自动删会话（`auto_delete_conversation`） | 默认关。开启后每次出完结果自动删掉 gemini.google.com 上留下的这条会话，免得登录账号里堆一堆。只登录态生效，异步 best-effort、删失败不影响响应。 |
-| 临时对话（`temporary_chat`） | 默认关。开启后走 Gemini 网页端原生「临时对话」：会话压根不进账号的会话列表、不用于模型训练，比「自动删会话」更干净，还省掉那次删除请求。只登录态有意义；开了「服务端多轮续接」时自动不生效（临时对话不留列表，多轮要靠服务端留会话）。 |
-| 生图下载原图/放大（`image_upscale`） | 默认关。开启后照网页「下载」按钮取生成的图：Ultra 号放大到宽高各 2 倍，普通号拿到未重新压缩的原始文件。每张图多一次请求；取不到就退回默认那张。见上文「生图 / 音乐」。 |
-| 匿名优先（`anon_first`） | 默认关。开启后不需要登录态能力的请求（纯文本、非思考、无工具、不带图）走匿名、不占用 cookie 账号，省账号额度；用到 4 Hydrogen / 4 Neon / 4 Carbon / 扩展思考 / 生图 / 传文件这些才挑号。关掉则只要池里有号就一律用号。 |
-| 严格模型校验（`strict_model`） | 默认关。账号某一档额度用完时，上游不报错，而是静默换成更弱的模型照样回 200。开启后，服务端自报的模型跟请求的不一致就不把降级回答当成功：换下一个号重试，全池都被降级就回 `429 insufficient_quota`（`code: model_downgraded`，带 `Retry-After`）。流式在吐出第一个字之前就判断，不会先吐一半再报错。媒体模型（生图/音乐/视频/画布）不参与判断。 |
-| 降级冷却（`strict_model_cooldown_min`） | 配合严格模型校验：被降级的号在这个模型上歇多久再用，默认 300 分钟（网页端用量按 5 小时窗口算）。0 = 不记，每次请求都重新试。 |
-| 重试次数 / 重试间隔 / 上游超时 | |
-| 超时后重试（`retry_on_timeout`） | 默认开。关掉后上游等满「上游超时」还没回完就直接报错，不再按重试次数重发：重发多半还是超时，一个请求最坏要等「超时 × 重试次数」，超长输入或慢模型（如 Carbon）下能拖十几分钟。空响应、出错话术等其他失败照常重试。 |
-| 流式保活（`stream_keepalive_sec`） | 默认 0（关）。流式请求连续这么多秒没往客户端写东西，就发一次保活，防止前面的 nginx / Cloudflare / newapi 等中间层因连接空闲回 504。建议 15。OpenAI 两个接口发 SSE 注释行 `: ping`（客户端按规范忽略），`/v1beta` 发一块空正文（Google SDK 不认注释行）。**代价**：保活要先开流（HTTP 200），之后再失败只能在流里报错，拿不到 502/429 状态码，依赖状态码换渠道的客户端会受影响；秒级就失败的请求不受影响。非流式请求无效，只能调大中间层的超时。 |
-| 明细保留天数 | 过期只删明细，聚合数据永久保留 |
-| TLS 指纹 | `chrome_146`（默认）/ `chrome_144` / `chrome_133` / `firefox_147` / `safari_16_0` / `safari_ios_17_0` |
-| Firefox 指纹（`firefox_fingerprint`） | 实验，默认关。开启后请求伪装成 Firefox：直连时 TLS 握手走 Firefox 指纹、UA 换成 Firefox、去掉 Chrome 专有的 `Sec-CH-UA`。cookie 从 Firefox 导出时建议配套打开。走代理时 TLS 这层改不了（见[指纹模拟](#指纹模拟)），只有 header 变 |
-| Gemini `bl` 版本 | 上游前端版本号，过期时改这里 |
-| 自动跟随 bl 版本（`gemini_bl_auto`） | 每 6 小时从 `/app` 页面抓一次最新版本号，抓不到或格式不对就用上面钉的值 |
-| 熔断冷却（`proxy_cooldown_min`） | 代理连续失败 5 次后歇多久再自动放回池子，默认 120 分钟（实测被拦的出口 106-121 分钟自恢复）。0 = 不自动恢复，要去代理池页手动重置 |
-| 无可用代理时退回直连（`fallback_direct`） | 默认关：代理全满或全熔断时直接报错，本机 IP 不暴露给上游。开：可用性优先，但上游会看到本机出口 |
-| cookie 失效时降级匿名（`fallback_anon`） | 默认关：直接报错，能立刻发现该换号了。开：继续跑，但要登录的模型会被静默降级成 3.5 Flash-Lite、思考链消失 |
-| 新协议（`web_channel`） | 默认关。开启后对话改走网页新版用的 processSession（WebChannel）接口，而不是老的 StreamGenerate。后端是同一个，只换传输方式；老接口目前仍正常，老接口出问题时再打开。文本、看图、生图、匿名都已实测；多轮续接仍走老接口；扩展思考在新协议上暂时不生效（回报普通档）。 |
-| 打印请求日志 | |
+| Default model | used when the client doesn't send `model` |
+| Per-slot concurrency / RPM / RPH | rate limits, 0 = unlimited |
+| Prompt byte cap | over the cap: with a cookie the history is sent as a text attachment (usable length up to ~160,000 bytes), without one the request is rejected with 400 `context_length_exceeded`. Neither path truncates silently. Counted in UTF-8 bytes (the upstream limit is byte-based, not token-based), default 128000. 0 = unlimited |
+| Multi-turn (`multi_turn`) | off by default. When on, uses Gemini's native conversation_id server-side continuation — the client resends full history each turn, the server detects the continuation and sends only the newest message while history stays server-side, so long conversations no longer hit the single-request byte wall. Works signed-in or anonymous. **Note**: it does not enlarge the model's context window; content past the window is still evicted (recent-kept sliding window). It solves "long chat without hitting the wall + keep recent context", not "feed a huge document". |
+| Auto-delete conversation (`auto_delete_conversation`) | off by default. When on, each finished request deletes the conversation it left on gemini.google.com, so signed-in accounts don't pile them up. Signed-in only; async best-effort, a failed delete doesn't affect the response. |
+| Temporary chat (`temporary_chat`) | off by default. When on, uses Gemini web's native **Temporary Chat** (`inner[45]=1`): the conversation never enters the account's chat list and isn't used for model training — cleaner than auto-delete, and it saves that extra delete request. Only meaningful signed-in; automatically inactive when server-side multi-turn is on (a temporary chat leaves no list entry, while multi-turn relies on the server keeping the conversation). |
+| Full-size image download (`image_upscale`) | off by default. When on, generated images are fetched the way the web app's Download button does: upscaled 2× in each dimension on Ultra accounts, the original (not recompressed) file on other accounts. One extra request per image; falls back to the default image if it fails. See "Image & music" above. |
+| Anonymous-first (`anon_first`) | off by default. When on, requests that don't need a signed-in session (plain text, no thinking, no tool, no image) go out anonymously without consuming a cookie account, saving account quota; only 4 Hydrogen / 4 Neon / 4 Carbon / extended thinking / image gen / file upload etc. pick an account. When off, any request uses an account as long as the pool has one. |
+| Strict model check (`strict_model`) | off by default. When an account runs out of quota for a tier, upstream doesn't error — it silently switches to a weaker model and still returns 200. When on, if the model the server reports differs from the one requested, the downgraded answer is not treated as a success: the request retries on the next account, and if the whole pool is downgraded it returns `429 insufficient_quota` (`code: model_downgraded`, with `Retry-After`). For streaming this is decided before the first token is sent, so you never get half an answer followed by an error. Media models (image/music/video/canvas) are not checked. |
+| Downgrade cooldown (`strict_model_cooldown_min`) | Works with strict model check: how long a downgraded account rests for that model before being used again. Default 300 minutes (web usage is counted over a 5-hour window). 0 = do not remember, retry on every request. |
+| Retry attempts / retry delay / upstream timeout | |
+| Retry after timeout (`retry_on_timeout`) | on by default. When off, a request that hits the upstream timeout without finishing fails right away instead of being resent up to the retry count: a resend usually times out again, so one request can otherwise wait up to "timeout × retry attempts", which reaches 10+ minutes with very long inputs or slow models such as Carbon. Other failures (empty response, failure reply, etc.) are still retried. |
+| Stream keepalive (`stream_keepalive_sec`) | 0 (off) by default. When a streaming request has written nothing to the client for this many seconds, send a keepalive so an nginx / Cloudflare / newapi layer in front doesn't answer 504 for an idle connection. 15 is a good value. The two OpenAI endpoints send an SSE comment line `: ping` (clients ignore it per the SSE spec); `/v1beta` sends an empty text chunk (Google's SDK does not accept comment lines). **Trade-off**: a keepalive has to open the stream (HTTP 200) first, so a later failure can only be reported inside the stream instead of as a 502/429 status, which affects clients that switch channels on status codes; requests that fail within seconds are unaffected. It does nothing for non-streaming requests; for those, raise the timeout of the layer in front. |
+| Detail retention days | only request details expire; aggregates are kept forever |
+| TLS fingerprint | `chrome_146` (default) / `chrome_144` / `chrome_133` / `firefox_147` / `safari_16_0` / `safari_ios_17_0` |
+| Firefox fingerprint (`firefox_fingerprint`) | experimental, off by default. When on, requests pose as Firefox: on direct connections the TLS handshake uses a Firefox fingerprint, the UA becomes Firefox, and Chrome-only `Sec-CH-UA` headers are dropped. Recommended together with cookies exported from Firefox. Through a proxy the TLS layer can't change (see [Fingerprint simulation](#fingerprint-simulation)), only the headers do |
+| Gemini `bl` version | upstream frontend build id, change it here when it expires |
+| Follow `bl` automatically (`gemini_bl_auto`) | fetches the latest build id from the `/app` page every 6 hours; if that fails or looks wrong, the pinned value above is used |
+| Breaker cooldown (`proxy_cooldown_min`) | how long a proxy rests after 5 consecutive failures before it returns to the pool, default 120 minutes (blocked exits were measured to recover in 106-121 minutes). 0 = never auto-recover; reset it on the Proxy pool page |
+| Fall back to direct when no proxy is available (`fallback_direct`) | off by default: when every proxy is full or tripped, return an error so the host IP is never exposed upstream. On: availability first, but the upstream sees the host's real exit |
+| Fall back to anonymous when the cookie is dead (`fallback_anon`) | off by default: return an error so you notice right away that the account needs replacing. On: keep going, but login-only models are silently downgraded to 3.5 Flash-Lite and the reasoning chain disappears |
+| New protocol (`web_channel`) | off by default. When on, chats go through processSession (WebChannel), the interface the current web app uses, instead of the legacy StreamGenerate. Same backend, different transport. The legacy interface still works; turn this on if it breaks. Text, image input, image generation and anonymous use are tested; multi-turn resume still uses the legacy interface, and extended thinking does not take effect on the new protocol yet (the normal tier is reported). |
+| Static proxy | fallback when the proxy pool is empty; normally use the Proxy pool page |
+| Request logging | |
 
-所有值都在后端做范围校验（比如 `retry_attempts` 只接受 1-10、超时 5-600 秒），
-非法值会被拒绝并说明原因——浏览器端的限制随手就能绕过，真正的关卡在服务端。
+Every value is range-checked on the server (for example `retry_attempts` accepts 1-10, timeouts 5-600 seconds) and illegal values are rejected with a reason — browser-side limits are trivial to bypass, so the real gate is server-side.
 
-### 凭证 → 也在面板
+### Credentials → also in the panel
 
-| 项 | 说明 |
+| Item | Notes |
 |---|---|
-| API Key | 首次启动自动生成，面板里可轮换或自定义 |
-| Google Cookie | 面板「Cookie 池」页导入，保存即生效，可以导入多个账号。池里有账号后 `gemini-4-hydrogen` 等要登录的模型才会出现在模型列表里 |
+| API key | generated on first boot, rotatable or replaceable from the panel |
+| Google cookie | import it on the Cookie pool page, effective on save; several accounts can be imported. Once the pool has an account, `gemini-4-hydrogen` and the other login-only models appear in the model list |
 
-两者都存在数据库里。已保存的值不回显（cookie 只显示识别到几个、关键项齐不齐）。
+Both live in the database. Saved values are never echoed back (the cookie only reports how many cookies were recognised and whether the key ones are present).
 
-### 部署期配置 → `docker-compose.yml`
+### Deploy-time config → `docker-compose.yml`
 
-只剩改了必须重启进程的：
+What's left is only what requires restarting the process:
 
-| 项 | 位置 |
+| Item | Where |
 |---|---|
-| 监听端口 | `ports` + `command: --port` |
-| 数据库路径 | `volumes` + `command: --db` |
-| `ADMIN_TOKEN` | `environment`，面板登录 token |
+| Listening port | `ports` + `command: --port` |
+| Database path | `volumes` + `command: --db` |
+| `ADMIN_TOKEN` | `environment`, the panel login token |
 
-`API_KEY` 环境变量会锁死 API key（面板改不了），用于不希望运行时被改的部署。
+The `API_KEY` environment variable pins the API key (the panel can't change it), for deployments that must not be changed at runtime.
 
-`--proxy` 和 `--cookie-file` 是**播种参数**，不是第二套配置：启动时把值导入代理池 /
-Cookie 池（按 URL、cookie 内容去重），之后一律从面板管理。改了重启即生效。
+`--proxy` and `--cookie-file` are **seed parameters, not a second configuration layer**: at startup their values are imported into the proxy pool / cookie pool (deduplicated by URL and by cookie contents), and everything is managed from the panel afterwards. Change them and restart to take effect.
 
-命令行参数仍然可用，定位是本地调试时的临时覆盖。优先级：
-**面板改动 > CLI flag / `config.json` > 内置默认**。
+Command-line flags still work and are meant as temporary overrides during local debugging. Precedence: **panel changes > CLI flags / `config.json` > built-in defaults**.
 
-不用 Docker 直接跑二进制时，可以把 `config.example.json` 复制成 `config.json` 当启动模板
-（不传 `--config` 时会自动找当前目录的 `config.json`，其次
-`$HOME/.config/gemini-web2api/config.json`）。里面的调优项面板改了就以面板为准，
-`config.json` 只决定第一次启动的初值。
+When running the binary directly, copy `config.example.json` to `config.json` as a starting template. Without `--config` the program looks for `./config.json` first, then `$HOME/.config/gemini-web2api/config.json`. Tunables in that file only seed the first boot; once changed in the panel, the panel wins.
 
-命令行参数全集：
+All flags:
 
-| flag | 说明 |
+| Flag | Notes |
 |---|---|
-| `--port` | 监听端口，默认 8083 |
-| `--config` | 指定 `config.json` 路径 |
-| `--db` | SQLite 路径，默认 `./data/gemini.db` |
-| `--admin-token` | 面板登录 token，留空 = 面板不鉴权（只有绑 127.0.0.1 才可接受） |
-| `--api-key` | 锁定 `/v1/*` 的 key（面板改不了），等价于 `API_KEY` 环境变量 |
-| `--cookie-file` | 启动时把文件里的 cookie 导入 Cookie 池 |
-| `--proxy` | 启动时把这个代理导入代理池 |
-| `--impersonate` | TLS 指纹档位 |
-| `--version` | 打印版本退出（Docker healthcheck 用的就是它） |
+| `--port` | listening port, default 8083 |
+| `--config` | path to `config.json` |
+| `--db` | SQLite path, default `./data/gemini.db` |
+| `--admin-token` | panel login token; empty = no auth (only acceptable when bound to 127.0.0.1) |
+| `--api-key` | pins the `/v1/*` key so the panel can't change it, same as the `API_KEY` env var |
+| `--cookie-file` | imports the cookie in this file into the cookie pool at startup |
+| `--proxy` | imports this proxy into the proxy pool at startup |
+| `--impersonate` | TLS fingerprint profile |
+| `--version` | print version and exit (this is what the Docker healthcheck runs) |
 
-## Cookie（可选）
+## Cookie (optional)
 
-挂 Google 账号 cookie 后请求走登录态，多出来的能力是 **4 Hydrogen + 思考链**
-（见上文「思考链」一节）、**读图 / 读视频**、**生图（`gemini-image`）/ 音乐（`gemini-music`）
-/ 画布（`gemini-canvas`）/ 生视频（`gemini-video`，要 Pro 号）**。免费账号实测
-请求 Flash 路由回报的就是 `4 Hydrogen`。
+Attaching a Google account cookie makes requests run as a signed-in session. What it buys you is **4 Hydrogen plus its reasoning chain** (see the reasoning section above). Verified on a free account: requests on the Flash route report `4 Hydrogen`.
 
-深度研究（多步异步）仍**未实现**。
+> Signed-in requests must carry an extra XSRF token. The project fetches it from the Gemini page automatically, caches it per cookie and re-fetches on expiry — nothing to configure. (Missing it makes **every** request fail with 400 while anonymous traffic keeps working — an earlier version hit exactly that.)
 
-> 带 cookie 的请求必须额外携带一个 XSRF token，本项目会自动从 Gemini 页面取并按
-> cookie 缓存、过期自动重取，无需配置。（这一步缺了会导致**所有**请求 400，
-> 匿名反而不受影响——早期版本踩过这个坑。）
+A signed-in session unlocks 4 Hydrogen + reasoning chain, image/video input, **image generation (`gemini-image`) / music (`gemini-music`)** (see "Image & music" above), **canvas (`gemini-canvas`)** — an interactive HTML document returned inline — and **video generation (`gemini-video`, needs a Pro account)**. Deep research also needs a signed-in session but **is not implemented here yet**.
 
-1. 浏览器登录 [gemini.google.com](https://gemini.google.com)
+1. Sign in to [gemini.google.com](https://gemini.google.com)
 2. DevTools (F12) → Application → Cookies → `https://gemini.google.com`
-3. 复制：`SID` / `HSID` / `SSID` / `APISID` / `SAPISID` / `__Secure-1PSID` / `__Secure-1PSIDTS`
-4. 粘进面板「Cookie 池 → 添加账号」；或写成 `cookie.txt` 后启动加
-   `--cookie-file cookie.txt`（启动时导入池子，之后从面板管理）：
+3. Copy: `SID` / `HSID` / `SSID` / `APISID` / `SAPISID` / `__Secure-1PSID` / `__Secure-1PSIDTS`
+4. Add it in the panel under Cookie pool → Add account, or write it to `cookie.txt` and start with `--cookie-file cookie.txt` (imported into the pool at startup, managed from the panel afterwards):
 ```
 SID=...; HSID=...; SSID=...; APISID=...; SAPISID=...; __Secure-1PSID=...; __Secure-1PSIDTS=...
 ```
 
-JSON 形式 `{"cookie": "SID=...; ...", "sapisid": "..."}` 也吃。带 `SAPISID` 的请求会自动
-算 `SAPISIDHASH` 授权头，所以这一项不能少。
+The JSON form `{"cookie": "SID=...; ...", "sapisid": "..."}` is also accepted. Requests carrying `SAPISID` get a computed `SAPISIDHASH` authorization header, so that entry cannot be missing.
 
-**cookie 只有「Cookie 池」这一个入口**：每个请求按最久未用优先挑一个 enabled 账号，
-挑中即推进轮转。池子里有 enabled 账号，`gemini-4-hydrogen` 等要登录的模型就会出现在模型列表里。
+**The Cookie pool page is the only place cookies live.** Each request picks an enabled account least-recently-used first and advances the rotation. As soon as the pool holds an enabled account, `gemini-4-hydrogen` and the other login-only models appear in the model list.
 
-账号的「失败次数 / 最近成功」会随请求自动更新。判据是**只把确实是 cookie 的问题算作失败**：
-401/403、页面没有登录态、被跳到 Google 登录页。网络错误、超时、代理失败、被 Google 拦（跳 `/sorry`）
-一律不计——住宅代理的出口退化率很高，把这些算进去会让失败次数变成代理噪音，好 cookie 反而被记成
-失败最多的那个。**连续 3 次鉴权失败的账号会被自动停用**（不删除，面板上标红，重导后再启用）。
+An account's "failure count" and "last success" columns update automatically. Only **failures that really are the cookie's fault** count: 401/403, a page with no signed-in session, or a redirect to the Google sign-in page. Network errors, timeouts, proxy failures and Google blocks (redirects to `/sorry`) are excluded, because residential exits degrade often enough that counting them would turn the failure count into proxy noise and make healthy cookies look like the worst offenders. **An account with 3 consecutive auth failures is disabled automatically** (not deleted: it is flagged red in the panel, re-import and enable it again).
 
-注意「最近成功」只说明这个 cookie 参与的请求成功过，**不等于 cookie 仍然有效**：cookie
-过期后 Gemini 不报错，只是把你当匿名用户。要确认有效性点列表里的「检测」按钮，它区分
-"登录态有效"和"过期/无效"，不用发一次真实对话去试。
+Note that "last success" only means a request involving this cookie succeeded; it does **not** prove the cookie is still valid. An expired cookie doesn't error — Gemini just treats you as anonymous. Use the **Check** button in the list to tell "still signed in" from "expired/invalid" without spending a real conversation on it.
 
-**cookie 会自动续期，不用你操心**。两件事一起做：
+**Cookies renew themselves.** Two things run together:
 
-- 上游几乎每个响应都会刷新 `SIDCC` / `__Secure-1PSIDCC` / `__Secure-3PSIDCC`，我们收下并写回账号。
-- 每 10 分钟（启动后 15 秒先刷一次）往 `accounts.google.com/RotateCookies` 打保活：
-  先用哨兵 payload 换发 `__Secure-1PSIDTS`（约 30 分钟过期的那张票，不刷就会被当匿名），
-  再走浏览器 iframe 那条刷 SIDCC。同一账号 60 秒内不重复打，避免 429。
+- Nearly every upstream response refreshes `SIDCC` / `__Secure-1PSIDCC` / `__Secure-3PSIDCC` via `Set-Cookie`, and we merge those back into the account.
+- Every 10 minutes (first ping 15 seconds after boot) we hit `accounts.google.com/RotateCookies`: first the sentinel payload that mints a fresh `__Secure-1PSIDTS` (the ~30-minute ticket — without it Gemini treats you as anonymous), then the browser iframe flow that refreshes SIDCC. The same account is not pinged twice within 60 seconds, to avoid HTTP 429.
 
-> **请用 Firefox 导出 cookie。** Chrome 新版本开了 Device Bound Session Credentials，
-> 导出的会话绑在这台设备上，`*PSIDTS` 续不了，大概半小时到几小时就死。Firefox 没有
-> 这层绑定，同一套保活可以一直续。用 Chrome 的话：开一个全新的隐私窗口登录、立刻导出、
-> **马上关掉那个窗口**，不要让浏览器自己再去轮转同一份会话。
+> **Export cookies from Firefox.** Recent Chrome enables Device Bound Session Credentials, so a session exported from Chrome is bound to that machine and `*PSIDTS` cannot be rotated — it dies in about 30 minutes to a few hours. Firefox has no such binding, and the same keepalive will keep the session alive. If you must use Chrome: log in in a fresh private window, export immediately, and **close that window** so the browser does not rotate the same session out from under you.
 
-**每个账号会粘住自己的出口**。cookie 池和代理池如果各自独立轮转，同一个 Google 账号会
-从几十个不同 IP 发出请求，这在 Google 眼里是账号共享的典型特征。账号首次用到哪个出口就
-绑定下来，出口不可用了才换。
+**Each account is pinned to its own exit.** If the cookie pool and proxy pool rotated independently, one Google account would emit requests from dozens of different IPs, which is exactly what account sharing looks like to Google. An account binds to the first exit it uses and stays there until that exit becomes unusable.
 
-**浏览器里登了多个 Google 号？填「账号序号」。** 同一个浏览器里的多个号共用一份 cookie，
-导出的那串 cookie 能当其中任何一个号用，具体是哪个号由请求地址决定（`/u/1/` 是第二个号）。
-不填的话请求一律落在**默认号**（最先登录的那个）上——订阅如果在别的号上，付费模型会被静默
-换成别的模型，而「检测」照样显示登录态有效。
+**Several Google accounts signed in to one browser? Set the "account index".** Accounts signed in to the same browser share one cookie jar, so the exported cookie string can act as any of them; which one a request uses is decided by the URL (`/u/1/` is the second account). If you leave it unset, every request lands on the **default account** (the one signed in first). If your subscription is on another account, paid models are silently switched to another model while "check" still says the session is valid.
 
-- 在浏览器里切到你要用的那个号打开 Gemini，看地址栏：`gemini.google.com/u/1/app` 就填 `1`，
-  没有 `/u/` 就是 `0`（默认）。导入或编辑 cookie 时填进「账号序号」
-- 同一串 cookie 想当几个号用，就导入几次、各填各的序号
-- 序号就是浏览器里的登录顺序，在浏览器里退出重登可能会变；变了改一下序号即可
-- 也可以不用这个功能：在浏览器里退出所有号，先登订阅号，让它成为默认号再导出
+- In the browser, switch to the account you want and open Gemini. If the address bar shows `gemini.google.com/u/1/app`, enter `1`; no `/u/` means `0` (the default). Set it as "Account index" when importing or editing the cookie
+- To use one cookie string as several accounts, import it once per account, each with its own index
+- The index is the browser's sign-in order and can change if you sign out and back in; just update it if it does
+- Or skip this entirely: sign out of every account in the browser, sign in to the subscribed one first so it becomes the default, then export
 
-**一个号挂了会自动换下一个**，不让整个请求陪葬——否则池子越大越容易踩雷。
+**A dead account no longer kills the request** — the next account in the pool is tried instead. Otherwise a bigger pool would only mean more ways to hit a bad one.
 
-## 代理池（白嫖路线核心）
+## Proxy pool (the core of running this for free)
 
-**为什么需要**：单 IP 突发地打到一定次数就会被重定向到 `google.com/sorry/index`。
-这个次数是 **80-180**，跨度很大，由**连接策略、出口质量和请求节奏**共同决定：
+**Why you need it**: a single IP sending in bursts eventually gets redirected to `google.com/sorry/index`. That threshold is **80-180 requests**, and the wide range is driven by **connection strategy, exit quality and pacing** together:
 
-| 出口 | 连接策略 | 并发 | 节奏 | 被拦时的成功次数 |
+| Exit | Connection strategy | Concurrency | Pacing | Successful requests when blocked |
 |---|---|---|---|---|
-| 住宅 | 复用连接池 | 10 | 无间隔 | 151 / 172 / 177 |
-| 住宅 | 复用连接池 | 3 | 无间隔 | 103 / 111 |
-| 住宅 | 每次新建连接 | 10 | 无间隔 | 106 / 109 |
-| 住宅 | 每次新建连接 | 1 | 间隔 24s | 81 / 166 |
-| 静态 | 复用连接池 | 10 | 无间隔 | 188 |
-| 静态 | 复用连接池 | 1 | **10 次/分钟** | **800 次没被拦** |
+| residential | Reused connection pool | 10 | no delay | 151 / 172 / 177 |
+| residential | Reused connection pool | 3 | no delay | 103 / 111 |
+| residential | Fresh connection each time | 10 | no delay | 106 / 109 |
+| residential | Fresh connection each time | 1 | 24s apart | 81 / 166 |
+| static | Reused connection pool | 10 | no delay | 188 |
+| static | Reused connection pool | 1 | **10 per minute** | **800, never blocked** |
 
-判据只认 302 → `/sorry/`，出口都预筛过。
+Only a 302 to `/sorry/` counts as blocked, and every exit was pre-screened.
 
-**连接复用值约 60%**：并发钉死 10、两臂同时起跑、全程只跑 80 秒（短到出口来不及
-漂移），复用连接 172/177，每次新建 106/109。
+**Connection reuse is worth about 60%**: concurrency pinned at 10, both arms started together, each run lasting only 80 seconds (too short for exits to drift) — reused connections reached 172/177, fresh connections 106/109.
 
-**平缓节奏比什么都管用**：同一个静态 IP，突发打在 188 次被拦，改成 10 次/分钟连打
-**800 次、跨 110 分钟一次没被拦**。所以默认 `per_ip_rph=80` 是很保守的下沿，
-明确按低速率跑的部署可以调高很多。
+**A steady pace matters more than anything else.** On the same static IP, a burst run was blocked after 188 requests, while a steady 10 requests/minute ran **800 requests over 110 minutes without ever being blocked**. The default `per_ip_rph=80` is therefore a very conservative floor; a deployment that deliberately paces itself can raise it a lot.
 
-> 早前这里写「放慢节奏没用」，判据是住宅出口上突发档 103-177 与慢速档 81-166 几乎
-> 完全重叠。那个观察没错，但归因错了：住宅出口跑久了自己会退化（8 个预筛干净的
-> 出口跑慢节奏，6 个中途失败率超 40%），退化盖过了节奏的影响。换静态 IP 排除掉
-> 这个混淆项之后，节奏的作用非常明显。
+> This section previously said "slowing down does not help", based on the burst arm (103-177) and the slow arm (81-166) overlapping almost completely on residential exits. The observation was right but the attribution was wrong: residential exits degrade over long runs (6 of 8 pre-screened exits exceeded a 40% failure rate partway through the slow run), and that degradation swamped the effect of pacing. Once a static IP removes that confound, pacing turns out to matter a great deal.
 
-**代理失败会提前消耗额度**：链路越脏上限来得越早，因为那些"失败"的请求有一部分其实
-已经到达 Google 并被计数（慢速档实际发出 195 次才换到 166 次成功，真实消耗高 17%）。
-别指望靠重试失败请求多榨产能。
+**Proxy failures consume the budget early**: the dirtier the path, the sooner the block, because some of those "failed" requests did reach Google and were counted (the slow arm actually sent 195 requests to get 166 successes, 17% more than the success count suggests). Don't expect to squeeze out capacity by retrying failures.
 
-**被拦之后是硬拦，约两小时自动恢复。** 两次独立复测各探测 30 次、间隔 20s、
-跨约 10 分钟，合计 60 次零成功；继续探测到 **106-121 分钟**之间恢复正常。
-代理池的熔断冷却默认取 120 分钟就是照这个来的。
+**Once blocked, the block is hard, and it clears after roughly two hours.** Two independent re-probes of 30 requests each, 20s apart, spanning about 10 minutes: **60 requests, zero successes**. Continued probing recovered somewhere between **106 and 121 minutes**. That is where the proxy pool's default 120-minute cooldown comes from.
 
-对照：10 个 IP 各打 50 次（418 请求）零次 Google 拒绝。默认 `per_ip_rph=80` 落在突发
-档实测区间的下沿。
+Control group: 10 IPs × 50 requests each (418 requests) produced zero rejections from Google. The default `per_ip_rph=80` sits at the low end of the measured burst range.
 
-**怎么解决**：在管理面板「代理池」页面加多个代理，**每个代理是一个独立的 IP slot**，享有独立的并发/RPM/RPH 配额。N 个代理 = N 倍总容量。
+**The fix**: add several proxies on the Proxy pool page. **Each proxy is an independent IP slot** with its own concurrency/RPM/RPH allowance, so N proxies means N times the total capacity.
 
-支持的代理协议：
+Supported proxy schemes:
 - `http://user:pass@host:port`
 - `https://user:pass@host:port`
 - `socks5://user:pass@host:port`
-- `socks5h://user:pass@host:port`（远程 DNS 解析，绕开本地 DNS 污染）
+- `socks5h://user:pass@host:port` (remote DNS resolution, avoids local DNS poisoning)
 
-**自动调度规则**：
-- 配了代理后，**不会再退回直连**（避免代理满了把主机 IP 也打爆；要可用性优先可打开 `fallback_direct`）
-- 连续失败 5 次自动熔断，冷却 `proxy_cooldown_min`（默认 120 分钟）后自动放回，管理面板也可手动重置
-- 全部代理满 → 返回 HTTP 429（不消耗 Google 配额，等空位再重试）
-- 全部代理被停用或在熔断冷却中 → 返回 HTTP 502 `proxy_unavailable`（这时不是限流，等冷却或检查代理）
+**Scheduling rules**:
+- Once any proxy is configured, requests **never fall back to a direct connection** (so a full pool can't end up burning the host IP; turn on `fallback_direct` if availability matters more)
+- 5 consecutive failures trip the circuit breaker; the proxy returns automatically after `proxy_cooldown_min` (default 120 minutes), or reset it from the panel
+- All proxies full → HTTP 429 (no Google quota consumed; retry once a slot frees up)
+- All proxies disabled or cooling down → HTTP 502 `proxy_unavailable` (not a rate limit; wait for the cooldown or check the proxies)
 
-**不读 `HTTPS_PROXY` / `ALL_PROXY` 环境变量。** 代理只从代理池里取
-（`--proxy` / `config.json` 只是启动时往池子里播种）——否则宿主机上一个随手 export 的变量会悄悄改变
-出口 IP，而面板显示的还是直连，排查时会误判。
+**Environment variables `HTTPS_PROXY` / `ALL_PROXY` are ignored.** Proxies come only from the proxy pool (`--proxy` / `config.json` merely seed the pool at startup). Otherwise a stray `export` on the host would silently change the exit IP while the panel still showed a direct connection, which makes troubleshooting misleading.
 
-## 指纹模拟
+## Fingerprint simulation
 
-直连场景（无代理）走 [bogdanfinn/tls-client](https://github.com/bogdanfinn/tls-client)，TLS 握手 + HTTP/2 SETTINGS 帧 + ALPS 全部对齐真实 Chrome 146。Google 风控视角下，跟真浏览器无法区分。
+Direct connections (no proxy) go through [bogdanfinn/tls-client](https://github.com/bogdanfinn/tls-client): the TLS handshake, HTTP/2 SETTINGS frames and ALPS all match a real Chrome 146. From Google's risk-control point of view this is indistinguishable from a real browser.
 
-走代理场景换用 stdlib `net/http` + `http.ProxyURL`（兼容性最佳），但应用层 header（`Sec-CH-UA` / `Sec-Fetch-*` / `User-Agent`）仍按 Chrome 146 真实值伪装。
+Proxied connections switch to stdlib `net/http` with `http.ProxyURL` (best compatibility), but the application-layer headers (`Sec-CH-UA`, `Sec-Fetch-*`, `User-Agent`) are still spoofed with Chrome 146's real values.
 
-**注意走代理时 TLS 指纹是我们自己的，不是出口节点的。** HTTP CONNECT 只建隧道，TLS
-是我们跟 Google 端到端握的——JA3 回显实测：同一代理下 stdlib 和 tls-client 的 JA3
-不同（代理没改写），而 stdlib 直连和过代理的 JA3 完全相同（代理层不介入 TLS）。所以
-**配了代理，暴露给 Google 的就是 Go 标准库的指纹而不是 Chrome 146 的**。
+**Note that through a proxy the TLS fingerprint is still ours, not the exit node's.** HTTP CONNECT only builds a tunnel; the TLS handshake is end-to-end between us and Google. JA3 echo tests confirm it: through the same proxy, stdlib and tls-client produce different JA3s (so the proxy isn't rewriting anything), while stdlib direct and stdlib through a proxy produce identical JA3s (so the proxy layer doesn't touch TLS). **So once a proxy is configured, what Google sees is the Go standard library's fingerprint, not Chrome 146's.**
 
-但这不影响封禁阈值：同时起跑的对照里 tls-client Chrome_146 打到 111 次、Go stdlib
-103 次，差 8 次，而同配置下出口之间的方差能到 36%（151 vs 111）。想让代理路径也走
-Chrome 指纹得有别的理由（比如担心长期账号画像），不能指望换来产能。
+This does not change the blocking threshold, though: in a same-start comparison, tls-client Chrome_146 reached 111 requests and Go stdlib 103 — a gap of 8, while the variance between exits under identical settings reaches 36% (151 vs 111). Making the proxy path use the Chrome fingerprint needs a different justification (long-term account profiling, say); it won't buy throughput.
 
-**实测意外**：朴素 SDK 调用（如 Python urllib）触发风控时拿到 **HTTP 429**；伪装成 Chrome 后触发风控拿到 **HTTP 302** 跳转到 `google.com/sorry/index`（CAPTCHA 验证页）。两者本质都是 IP 黑名单，但 302 证明 Google 真的把我们认成了浏览器。
+**An observation from testing**: a naive SDK call (e.g. Python urllib) that trips risk control gets **HTTP 429**; once disguised as Chrome, tripping it yields **HTTP 302** to `google.com/sorry/index` (the CAPTCHA page). Both are IP blocks, but the 302 confirms Google really does take us for a browser.
 
-## 隐私
+## Privacy
 
-- **Prompt 和 response 内容永不入库**——只存元数据：模型、代理 ID、延迟、token 数、状态码、错误类型
-- 历史 `prompt_preview` / `response_preview` 列从老版本迁移时自动 DROP
-- Token 数用 [tiktoken-go](https://github.com/pkoukk/tiktoken-go) cl100k_base BPE 分词器精确计算（中英文都准），不是 `len/4` 估算
-- Gemini 网页端不返回真 token 数（实测响应里没有任何 token/usage 字段，只能本地估算）
-- **检查更新由浏览器发起，服务端不联网查版本**：打开面板时浏览器请求 `api.github.com` 的 latest release（结果缓存 6 小时），所以配了代理池的部署不会因为查更新从本机 IP 出网。不想要可以在「关于」页关掉自动检查
+- **Prompt and response bodies are never stored** — only metadata: model, proxy id, latency, token counts, status code, error type
+- Legacy `prompt_preview` / `response_preview` columns are dropped automatically when migrating from older versions
+- Token counts are computed with the [tiktoken-go](https://github.com/pkoukk/tiktoken-go) cl100k_base BPE tokenizer (accurate for both English and Chinese), not a `len/4` estimate
+- Gemini's web app does not return real token counts (no token/usage field appears anywhere in the response), so local estimation is the only option
+- **The update check runs in your browser, not on the server**: opening the panel makes the browser request the latest release from `api.github.com` (cached for 6 hours), so a deployment with a proxy pool never reaches out from the host IP just to check versions. Automatic checking can be turned off on the About page
 
-## OpenAI 协议覆盖
+## OpenAI protocol coverage
 
-| 路径 | 状态 | 备注 |
+| Endpoint | Status | Notes |
 |---|---|---|
-| `POST /v1/chat/completions` | ✅ | 真流式：上游每出一帧就转发增量（实测 400 字中文回答产生 40 个 chunk）。chunk 序列为 `delta{role}` → `delta{content}`×N → 空 `delta`+`finish_reason` → `[DONE]`。带 `tools` 时正文照样逐段推，只把 tool_call 块扣住、收完整解析后再发 |
-| `POST /v1/responses` | ✅ | OpenAI Responses API（Codex CLI 用）。真流式，事件序列逐段推；工具调用同上 |
-| `GET /v1/models` | ✅ | 匿名只列 2 个文本模型，池里有 cookie 时再列出要登录的那些 |
-| `GET /` | ✅ | 健康检查，不鉴权，返回 status/version/models |
-| `/v1beta/models/…`（Google 原生格式） | ✅ | 见 [Gemini 原生接口](#gemini-原生接口) |
-| `/v1/embeddings`、`/v1/images/*`、`/v1/audio/*` | ❌ | 未实现，返回 404 |
-| Function calling | ⚠️ | Prompt 级实现（让模型输出 ` ```tool_call``` ` 块，按 JSON 解析出完整调用），不是真协议层。**查私有数据/内部系统类可靠**，但 Gemini 自己能做的（如查天气）会被它直接回答，有副作用的动作（如发邮件）会被拒绝。**agentic 客户端（Codex 等）已可用**：4.11.0 前它们几十 KB 的系统提示会把工具指令冲没导致「已读乱回」，现已修复；4.12.0 起工具结果压成清爽成功/失败信号，弱模型不再因「命令无输出」误判失败而反复重试（实测同一任务从 26 轮循环降到 2-4 轮收尾）|
-| `tool_choice` | ⚠️ | `none` 完全不注入工具定义；`required` 和指定函数会加强制措辞、并把其余工具从 prompt 裁掉。但 prompt 级实现**无法真正强制**——实测模型自己答得上来的问题（天气、2+2）即使 `required` 也照样直接作答 |
-| `stream_options.include_usage` | ✅ | 在 `finish_reason` 之后补一个 `choices` 为空的 usage chunk |
-| `usage` token 数 | ✅ | tiktoken cl100k_base，与管理面板 requests 表同口径 |
-| `n` > 1 | ❌ | 返回 400。上游只给一个候选，静默按 1 处理会让客户端少拿结果 |
-| 采样参数 | ➖ | `temperature` / `top_p` / `max_tokens` / `stop` / `seed` / `presence_penalty` / `frequency_penalty` **收下即忽略，不报错**。Gemini 网页协议没有这些旋钮 |
-| `response_format` / `logprobs` | ➖ | 未实现，收下即忽略 |
-| Vision / 图片输入 | ⚠️ | **挂 cookie 时可用**：`image_url`（chat）和 `input_image`（responses）都认，支持 `data:` URL 和 http(s) 链接，单张 12MB 封顶。匿名态返回 400——匿名**能**把图传上去（`content-push.googleapis.com/upload/` 两步 resumable），但对话里引用被上游拒绝（`BardErrorInfo 1100`） |
-| Audio | ❌ | 传 `input_audio` 返回 400。网页端有音乐生成（Lyria 3），需要登录态 |
+| `POST /v1/chat/completions` | ✅ | Real streaming: every upstream frame is forwarded as a delta (a 400-character Chinese answer produced 40 chunks). Chunk sequence is `delta{role}` → `delta{content}`×N → empty `delta` + `finish_reason` → `[DONE]`. With `tools`, text still streams as it arrives; only the tool_call block is held back, parsed once complete, then sent |
+| `POST /v1/responses` | ✅ | OpenAI Responses API (used by Codex CLI). Real streaming, events emitted as they arrive; tool calls handled as above |
+| `GET /v1/models` | ✅ | Only the 2 text models anonymously; the login-only ones are listed once the pool has a cookie |
+| `GET /` | ✅ | Health check, unauthenticated, returns status/version/models |
+| `/v1beta/models/…` (Google native format) | ✅ | See [Gemini native API](#gemini-native-api) |
+| `/v1/embeddings`, `/v1/images/*`, `/v1/audio/*` | ❌ | Not implemented, return 404 |
+| Function calling | ⚠️ | Prompt-level implementation (the model emits a ` ```tool_call``` ` block that we parse as JSON), not a real protocol layer. **Reliable for looking up private data or internal systems**, but anything Gemini can answer itself (the weather) gets answered directly, and side-effecting actions (sending email) are refused. **Agentic clients (Codex, etc.) now work**: before 4.11.0 their tens-of-KB system prompts buried our tool instructions and caused off-topic replies; fixed now. Since 4.12.0 tool results are condensed into a clear success/failure signal, so weak models no longer misread a no-output success as a failure and loop retrying (measured: the same task dropped from 26 loops to 2-4 before it concludes) |
+| `tool_choice` | ⚠️ | `none` injects no tool definitions at all; `required` and a named function add mandatory wording and drop the other tools from the prompt. A prompt-level layer **cannot truly force it** — in testing, questions the model can answer itself (weather, 2+2) were answered directly even under `required` |
+| `stream_options.include_usage` | ✅ | Emits a usage chunk with an empty `choices` array after `finish_reason` |
+| `usage` token counts | ✅ | tiktoken cl100k_base, the same basis as the panel's requests table |
+| `n` > 1 | ❌ | Returns 400. Upstream yields a single candidate; silently treating it as 1 would short-change the client |
+| Sampling params | ➖ | `temperature` / `top_p` / `max_tokens` / `stop` / `seed` / `presence_penalty` / `frequency_penalty` are **accepted and ignored, not rejected**. Gemini's web protocol has no such knobs |
+| `response_format` / `logprobs` | ➖ | Not implemented, accepted and ignored |
+| Vision / image input | ⚠️ | **Works with a cookie**: both `image_url` (chat) and `input_image` (responses) are accepted, from `data:` URLs or http(s) links, up to 12MB per image. Anonymous returns 400 — anonymous upload **does** work (`content-push.googleapis.com/upload/`, two-step resumable), but referencing the uploaded file in a conversation is refused upstream (`BardErrorInfo 1100`) |
+| Audio | ❌ | Sending `input_audio` returns 400. The web app has music generation (Lyria 3), signed-in only |
 
-## 项目结构
+## Project layout
 
 ```
-main.go                    只有一句 app.Run()；入口留在根目录，`go build .` 直接可用
-internal/app/              全部实现
-  app.go                   flag 解析 + 路由注册 + 启动
-  config.go                配置加载 + 默认值
-  client.go                tls-client (chrome146) + stdlib (走代理) 双 client
-  gemini.go                模型表 + 80 槽 payload + 模型 header + StreamGenerate + wrb.fr 解析
-  webchannel.go            新协议 processSession（WebChannel）传输，开关 web_channel
-  conversation.go          服务端多轮续接（multi_turn）：按历史前缀认续接，只发最新一句
-  media.go                 生图 / 音乐 / 画布 / 视频：工具位 + 产物抽取与下载
-  image_upscale.go         生图下载原图/放大（rpc c8o8Fe，开关 image_upscale）
-  search.go                联网搜索引用来源抽取
-  strict_model.go          严格模型校验：识别静默降级、按（账号, 模型）冷却
-  xsrf.go                  带 cookie 时必需的 XSRF token：抓取 + 按 cookie 缓存 + 过期自愈
-  messages.go              OpenAI messages → prompt，tool_call 解析
-  server.go                /v1/* + 限流入口 + 参数校验 + metrics 写入
-  gemini_api.go            Gemini 原生接口 /v1beta/models/…（翻成同一条对话链）
-  videos.go                /v1/videos 异步视频任务
-  video_cooldown.go        视频额度用完的账号冷却 + 任务内换号
-  video_quota.go           /admin/api/video-quota：按账号读历史统计视频用量
-  mcp.go                   MCP server（/mcp）：web_search 等工具
-  mcp_media.go             MCP 媒体工具：生图 / 音乐 / 视频
-  sse.go                   SSE 写出器（懒发 header，失败仍能返回 502 JSON）
-  ratelimit.go             每 IP slot 独立并发 / RPM / RPH 限流
-  tokenizer.go             tiktoken cl100k_base 单例
-  apikey.go                API key（启动参数锁定 / 面板可轮换 双轨）
-  db.go                    数据库 schema（SQLite / MySQL / PostgreSQL 共用）：sessions / requests / accounts / kv
-  dbdialect.go             多数据库方言：SQL_DSN 选 MySQL / PostgreSQL，占位符改写
-  proxy.go                 代理池 CRUD + 容量调度 + 熔断
-  cookie_pool.go           Cookie 池数据层（CRUD + 最久未用优先挑选 + 健康度回写 + 刷新项合并）
-  rotate.go                会话保活（RotateCookies：1PSIDTS 哨兵 + SIDCC iframe，间隔由服务端指定）
-  upload.go                附件上传（content-push 两步 resumable）
-  context_file.go          超长对话转文本附件
-  vision.go                图片输入：data: URL / http(s) 链接 → 待上传附件
-  bl.go                    上游前端版本号 bl 自动跟随
-  scheduler.go             小时/天聚合 + 过期明细清理
-  runtime.go               运行时配置快照（面板改完即时生效）
-  admin.go                 /admin/api/* 鉴权 + REST
-  admin_cookies.go         Cookie 池的 admin REST（返回前脱敏）
-  admin_ui.go              embed admin_ui/
-  admin_ui/                管理面板前端（单页 + Chart.js，随二进制打包，不走 CDN）
-  gemini_test.go           协议层单测：payload 槽位、wrb.fr 解析、模型门控、限流
-Dockerfile                 多阶段构建（alpine builder → distroless runtime）
-docker-compose.yml         单容器，默认拉 ghcr 镜像，sqlite 挂 volume
-.github/workflows/         docker.yml 推镜像 / release.yml 打 tag 发二进制
+main.go                    just calls app.Run(); the entry stays at the root so `go build .` works
+internal/app/              everything else
+  app.go                   flag parsing + route registration + startup
+  config.go                config loading + defaults
+  client.go                tls-client (chrome146) + stdlib (when proxied)
+  gemini.go                model table + 80-slot payload + model header + StreamGenerate + wrb.fr parsing
+  webchannel.go            new-protocol transport, processSession (WebChannel), switch web_channel
+  conversation.go          server-side multi-turn (multi_turn): matches the history prefix, sends only the latest message
+  media.go                 image / music / canvas / video: tool slot, artifact extraction and download
+  image_upscale.go         full-size / upscaled image download (rpc c8o8Fe, switch image_upscale)
+  search.go                web-search source extraction
+  strict_model.go          strict model check: detects silent downgrades, cools down per (account, model)
+  xsrf.go                  XSRF token required with a cookie: fetch + per-cookie cache + self-heal
+  messages.go              OpenAI messages → prompt, tool_call parsing
+  server.go                /v1/* + rate-limit entry + request validation + metrics
+  gemini_api.go            native Gemini API /v1beta/models/… (translated onto the same chat path)
+  videos.go                /v1/videos async video jobs
+  video_cooldown.go        cooldown for accounts out of video quota + switching accounts within a job
+  video_quota.go           /admin/api/video-quota: per-account video usage read from history
+  mcp.go                   MCP server (/mcp): web_search and other tools
+  mcp_media.go             MCP media tools: image / music / video
+  sse.go                   SSE writer (lazy header, so early failures still return 502 JSON)
+  ratelimit.go             per-IP-slot concurrency / RPM / RPH
+  tokenizer.go             tiktoken cl100k_base singleton
+  apikey.go                API key (locked by flag / rotatable from the panel)
+  db.go                    database schema (shared by SQLite / MySQL / PostgreSQL): sessions / requests / accounts / kv
+  dbdialect.go             multi-database dialects: SQL_DSN selects MySQL / PostgreSQL, placeholder rewriting
+  proxy.go                 proxy pool CRUD + capacity scheduling + circuit breaker
+  cookie_pool.go           cookie pool data layer (CRUD + least-recently-used pick + health writeback + refresh merge)
+  rotate.go                session keepalive (RotateCookies: 1PSIDTS sentinel + SIDCC iframe, server-dictated interval)
+  upload.go                attachment upload (content-push, two-step resumable)
+  context_file.go          over-long conversations as a text attachment
+  vision.go                image input: data: URL / http(s) link -> pending attachment
+  bl.go                    upstream frontend version (bl) auto-follow
+  scheduler.go             hourly/daily aggregation + retention cleanup
+  runtime.go               runtime config snapshot (panel edits apply instantly)
+  admin.go                 /admin/api/* auth + REST
+  admin_cookies.go         cookie pool admin REST (redacted before returning)
+  admin_ui.go              embeds admin_ui/
+  admin_ui/                admin panel frontend (single page + Chart.js, embedded, no CDN)
+  gemini_test.go           protocol-layer tests: payload slots, wrb.fr parsing, model gating, rate limits
+Dockerfile                 multi-stage (alpine builder → distroless runtime)
+docker-compose.yml         single container, pulls the ghcr image by default, sqlite on a volume
+.github/workflows/         docker.yml pushes images / release.yml publishes binaries on tag
 ```
 
-## 限制
+## Limitations
 
-- **单 IP 上限**：突发地打，实测 **80-180 次请求**后被重定向到 sorry 页（连接复用能多打约 60%：并发 10 时复用 172/177、每次新建 106/109）。但**平缓打几乎打不满**——静态 IP 上 10 次/分钟连打 800 次没被拦。默认 `per_ip_rph=80` 取的是区间下沿 → 要放大产能配代理池，或按低速率跑并调高限额
-- **登录态功能**：生图（`gemini-image`）、音乐（`gemini-music`）、画布（`gemini-canvas`）、生视频（`gemini-video`，只有 Pro 号——免费号被内容政策拒）已实现；深度研究没实现（多步异步流程）
-- **Function calling**：prompt 级实现，模型不一定每次都按格式返回（OpenAI 真协议层我们做不到）
-- **多模态**：读图/读视频要挂 cookie；生图/音乐/画布/生视频挂 cookie 可用，其中生视频还要 Pro/付费号
-- **长上下文有两堵墙**：请求体约 13 万字节、附件约 16 万字节（后者是模型能看到的内容**总量**，切成多份附件不涨额度）。挂 cookie 只能把可用长度从 13 万提到约 16 万，真正的长对话仍需客户端自己压缩
-- **token 数**：用 tiktoken 估算（Gemini 真 tokenizer 未公开），跟真值偏差 ±20% 以内
-- **Cookie 有效性靠鉴权失败判断**：连续 3 次鉴权失败才自动停用（网络错误和 `/sorry` 拦截不算）。`last_ok_at` 只说明"这个 cookie 参与的请求成功过"，不等于它仍然有效——cookie 过期后 Gemini 不报错，只是把你当匿名用户，纯文本请求照样 200
-- **Chrome 导出的 cookie 可能续不了**：新版 Chrome 的 Device Bound Session Credentials 把会话绑在设备上，`__Secure-1PSIDTS` 换发会 401。用 Firefox 导出即可长期续命
+- **Per-IP ceiling**: when sending in bursts, measured at **80-180 requests** before the sorry-page redirect (connection reuse buys about 60%: at concurrency 10, a reused pool reached 172/177 versus 106/109 for a fresh connection per request). But **a steady pace barely reaches the ceiling at all** — 10 requests/minute on a static IP ran 800 requests without a block. `per_ip_rph=80` sits at the bottom of the burst range → use the proxy pool to scale, or pace yourself and raise the limit
+- **Signed-in features**: image generation (`gemini-image`), music (`gemini-music`), canvas (`gemini-canvas`) and video generation (`gemini-video`, Pro accounts only — free accounts are refused by the content policy) are implemented; deep research is not (a multi-step async flow)
+- **Function calling**: prompt-level, the model doesn't always answer in the expected format (a real protocol layer isn't available to us)
+- **Multimodal**: image/video input needs a cookie. Image, music, canvas and video generation work with a cookie; video generation additionally needs a Pro/paid account
+- **Long context hits two walls**: ~130,000 bytes for the request body and ~160,000 bytes for attachments (the latter is the **total** amount of content the model can see — splitting it across several attachments does not raise the budget). A cookie only takes the usable length from 130K to ~160K; genuinely long conversations still have to be compacted by the client
+- **Token counts**: tiktoken estimates (Gemini's real tokenizer is not public), within about ±20% of the true value
+- **Cookie validity is judged by auth failures**: an account is disabled automatically only after 3 consecutive auth failures (network errors and `/sorry` blocks don't count). `last_ok_at` only means "a request using this cookie succeeded", not that the cookie is still valid — an expired cookie doesn't error, Gemini just treats you as anonymous and plain text requests still return 200
+- **Cookies exported from Chrome may not renew**: recent Chrome Device Bound Session Credentials bind the session to the machine, and rotating `__Secure-1PSIDTS` then returns 401. Export from Firefox for a session that can be kept alive
 
-## 故障排查
+## Troubleshooting
 
-| 现象 | 多半是什么 | 怎么办 |
+| Symptom | Most likely cause | What to do |
 |---|---|---|
-| 我们返回 **429** | 所有 IP slot 的并发/RPM/RPH 都占满了，**不是 Google 拒绝**，没消耗上游配额 | 加代理，或在「设置」页调高限额 |
-| 面板诊断显示 **302 → `google.com/sorry/index`** | 这个出口 IP 被 Google 拦了（80-180 次请求后，取决于连接策略和出口质量） | 换出口/加代理。**是硬拦不是概率性**（被拦后 60 次探测零成功），原地重试没有意义 |
-| 偶发空响应、面板记为上游拒绝 | 上游瞬时拒绝（`1155`），没有可预测阈值，跟频率/并发/累积次数都无关 | 重发一次通常就好。**降 RPM 解决不了**，实测跟频率无关 |
-| 请求全部超时 | 本机到 `gemini.google.com` 不通 | 配代理（面板「代理池」或 `--proxy`）。注意**不读 `HTTPS_PROXY` 环境变量** |
-| 启动即退出，报 `unable to open database file (14)` | 容器以 nonroot(uid 65532) 运行，而 bind mount 的宿主目录属主是 root，写不进去 | 改用具名卷（compose 默认已是），或 `sudo chown -R 65532:65532 ./data` |
-| 选 `gemini-4-hydrogen` 等直接报错 | 没配 cookie 时要登录的模型不暴露，这是故意的 | 在面板「Cookie 池」导入 cookie 后即可用 |
-| 挂了 cookie 后请求全部 502 | cookie 已失效，取不到 XSRF token | 重新导出 cookie。判据：请求 `gemini-4-hydrogen` 若回报 3.5 Flash-Lite 就是失效了 |
-| cookie 大约半小时就失效，保活没用 | Chrome 设备绑定会话，`__Secure-1PSIDTS` 换发 401 | 用 **Firefox** 重新登录再导出；点面板「保活」应能看到刷新了 `__Secure-1PSIDTS` |
-| 付费号的 cookie，付费模型却回报 4 Hydrogen 或 3.5 Flash-Lite，「检测」显示登录态有效 | 浏览器里登了多个 Google 号，订阅不在默认号上，请求落到了默认号 | 在 Cookie 池给这条填「账号序号」（那个号的 Gemini 地址栏 `/u/1/` 就填 1），见上文 |
-| 面板打不开 / 401 | `--admin-token`（或 `ADMIN_TOKEN`）没对上 | token 留空则不鉴权，只有绑 127.0.0.1 时才可接受 |
+| We return **429** | Every IP slot is at its concurrency/RPM/RPH limit. **This is not Google refusing** and no upstream quota was consumed | Add proxies, or raise the limits on the Settings page |
+| Panel diagnostics show **302 → `google.com/sorry/index`** | This exit IP is blocked by Google (after 80-180 requests, depending on connection strategy and exit quality) | Change exit / add proxies. **The block is hard, not probabilistic** (60 probes after a block, zero successes), so retrying in place is pointless |
+| Occasional empty responses, logged as an upstream refusal | Upstream transient refusal (`1155`). There is no predictable threshold — it correlates with neither rate, concurrency, nor cumulative count | Resend once and it usually works. **Lowering RPM does not help**: measured, it is unrelated to request rate |
+| Every request times out | This host can't reach `gemini.google.com` | Configure a proxy (panel or `--proxy`). Note that **`HTTPS_PROXY` is not read** |
+| Exits at startup with `unable to open database file (14)` | The container runs as nonroot (uid 65532) but the bind-mounted host directory is owned by root, so it can't be written | Use a named volume (the default in compose), or `sudo chown -R 65532:65532 ./data` |
+| `gemini-4-hydrogen` etc. error out immediately | Login-only models aren't exposed without a cookie, by design | Add an account on the Cookie pool page and they become available |
+| Every request returns 502 after attaching a cookie | The cookie expired, so the XSRF token can't be fetched | Re-export the cookie. Quick check: if `gemini-4-hydrogen` reports 3.5 Flash-Lite, it's expired |
+| Cookie dies in about 30 minutes; keepalive does nothing | Chrome device-bound session; rotating `__Secure-1PSIDTS` returns 401 | Re-login in **Firefox** and export again. The panel Keep-alive button should report that `__Secure-1PSIDTS` was refreshed |
+| Cookie from a paid account, but paid models report 4 Hydrogen or 3.5 Flash-Lite and "check" says the session is valid | Several Google accounts are signed in to the browser and the subscription isn't on the default one, so requests land on the default account | Set the "account index" for that entry in the Cookie pool (`/u/1/` in that account's Gemini address bar means 1); see above |
+| Panel won't open / 401 | `--admin-token` (or `ADMIN_TOKEN`) doesn't match | An empty token disables auth, which is only acceptable when bound to 127.0.0.1 |
 
-Docker 用默认 bridge 网络时上游可能返回空内容（Google 拒绝某些 NAT 段）。本项目**没有复现过**，真遇到可以试 `network_mode: host` 验证是不是这个原因。
+With Docker's default bridge network, upstream may return empty content (Google rejects certain NAT ranges). We have **never reproduced it here**. If you hit it, try `network_mode: host` to confirm whether that is the cause.
 
-## 常见问题（FAQ）
+## FAQ
 
-### 这和 Google 官方 Gemini API 有什么区别？需要 API Key 吗？
+### How is this different from the official Gemini API? Do I need an API key?
 
-不需要。本项目不封装 `generativelanguage.googleapis.com`，而是直接反代 gemini.google.com 网页端的协议，
-所以没有 API Key、没有付费配额这回事。代价是能力边界跟着网页端走：网页端有的（联网搜索、生图、音乐、画布、生视频）
-这里能用，网页端没有的（深度研究）这里也没有。匿名（不挂 cookie）就能跑文本模型。
+No API key. This project does not wrap `generativelanguage.googleapis.com`; it reverse-proxies the protocol of the
+gemini.google.com web app itself, so there is no key and no paid quota. The trade-off is that capabilities follow the
+web app: what the web app can do (web search, image, music, canvas, video generation) works here; what it can't
+(deep research) doesn't. Anonymous use — no cookie at all — already gives you the text models.
 
-### 和 Sophomoresty/gemini-web2api（Python）、其它叫 gemini-web2api 的 Go 项目是什么关系？
+### How does this relate to Sophomoresty/gemini-web2api (Python) and other Go projects named gemini-web2api?
 
-本仓是独立的 Go 实现，早期摸网页协议时参考过 Python 版的思路（见文末友情链接），**不是移植版**；
-其它同名的 Go 项目与本仓无关。本仓自己的特点：单二进制、utls 模拟 Chrome 真 TLS 指纹、代理池 + Cookie 池（自动续期、
-账号粘住出口）、带管理面板、SQLite / MySQL / PostgreSQL、`/v1/videos` 异步视频接口、MCP 工具（搜索 / 生图 / 音乐 / 视频）。
+This is an independent Go implementation. Its early protocol work was informed by the Python project (see Links);
+it is **not a port**, and other Go repositories with a similar name are unrelated. What this one brings: a single
+static binary, a real Chrome TLS fingerprint via utls, a proxy pool plus a cookie pool (automatic renewal, each
+account pinned to one exit), a built-in admin dashboard, SQLite / MySQL / PostgreSQL, the async `/v1/videos`
+endpoint, and MCP tools (search / image / music / video).
 
-### Cookie 为什么大约半小时就失效？怎么长期用？
+### Why does my cookie die after about 30 minutes? How do I keep it alive?
 
-失效的那张票是 `__Secure-1PSIDTS`（约 30 分钟过期）。本项目会定时用哨兵 payload 换发它并做保活，
-**用 Firefox 登录导出的 cookie 可以一直续**。Chrome 新版本启用了设备绑定会话（DBSC），导出的 cookie 换发时会 401，
-所以从 Chrome 导出的号半小时到几小时就死——换 Firefox 导出即可，不需要浏览器插件或挂机机器。
+The ticket that expires is `__Secure-1PSIDTS` (roughly 30 minutes). The proxy re-mints it on a timer with a sentinel
+payload and runs a keepalive, so **a cookie exported from Firefox stays alive indefinitely**. Recent Chrome enables
+Device Bound Session Credentials: a session exported from Chrome returns 401 on rotation and dies within 30 minutes
+to a few hours. Export from Firefox instead — no browser extension or always-on machine needed.
 
-### 会被封号吗？封禁是按账号还是按 IP？
+### Will my account get banned? Is the limit per account or per IP?
 
-按**出口 IP + TLS 指纹**，不按账号。实测同一出口突发打 80～180 次会被重定向到 sorry 页，约两小时后自动恢复；
-平缓地打（例如每分钟 10 次）连打 800 次没被拦。付费（Google AI Pro）**不会**提高这个阈值。
-要放大产能靠代理池把请求分散到多个出口，而不是换账号。
+Per **exit IP + TLS fingerprint**, not per account. Measured: a burst of roughly 80–180 requests from one exit
+triggers the sorry-page redirect, which clears itself after about two hours; a steady pace (e.g. 10 requests per
+minute) ran 800 requests without a block. A paid plan (Google AI Pro) does **not** raise this ceiling. To scale,
+spread requests across exits with the proxy pool rather than adding accounts.
 
-### 免费账号和 Pro / 付费账号差在哪？
+### What do I get with a free account versus Pro / paid?
 
-匿名（不挂 cookie）：`gemini-3.6-flash`、`gemini-3.5-flash-lite`，含联网搜索，实际都是 3.5 Flash-Lite。
-挂免费账号 cookie：额外解锁 4 Hydrogen（`gemini-4-hydrogen`，`gemini-3.6-flash` / `gemini-3.8-flash` 也会落到它）、思考版（`-thinking`，免费号没有 High 档）、读图 / 读视频、生图、音乐、画布。
-付费账号额外解锁：4 Neon（`gemini-4-neon` / `gemini-3.1-pro`）、4 Carbon（`gemini-4-carbon` / `gemini-4-argon`）、Hydrogen 的 High 思考档和生视频（`gemini-video` / `/v1/videos`）。
+Anonymous (no cookie): `gemini-3.6-flash` and `gemini-3.5-flash-lite`, web search included; both are actually 3.5 Flash-Lite.
+A free account's cookie additionally unlocks 4 Hydrogen (`gemini-4-hydrogen`; `gemini-3.6-flash` / `gemini-3.8-flash` land on it too), the `-thinking` variants (no High tier on free accounts),
+image / video input, image generation, music and canvas.
+A paid account additionally unlocks 4 Neon (`gemini-4-neon` / `gemini-3.1-pro`), 4 Carbon (`gemini-4-carbon` / `gemini-4-argon`), Hydrogen's High thinking tier,
+and video generation (`gemini-video` / `/v1/videos`).
 
-### 为什么每发一条消息，gemini.google.com 里就多出一个会话？
+### Why does every message create a new conversation on gemini.google.com?
 
-默认每个请求是独立会话。在面板「设置」勾选**服务端多轮续接**（`multi_turn`）后，同一串连续对话会复用同一个网页会话，
-只发最新一句、历史留在服务端。不想让网页端堆会话有两种办法：勾**临时对话**（`temporary_chat`）让会话压根不进列表（更干净、不入训练、不用删，推荐），
-或勾**自动删网页会话**（`auto_delete_conversation`）出完结果再删掉。两者都只对登录号有意义。
+Each request is its own conversation by default. Enable **server-side multi-turn** (`multi_turn`) on the panel's
+Settings page and consecutive messages of one conversation reuse the same web session, sending only the newest
+turn while history stays server-side. To stop conversations piling up in the web app, you have two options:
+enable **temporary chat** (`temporary_chat`) so the conversation never enters the list at all (cleaner, not used
+for training, nothing to delete — recommended), or enable **auto-delete web conversation**
+(`auto_delete_conversation`) to delete it after each reply. Both only matter for signed-in accounts.
 
-### 能当 Cursor / Dify / WorkBuddy 这类 agent 工具的后端吗？
+### Can I use it as the backend for Cursor / Dify / WorkBuddy-style agents?
 
-能接（OpenAI 兼容），纯聊天和写代码没问题；但网页端**单次请求约 13 万字节封顶**（挂 cookie 约 16 万），
-agent 工具一次塞几万字系统提示和历史时容易答非所问、看起来变笨——这是网页端模型的先天限制，不是接入方式的问题。
-Function calling 是 prompt 级实现，模型不一定每次都按格式返回。
+You can connect them (it is OpenAI-compatible), and plain chat and coding work fine. But the web app caps a single
+request at roughly **130,000 bytes** (about 160,000 with a cookie); agent tools that push tens of kilobytes of system
+prompt and history per request will get off-topic answers and look "dumb" — a limit of the web model itself, not of
+the proxy. Function calling is prompt-level, so the model does not always answer in the expected format.
 
-### 有 gemini-3.8-flash 吗？
+### Is gemini-3.8-flash available?
 
-名字还在（`gemini-3.8-flash` 与 `gemini-3.8-flash-thinking`，`gemini-3.7-flash` 作为别名保留），但上游已把这个模型原地升级成
-4 Hydrogen，现在回报的都是 `4 Hydrogen`。新配置直接用 `gemini-4-hydrogen`。
+The names remain (`gemini-3.8-flash` and `gemini-3.8-flash-thinking`, with `gemini-3.7-flash` as an alias), but upstream upgraded that model in place to
+4 Hydrogen, and it now reports `4 Hydrogen`. New configs should use `gemini-4-hydrogen`.
 
-### 能用 Gemini 4 Hydrogen 吗？怎么用？
+### Can I use Gemini 4 Hydrogen through this? How?
 
-模型名是 `gemini-4-hydrogen`，扩展思考用 `gemini-4-hydrogen-thinking`。在管理面板导入任意 Google 账号的 cookie 就行，免费号也能用
-（免费号的思考版没有 High 档）；没配 cookie 时不暴露这两个模型。
-开启 `strict_model` 后，其他模型的回答会按降级处理、换号重试，全池都不满足时返回 `429`。网页端的 High 档不等同于官方 API 的 `xhigh`，本项目不提供后者。
+Use `gemini-4-hydrogen`, or `gemini-4-hydrogen-thinking` for extended thinking. Any Google account's cookie works, free accounts included (on a free account the thinking variant has no High tier). Neither model is exposed without a cookie.
+With `strict_model` enabled, replies from any other model are treated as downgrades and retried on another account; the request returns `429` when no account satisfies it. The web app's High tier is not the official API's `xhigh` tier, which this project does not expose.
 
-### 能用 Gemini 4 Carbon（原 4 Argon）吗？怎么用？
+### Can I use Gemini 4 Carbon (formerly 4 Argon) through this? How?
 
-能，不需要 Gemini API key。模型名 `gemini-4-carbon`，老名字 `gemini-4-argon` 照样能用（同一条路由，上游 2026-11 把 4 Argon 改名成了 4 Carbon）。
-条件只有一个：挂进来的 cookie 所属账号在 gemini.google.com 的模型选择器里能看到「4 Carbon」。看得到就是有权限
-（Google AI Pro / Ultra 档，捆绑或学生优惠拿到的 Pro 一样算），把它的 cookie 配进管理面板、请求 `gemini-4-carbon` 即可。
-免费号或没开权限的号发它，上游会**静默换成别的模型**（实测免费号现在拿到 4 Hydrogen）、不报错，所以本项目没配 cookie 时不暴露这个模型，也不走匿名。
-配了 cookie 仍被降级，先去网页端确认该账号有没有「4 Carbon」；浏览器里登了多个号的，再确认 Cookie 池里这条的「账号序号」填对了。
+Yes, and without a Gemini API key. The model is `gemini-4-carbon`; the old name `gemini-4-argon` still works (same route; upstream renamed 4 Argon to 4 Carbon in 2026-11).
+There is one requirement: the account behind the cookie must show "4 Carbon" in the model picker on gemini.google.com.
+If it does, the account is eligible (Google AI Pro / Ultra tier; a Pro plan that came bundled or through a student offer
+counts), so add its cookie in the admin dashboard and request `gemini-4-carbon`.
+Requests from a free account, or from one without access, are **silently switched to another model** upstream (a free account currently gets 4 Hydrogen) with no
+error, which is why the model is not exposed when no cookie is configured and never runs anonymously. If you have a cookie
+and still get downgraded, check the web app first for "4 Carbon" on that account; if the browser has several accounts signed in,
+also check that the entry's "account index" in the Cookie pool is right.
 
-思考版目前有个限制：请求 Carbon 时要带一个参数它才不会卡住（v4.29.0 起自动带），但这个参数会关掉思考档，
-所以 `gemini-4-argon-thinking` 现在拿到的是普通档。找到两者兼得的办法之前先保证不卡。
+The thinking variant has a limitation for now: Carbon needs one extra request parameter to avoid hanging (sent automatically
+from v4.29.0), but that parameter disables the thinking tier, so `gemini-4-argon-thinking` currently answers at the normal tier.
+Not hanging comes first until a way to have both is found.
 
-### 3.1 Pro 呢？能用 Gemini 4 Neon 吗？
+### What about 3.1 Pro? Can I use Gemini 4 Neon?
 
-3.1 Pro 的位置现在是 **4 Neon**（网页上描述是「Deeper analysis」）。模型名 `gemini-4-neon`，思考版 `gemini-4-neon-thinking`
-（High 档，带 `reasoning_content`）；老名字 `gemini-3.1-pro` / `-thinking` 照样能用，是同一条路由。要付费 / Ultra 号的 cookie，
-条件跟 Carbon 一样：账号在 gemini.google.com 的模型选择器里能看到「4 Neon」。
+3.1 Pro's slot is now **4 Neon** (described as "Deeper analysis" in the web app). The model is `gemini-4-neon`, with
+`gemini-4-neon-thinking` for thinking (High tier, with `reasoning_content`); the old names `gemini-3.1-pro` / `-thinking` still work
+and use the same route. It needs a cookie from a paid / Ultra account, with the same condition as Carbon: the account must show
+"4 Neon" in the model picker on gemini.google.com.
 
-v4.29.0 曾把 `gemini-3.1-pro` 当成下线、直接返回 400，那时候付费号请求它被换成 3.5 Flash-Lite、清单里也还没有 Neon；
-v4.31.0 起恢复。
+v4.29.0 treated `gemini-3.1-pro` as retired and returned a 400: at that time a paid account's request was switched to 3.5 Flash-Lite
+and Neon wasn't in the list yet. It works again from v4.31.0.
 
-注意 Neon 不是 Argon 的继任者：Argon 改名成了 Carbon（`gemini-4-argon` 落到 4 Carbon），Neon 是另一个模型。
+Neon is not Argon's successor: Argon was renamed to Carbon (`gemini-4-argon` lands on 4 Carbon), and Neon is a separate model.
 
-### 生图用的是哪个模型？能出 2K 吗？
+### Which model does image generation use? Can it output 2K?
 
-`gemini-image` 走的是网页端的生图工具位，不锁模型：网页端当前用什么生图后端（如 Nano Banana 2），这里就自动跟着。
-默认拿到的图约 100 万像素（如 1376×768）。Ultra 号在「设置」打开**生图下载原图/放大**（`image_upscale`）后，
-能拿到宽高各 2 倍的 2752×1536（约 2K）；普通号拿不到放大，但能拿到没被重新压缩的原始文件。
+`gemini-image` uses the web app's image-generation tool slot rather than a pinned model: whatever backend the web
+app currently uses (e.g. Nano Banana 2) is what you get, automatically. By default you get about one
+megapixel (e.g. 1376×768). On an Ultra account, turn on **Full-size image download** (`image_upscale`) in Settings to
+get the 2× upscale, 2752×1536 (about 2K); other accounts don't get the upscale, but they get the original file instead
+of the recompressed one.
 
-### 为什么在 Dify / 反向代理后面流式变成了一次性输出？
+### Why does streaming turn into a single response behind Dify / a reverse proxy?
 
-本项目是真流式（上游每出一帧就转发），带 `tools` 的请求和 `/v1/responses` 也是，只有工具调用块会收完整再发。
-响应已带 `X-Accel-Buffering: no`，如果经过 Nginx 等反代仍被缓冲，检查反代自己的缓冲设置；本项目直连时是逐段输出的。
+This project streams for real (every upstream frame is forwarded as it arrives), including requests carrying `tools`
+and `/v1/responses`; only a tool-call block is held until it is complete. Responses already carry `X-Accel-Buffering: no`; if output still
+arrives in one piece behind Nginx or similar, check the reverse proxy's own buffering — connected directly, the
+proxy streams chunk by chunk.
 
-### 支持 MySQL / PostgreSQL 吗？
+### Does it support MySQL / PostgreSQL?
 
-支持。设环境变量 `SQL_DSN`（`mysql://user:pass@host:3306/db` 或 `postgres://user:pass@host:5432/db?sslmode=disable`），
-不设默认 SQLite；建表自动完成，三种库共用一套 schema。单机用 SQLite 最省事，多实例共享一个池子才需要 MySQL / PG。
+Yes. Set `SQL_DSN` (`mysql://user:pass@host:3306/db` or `postgres://user:pass@host:5432/db?sslmode=disable`);
+unset means SQLite. Tables are created automatically and all three share one schema. SQLite is the easy choice for a
+single instance; MySQL / PostgreSQL only matter when several instances share one pool.
 
 ## Star History
 
-读到这儿，说明它对你有用。点个 ⭐ 让更多人找到它；遇到问题开 issue，改好的功能提 PR。
+If you read this far, it probably solves something for you. A ⭐ helps others find it; open an issue when something breaks, and send a PR when you have fixed it.
 
 [![Star History Chart](https://api.star-history.com/svg?repos=zexadev/gemini-web2api-go&type=Date)](https://star-history.com/#zexadev/gemini-web2api-go&Date)
 
-## 致谢
+## Acknowledgments
 
-- [bogdanfinn/tls-client](https://github.com/bogdanfinn/tls-client) — Chrome 真指纹 TLS 库
+- [bogdanfinn/tls-client](https://github.com/bogdanfinn/tls-client) — real Chrome TLS fingerprints
 - [pkoukk/tiktoken-go](https://github.com/pkoukk/tiktoken-go) — BPE tokenizer
-- [modernc.org/sqlite](https://gitlab.com/cznic/sqlite) — 纯 Go SQLite（CGO-free，alpine 直接编）
+- [modernc.org/sqlite](https://gitlab.com/cznic/sqlite) — pure-Go SQLite (CGO-free, builds straight on alpine)
 
 ## License
 
-MIT — 详见 [LICENSE](LICENSE)
+MIT — see [LICENSE](LICENSE)
 
-## 友情链接
+## Links
 
-- [Sophomoresty/gemini-web2api](https://github.com/Sophomoresty/gemini-web2api) —— 同类的 Python 实现，早期摸 Gemini 网页协议时借鉴过它的思路
-- [LINUX DO](https://linux.do) —— 本项目在该社区分享
+- [Sophomoresty/gemini-web2api](https://github.com/Sophomoresty/gemini-web2api) — a Python implementation of the same idea; its approach informed our early work on the Gemini web protocol
+- [LINUX DO](https://linux.do) — the community where this project is shared
 
 [![LinuxDo](https://img.shields.io/badge/%E7%A4%BE%E5%8C%BA-LinuxDo-blue?style=for-the-badge)](https://linux.do/)
 

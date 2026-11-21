@@ -84,13 +84,55 @@ type RuntimeConfig struct {
 	// 之后 200 多秒一个 chunk 不来"落在它的射程之外；这个盯帧间间隔，补那个缺口。掐断当
 	// 瞬时错误重试（像空响应 1155），重发通常就拿到内容。只老协议生效，见 readBodyWithIdle。
 	StreamIdleTimeoutSec int `json:"stream_idle_timeout_sec"`
+
+	// Request Scheduler & Queue Settings
+	QueueEnabled      bool `json:"queue_enabled"`
+	QueueMaxDepth     int  `json:"queue_max_depth"`
+	PacingDelaySec    int  `json:"pacing_delay_sec"`
+	QueueHeartbeatSec int  `json:"queue_heartbeat_sec"`
 }
 
 const runtimeConfigKey = "runtime_config"
 
 var (
 	rtMu  sync.RWMutex
-	rtVal RuntimeConfig
+	rtVal = func() RuntimeConfig {
+		d := defaultConfig()
+		return RuntimeConfig{
+			RetryAttempts:          d.RetryAttempts,
+			RetryDelaySec:          d.RetryDelaySec,
+			RequestTimeout:         d.RequestTimeout,
+			RetryOnTimeout:         d.RetryOnTimeout,
+			DefaultModel:           d.DefaultModel,
+			PerIPConcurrent:        d.PerIPConcurrent,
+			PerIPRPM:               d.PerIPRPM,
+			PerIPRPH:               d.PerIPRPH,
+			RetentionDays:          d.RetentionDays,
+			LogRequests:            d.LogRequests,
+			Impersonate:            d.Impersonate,
+			GeminiBL:               d.GeminiBL,
+			ProxyCooldownMin:       d.ProxyCooldownMin,
+			FallbackDirect:         d.FallbackDirect,
+			FallbackAnon:           d.FallbackAnon,
+			GeminiBLAuto:           d.GeminiBLAuto,
+			MaxPromptBytes:         d.MaxPromptBytes,
+			MultiTurn:              d.MultiTurn,
+			AutoDeleteConversation: d.AutoDeleteConversation,
+			AnonFirst:              d.AnonFirst,
+			TemporaryChat:          d.TemporaryChat,
+			ImageUpscale:           d.ImageUpscale,
+			WebChannel:             d.WebChannel,
+			FirefoxFingerprint:     d.FirefoxFingerprint,
+			StrictModel:            d.StrictModel,
+			StrictModelCooldownMin: d.StrictModelCooldownMin,
+			StreamKeepaliveSec:     d.StreamKeepaliveSec,
+			StreamIdleTimeoutSec:   d.StreamIdleTimeoutSec,
+			QueueEnabled:           d.QueueEnabled,
+			QueueMaxDepth:          d.QueueMaxDepth,
+			PacingDelaySec:         d.PacingDelaySec,
+			QueueHeartbeatSec:      d.QueueHeartbeatSec,
+		}
+	}()
 )
 
 // initRuntimeConfig 用启动配置做基线，再把面板改过的值盖上去。
@@ -127,6 +169,10 @@ func initRuntimeConfig() {
 		StrictModelCooldownMin: cfg.StrictModelCooldownMin,
 		StreamKeepaliveSec:     cfg.StreamKeepaliveSec,
 		StreamIdleTimeoutSec:   cfg.StreamIdleTimeoutSec,
+		QueueEnabled:           cfg.QueueEnabled,
+		QueueMaxDepth:          cfg.QueueMaxDepth,
+		PacingDelaySec:         cfg.PacingDelaySec,
+		QueueHeartbeatSec:      cfg.QueueHeartbeatSec,
 	}
 	replaceRetiredDefault(&base)
 	if raw := kvGet(runtimeConfigKey); raw != "" {
@@ -189,6 +235,9 @@ func validateRuntimeConfig(c RuntimeConfig) error {
 		{"strict_model_cooldown_min", c.StrictModelCooldownMin, 0, 10080},
 		{"stream_keepalive_sec", c.StreamKeepaliveSec, 0, 300},
 		{"stream_idle_timeout_sec", c.StreamIdleTimeoutSec, 0, 600},
+		{"queue_max_depth", c.QueueMaxDepth, 1, 200},
+		{"pacing_delay_sec", c.PacingDelaySec, 0, 300},
+		{"queue_heartbeat_sec", c.QueueHeartbeatSec, 1, 60},
 	} {
 		if r.v < r.min || r.v > r.max {
 			return fmt.Errorf("%s=%d 超出允许范围 [%d, %d]", r.name, r.v, r.min, r.max)

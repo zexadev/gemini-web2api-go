@@ -2,6 +2,9 @@
 *.exe
 gemini-web2api-go
 gemini-web2api
+gemini-web2api-local
+consult_*.py
+*.pyc
 
 # ─── Runtime data ─────────
 data/

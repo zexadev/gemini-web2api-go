@@ -75,6 +75,12 @@ type Config struct {
 	// 重试。0 = 关（默认）。总超时（request_timeout_sec）管不到"首字节到了但之后挂着"，
 	// 这个补那个缺口。只老协议（StreamGenerate）生效，见 gemini.go 的 readBodyWithIdle。
 	StreamIdleTimeoutSec int `json:"stream_idle_timeout_sec"`
+
+	// Request Scheduler & Queue Configuration
+	QueueEnabled      bool `json:"queue_enabled"`
+	QueueMaxDepth     int  `json:"queue_max_depth"`
+	PacingDelaySec    int  `json:"pacing_delay_sec"`
+	QueueHeartbeatSec int  `json:"queue_heartbeat_sec"`
 }
 
 var (
@@ -85,10 +91,10 @@ var (
 func defaultConfig() Config {
 	return Config{
 		Port:           8083,
-		Host:           "0.0.0.0",
+		Host:           "127.0.0.1",
 		RetryAttempts:  3,
 		RetryDelaySec:  2,
-		RequestTimeout: 180,
+		RequestTimeout: 600,
 		RetryOnTimeout: true,
 		GeminiBL:       "boq_gemini-web-uiserver_20261007.01_p0",
 		DefaultModel:   "gemini-3.6-flash",
@@ -103,26 +109,31 @@ func defaultConfig() Config {
 		// 单出口实测 80-180 次不等（连接策略和出口质量决定），静态 IP 上 188。
 		// RPH 取下沿 80 保守留量；按低速率跑的部署可以调高很多 ——
 		// 10 次/分钟连打 800 次、跨 110 分钟一次没被拦。
-		PerIPConcurrent: 5,
-		PerIPRPM:        30,
-		PerIPRPH:        80,
+		// Personal Google Account Guardrails: concurrency=1 to prevent identity.hfcr abuse blocks.
+		PerIPConcurrent: 1,
+		PerIPRPM:        15,
+		PerIPRPH:        30,
 		// 实测被拦的出口 106-121 分钟自动恢复，冷却取 120 分钟。
 		ProxyCooldownMin: 120,
 		FallbackDirect:   false,
 		FallbackAnon:     false,
 		GeminiBLAuto:     true,
-		// 实测上游的墙在约 13 万 UTF-8 字节：129,950 字节中英文各 3/3 过，
-		// 135,990 字节各 1/3，141,920 字节各 1/3。取 128000 留一点余量。
-		MaxPromptBytes:         128000,
+		// 超过此阈值且配置了 Cookie 时自动转为 message.txt 文本附件上传，完整保留上下文并避开上游内联请求体截断。
+		// 阈值设为 20000 字节（~5,000 tokens），让长 Prompt / 代码与规划详情自动以附件形态传输，零细节损失。
+		MaxPromptBytes:         20000,
 		MultiTurn:              false,
 		AutoDeleteConversation: false,
 		AnonFirst:              false,
 		TemporaryChat:          false,
 		ImageUpscale:           false,
 		WebChannel:             false,
-		FirefoxFingerprint:     false,
+		FirefoxFingerprint:     true,
 		StrictModel:            false,
 		StrictModelCooldownMin: 300,
+		QueueEnabled:           true,
+		QueueMaxDepth:          20,
+		PacingDelaySec:         20,
+		QueueHeartbeatSec:      4,
 	}
 }
 
