@@ -432,7 +432,7 @@ Not returning a URL is deliberate — Gemini's artifact links need the cookie to
 
 **For bigger, sharper images**, turn on **Full-size image download** (`image_upscale`) on the admin panel's Settings page. Images are then fetched the way the web app's Download button does it: on **Ultra accounts** the image is upscaled 2× in each dimension (1376×768 → 2752×1536, about 3-4.5 MB); **other accounts** don't get the upscale, but they get the original file instead of the recompressed one (same size, about 0.8 MB vs about 0.2 MB by default). It costs one extra request per image and a several-times larger response. If it fails, the default image is returned; nothing is regenerated.
 
-**By default, multi-turn context is sent by flattening `messages` into a single prompt** (turn on server-side multi-turn, `multi_turn`, in Settings and a recognised continuation sends only the latest message while the history stays server-side; see [Configuration](#configuration)). The cost of flattening is that every turn resends the whole history, which runs into the single-request length wall: about **130,000 UTF-8 bytes**. Past that the upstream **silently truncates from the tail without an error** — and since the newest message sits at the end, what gets eaten is exactly what you just asked, which reads as "the model suddenly got dumb".
+**By default, multi-turn context is sent by flattening `messages` into a single prompt** (turn on server-side multi-turn, `multi_turn`, in Settings and a recognised continuation sends only new messages while the history stays server-side; see [Configuration](#configuration)). The cost of flattening is that every turn resends the whole history, which runs into the single-request length wall: about **130,000 UTF-8 bytes**. Past that the upstream **silently truncates from the tail without an error** — and since the newest message sits at the end, what gets eaten is exactly what you just asked, which reads as "the model suddenly got dumb".
 
 With a cookie, an over-long conversation is uploaded as a `message.txt` attachment instead, which gets around the request-body wall — **but the attachment has a wall of its own**: the model only ever sees about **160,000 bytes** of content in total; anything past that is uploaded but never read (measured with the total size held fixed and only the marker's offset moved: readable at 157,833, not readable at 163,371; splitting into several attachments does not raise the budget). So a cookie takes the usable length from 130K to about 160K — **a genuinely long conversation still has to be compacted by the client**. Without a cookie the request is rejected with 400 `context_length_exceeded` rather than losing data silently.
 
@@ -449,7 +449,7 @@ Saving takes effect **immediately**, no restart. Values live in the database and
 | Default model | used when the client doesn't send `model` |
 | Per-slot concurrency / RPM / RPH | rate limits, 0 = unlimited |
 | Prompt byte cap | over the cap: with a cookie the history is sent as a text attachment (usable length up to ~160,000 bytes), without one the request is rejected with 400 `context_length_exceeded`. Neither path truncates silently. Counted in UTF-8 bytes (the upstream limit is byte-based, not token-based), default 128000. 0 = unlimited |
-| Multi-turn (`multi_turn`) | off by default. When on, uses Gemini's native conversation_id server-side continuation — the client resends full history each turn, the server detects the continuation and sends only the newest message while history stays server-side, so long conversations no longer hit the single-request byte wall. Works signed-in or anonymous. **Note**: it does not enlarge the model's context window; content past the window is still evicted (recent-kept sliding window). It solves "long chat without hitting the wall + keep recent context", not "feed a huge document". |
+| Multi-turn (`multi_turn`) | Off by default. The client resends full history each turn. The gateway matches the longest known history prefix within the same model, tool configuration and request scope, reuses the Gemini conversation, and sends all new user messages or tool results. Supports plain chat, function calling and batches of tool results; image input and media models use independent requests. State stays in process memory and expires after 90 idle minutes or a restart. Does not enlarge the model's context window or report Google's model cache hits. |
 | Auto-delete conversation (`auto_delete_conversation`) | off by default. When on, each finished request deletes the conversation it left on gemini.google.com, so signed-in accounts don't pile them up. Signed-in only; async best-effort, a failed delete doesn't affect the response. |
 | Temporary chat (`temporary_chat`) | off by default. When on, uses Gemini web's native **Temporary Chat** (`inner[45]=1`): the conversation never enters the account's chat list and isn't used for model training — cleaner than auto-delete, and it saves that extra delete request. Only meaningful signed-in; automatically inactive when server-side multi-turn is on (a temporary chat leaves no list entry, while multi-turn relies on the server keeping the conversation). |
 | Full-size image download (`image_upscale`) | off by default. When on, generated images are fetched the way the web app's Download button does: upscaled 2× in each dimension on Ultra accounts, the original (not recompressed) file on other accounts. One extra request per image; falls back to the default image if it fails. See "Image & music" above. |
@@ -653,7 +653,7 @@ internal/app/              everything else
   client.go                tls-client (chrome146) + stdlib (when proxied)
   gemini.go                model table + 80-slot payload + model header + StreamGenerate + wrb.fr parsing
   webchannel.go            new-protocol transport, processSession (WebChannel), switch web_channel
-  conversation.go          server-side multi-turn (multi_turn): matches the history prefix, sends only the latest message
+  conversation.go          server-side multi-turn (multi_turn): matches history prefixes, sends only new messages
   media.go                 image / music / canvas / video: tool slot, artifact extraction and download
   image_upscale.go         full-size / upscaled image download (rpc c8o8Fe, switch image_upscale)
   search.go                web-search source extraction
@@ -762,12 +762,13 @@ and video generation (`gemini-video` / `/v1/videos`).
 
 ### Why does every message create a new conversation on gemini.google.com?
 
-Each request is its own conversation by default. Enable **server-side multi-turn** (`multi_turn`) on the panel's
-Settings page and consecutive messages of one conversation reuse the same web session, sending only the newest
-turn while history stays server-side. To stop conversations piling up in the web app, you have two options:
-enable **temporary chat** (`temporary_chat`) so the conversation never enters the list at all (cleaner, not used
-for training, nothing to delete — recommended), or enable **auto-delete web conversation**
-(`auto_delete_conversation`) to delete it after each reply. Both only matter for signed-in accounts.
+Each request is its own conversation by default. Enable **server-side multi-turn** (`multi_turn`) on the panel's Settings page to reuse the same web conversation and account when history matches. Only new messages are sent to Gemini; history stays server-side. Ordinary function calling and batches of tool results can resume too. Image input and media models such as image generation still use independent requests.
+
+The client must still send full history each turn, including assistant text, tool calls and their results. Keep system instructions, model, tool definitions and `tool_choice` stable. Compacted or edited history, configuration changes, first requests and restarts create a new conversation. State lives only in the current process and expires after 90 idle minutes. Send turns sequentially; concurrent branches create independent conversations.
+
+For `/v1/responses` and `/v1/chat/completions`, give each independent conversation a different `prompt_cache_key` and keep it stable across its turns; `user` also distinguishes the session scope. Here `prompt_cache_key` provides **local session isolation** only; it does not create a Google prompt cache. Clients sharing an API key should supply distinct conversation identifiers, or identical history can match the same local session. For Responses, `previous_response_id` alone does not replace full history. API token usage remains a local estimate of the full history, not Google's actual usage or `cached_tokens`.
+
+With request logging enabled, `[conv] 续接命中` means the local session matched; check that the request also succeeded to confirm continuation. This does not prove a hit in Google's internal model cache. Keep web conversations when you need to resume them; temporary chat is inactive while multi-turn is enabled. For independent requests, temporary chat or auto-delete can reduce clutter in the web conversation list.
 
 ### Can I use it as the backend for Cursor / Dify / WorkBuddy-style agents?
 
