@@ -727,7 +727,7 @@ const pages = {
                     <button class="btn muted" onclick="checkCookieAcct(${a.id}, this)">检测</button>
                     <button class="btn muted" onclick="rotateCookieAcct(${a.id}, this)">保活</button>
                     <button class="btn muted" onclick="toggleCookieAcct(${a.id})">${a.status === 'enabled' ? '禁用' : '启用'}</button>
-                    <button class="btn muted" onclick="editCookieAcct(${a.id}, ${JSON.stringify(a.label || '').replace(/"/g, '&quot;')}, ${JSON.stringify(a.note || '').replace(/"/g, '&quot;')}, ${a.authuser || 0})">编辑</button>
+                    <button class="btn muted" onclick="editCookieAcct(${a.id}, ${JSON.stringify(a.label || '').replace(/"/g, '&quot;')}, ${JSON.stringify(a.note || '').replace(/"/g, '&quot;')}, ${a.authuser || 0}, ${a.proxy_id || 0})">编辑</button>
                     <button class="btn danger" onclick="delCookieAcct(${a.id})">删除</button>
                   </span>
                 </td>
@@ -1437,22 +1437,32 @@ function parseAuthUser(v) {
   return parseInt(s, 10);
 }
 
-async function editCookieAcct(id, label, note, authuser) {
+async function editCookieAcct(id, label, note, authuser, proxyId) {
+  const proxies = (await api('api/proxies')).items || [];
+  const proxyOptions = [{ value: '0', label: '自动（第一次用到哪个代理就绑哪个）' }]
+    .concat(proxies.map(p => ({ value: String(p.id), label: '#' + p.id + ' ' + (p.name || p.url) + (p.enabled ? '' : '（已禁用）') })));
+  const fields = [
+    { name: 'label', label: '标签', value: label || '', placeholder: '账号邮箱' },
+    { name: 'authuser', label: '账号序号', value: String(authuser || 0),
+      hint: '浏览器里同时登了多个 Google 号时用：地址栏 /u/1/ 填 1，没有 /u/ 填 0。' },
+    { name: 'note', label: '备注', value: note || '', placeholder: '可留空' },
+  ];
+  if (proxies.length) {
+    fields.push({ name: 'proxy_id', label: '绑定出口', value: String(proxyId || 0), options: proxyOptions,
+      hint: '这个号固定从哪个代理出去。配合设置里的「账号严格绑定出口」，绑定的代理满了也不会换 IP。' });
+  }
   const data = await modalForm({
     title: '编辑 Cookie #' + id,
-    desc: '只改标签、备注和账号序号，不动 cookie 本身。要换 cookie 请删掉重新导入。',
-    fields: [
-      { name: 'label', label: '标签', value: label || '', placeholder: '账号邮箱' },
-      { name: 'authuser', label: '账号序号', value: String(authuser || 0),
-        hint: '浏览器里同时登了多个 Google 号时用：地址栏 /u/1/ 填 1，没有 /u/ 填 0。' },
-      { name: 'note', label: '备注', value: note || '', placeholder: '可留空' },
-    ],
+    desc: '只改标签、备注、账号序号和绑定出口，不动 cookie 本身。要换 cookie 请删掉重新导入。',
+    fields,
   });
   if (!data) return;
   const au = parseAuthUser(data.authuser);
   if (au === null) return flash(t('账号序号要填 0 到 9 的整数'));
+  const body = { label: data.label, note: data.note, authuser: au };
+  if (data.proxy_id !== undefined) body.proxy_id = parseInt(data.proxy_id, 10) || 0;
   const j = await api('api/cookies/' + id, {
-    method: 'PATCH', body: JSON.stringify({ label: data.label, note: data.note, authuser: au }),
+    method: 'PATCH', body: JSON.stringify(body),
   });
   if (j.error) return flash(t('保存失败：') + t(j.error));
   flash(t('已保存'));
@@ -1736,9 +1746,11 @@ function modalForm({ title, desc, fields, submitText = '提交' }) {
   const html = fields.map(f => `
     <div class="field">
       <label>${escapeHtml(t(f.label))}${f.required ? ' *' : ''}</label>
-      <input data-name="${escapeHtml(f.name)}" type="${f.password ? 'password' : 'text'}"
+      ${f.options ? `<select data-name="${escapeHtml(f.name)}">${f.options.map(o =>
+        `<option value="${escapeHtml(o.value)}"${o.value === f.value ? ' selected' : ''}>${escapeHtml(t(o.label))}</option>`).join('')}</select>`
+      : `<input data-name="${escapeHtml(f.name)}" type="${f.password ? 'password' : 'text'}"
              placeholder="${escapeHtml(t(f.placeholder || ''))}"
-             value="${escapeHtml(f.value || '')}" />
+             value="${escapeHtml(f.value || '')}" />`}
       ${f.hint ? `<div class="hint">${escapeHtml(t(f.hint))}</div>` : ''}
     </div>`).join('');
   return buildModal({
@@ -2357,6 +2369,10 @@ const I18N_EN = {
   'cookie 里没有 SAPISID，多半没复制全': 'No SAPISID in the cookie — you probably did not copy it all',
   '导入': 'Import',
   '只改标签、备注和账号序号，不动 cookie 本身。要换 cookie 请删掉重新导入。': 'Edits only the label, note and account index, not the cookie itself. To replace the cookie, delete and re-import.',
+  '只改标签、备注、账号序号和绑定出口，不动 cookie 本身。要换 cookie 请删掉重新导入。': 'Edits only the label, note, account index and bound proxy, not the cookie itself. To replace the cookie, delete and re-import.',
+  '绑定出口': 'Bound proxy',
+  '自动（第一次用到哪个代理就绑哪个）': 'Automatic (bind to the first proxy used)',
+  '这个号固定从哪个代理出去。配合设置里的「账号严格绑定出口」，绑定的代理满了也不会换 IP。': 'Which proxy this account always uses. With "Strict account-to-proxy binding" on in Settings, it will not switch IP even when that proxy is full.',
   '账号序号': 'Account index',
   '浏览器里同时登了多个 Google 号才需要改：打开那个号的 Gemini，地址栏是 /u/1/ 就填 1，没有 /u/ 就是 0。同一串 cookie 想当几个号用，就导入几次、各填各的序号。':
     'Only needed when several Google accounts are signed in to the same browser: open Gemini as that account — if the address bar shows /u/1/, enter 1; no /u/ means 0. To use one cookie string as several accounts, import it once per account with its own index.',

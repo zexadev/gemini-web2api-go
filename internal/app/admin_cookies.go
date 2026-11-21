@@ -209,11 +209,20 @@ func handleAdminCookieItem(w http.ResponseWriter, r *http.Request) {
 			Note     *string `json:"note"`
 			Status   *string `json:"status"`
 			AuthUser *int    `json:"authuser"`
+			// ProxyID 手动指定绑定的出口（#80），0 = 清掉绑定，下次用到哪个出口再自动绑。
+			ProxyID *int64 `json:"proxy_id"`
 		}
 		body, _ := io.ReadAll(r.Body)
 		if err := json.Unmarshal(body, &p); err != nil {
 			writeJSON(w, 400, map[string]string{"error": "bad json"})
 			return
+		}
+		if p.ProxyID != nil {
+			if *p.ProxyID < 0 || (*p.ProxyID > 0 && !proxyExists(*p.ProxyID)) {
+				writeJSON(w, 400, map[string]string{"error": "proxy not found"})
+				return
+			}
+			bindAccountProxy(id, *p.ProxyID)
 		}
 		if p.AuthUser != nil {
 			if err := accountSetAuthUser(id, *p.AuthUser); err != nil {

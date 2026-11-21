@@ -492,6 +492,17 @@ func pickBoundProxy(id int64) (p Proxy, ok bool, reason string, bound bool) {
 	return *found, true, "", true
 }
 
+func proxyExists(id int64) bool {
+	proxyMu.RLock()
+	defer proxyMu.RUnlock()
+	for _, p := range proxyCache {
+		if p.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
 // strictBoundElsewhere：严格绑定开着时，这个号绑在另一个仍然有效的出口上，就不能借用当前出口。
 func strictBoundElsewhere(a *CookieAccount, proxyID int64) bool {
 	if a == nil || !rtCfg().StrictProxyBinding || a.ProxyID <= 0 || a.ProxyID == proxyID {

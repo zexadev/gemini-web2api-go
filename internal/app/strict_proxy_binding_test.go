@@ -2,6 +2,9 @@ package app
 
 import (
 	"errors"
+	"fmt"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -133,5 +136,29 @@ func TestStrictBindingSwitchesAccountNotProxy(t *testing.T) {
 	var rle *RateLimitError
 	if !errors.As(err, &rle) || !rle.Bound || rle.ProxyID != a {
 		t.Fatalf("只剩绑在满出口上的号时应报 Bound 429，得到 %v", err)
+	}
+}
+
+// 面板手动指定绑定：能设、能清（0），不存在的代理拒掉。
+func TestPatchAccountProxyID(t *testing.T) {
+	a, _ := withTwoProxies(t, false)
+	id := addTestAccount(t, "manualBind")
+	patch := func(body string) int {
+		r := httptest.NewRequest("PATCH", fmt.Sprintf("/admin/api/cookies/%d", id), strings.NewReader(body))
+		w := httptest.NewRecorder()
+		handleAdminCookieItem(w, r)
+		return w.Code
+	}
+	if c := patch(fmt.Sprintf(`{"proxy_id": %d}`, a)); c != 200 || accountByID(id).ProxyID != a {
+		t.Fatalf("设绑定：code=%d proxy=%d", c, accountByID(id).ProxyID)
+	}
+	if c := patch(`{"proxy_id": 424242}`); c != 400 || accountByID(id).ProxyID != a {
+		t.Fatalf("不存在的代理应 400 且不改绑定：code=%d proxy=%d", c, accountByID(id).ProxyID)
+	}
+	if c := patch(`{"label": "x"}`); c != 200 || accountByID(id).ProxyID != a {
+		t.Fatalf("没传 proxy_id 不该动绑定：code=%d proxy=%d", c, accountByID(id).ProxyID)
+	}
+	if c := patch(`{"proxy_id": 0}`); c != 200 || accountByID(id).ProxyID != 0 {
+		t.Fatalf("0 应清掉绑定：code=%d proxy=%d", c, accountByID(id).ProxyID)
 	}
 }
