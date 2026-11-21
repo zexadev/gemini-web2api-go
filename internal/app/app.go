@@ -11,11 +11,13 @@ import (
 )
 
 func logf(format string, args ...interface{}) {
+	now := time.Now()
+	msg := fmt.Sprintf(format, args...)
+	raw := fmt.Sprintf("[%s] %s", now.Format("15:04:05"), msg)
 	if rtCfg().LogRequests {
-		fmt.Fprintf(os.Stderr, "[%s] %s\n",
-			time.Now().Format("15:04:05"),
-			fmt.Sprintf(format, args...))
+		fmt.Fprintln(os.Stderr, raw)
 	}
+	globalLogBuffer.Add(now, msg, raw)
 }
 
 // maskKey shows "sk-gemini-XXXX...YYYY" for banner. Empty stays empty.
@@ -151,6 +153,7 @@ func Run() {
 		mux.HandleFunc("/admin/api/cookies/", requireAuth(handleAdminCookieItem))
 		mux.HandleFunc("/admin/api/test", requireAuth(handleAdminTest))
 		mux.HandleFunc("/admin/api/video-quota", requireAuth(handleAdminVideoQuota))
+		mux.HandleFunc("/admin/api/logs", requireAuth(handleAdminLogs))
 	}
 
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
