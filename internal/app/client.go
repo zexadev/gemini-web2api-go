@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	fhttp "github.com/bogdanfinn/fhttp"
 	tls_client "github.com/bogdanfinn/tls-client"
 	"github.com/bogdanfinn/tls-client/profiles"
 )
@@ -207,6 +208,27 @@ func applyChromeHeaders(req *http.Request) {
 
 // applyBrowserHeaders 给 stdlib 请求填上对应 impersonate 配置的应用层 header。
 func applyBrowserHeaders(req *http.Request) {
+	if isFirefoxProfile() {
+		req.Header.Set("User-Agent", FirefoxUA)
+		req.Header.Del("Sec-CH-UA")
+		req.Header.Del("Sec-CH-UA-Mobile")
+		req.Header.Del("Sec-CH-UA-Platform")
+		req.Header.Set("Sec-Fetch-Dest", "empty")
+		req.Header.Set("Sec-Fetch-Mode", "cors")
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
+		return
+	}
+	req.Header.Set("User-Agent", ChromeUA)
+	req.Header.Set("Sec-CH-UA", `"Chromium";v="146", "Google Chrome";v="146", "Not?A_Brand";v="24"`)
+	req.Header.Set("Sec-CH-UA-Mobile", "?0")
+	req.Header.Set("Sec-CH-UA-Platform", `"Windows"`)
+	req.Header.Set("Sec-Fetch-Dest", "empty")
+	req.Header.Set("Sec-Fetch-Mode", "cors")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+}
+
+// applyBrowserFHeaders 给 fhttp (tls-client 直连) 请求填上对应 impersonate 配置的应用层 header。
+func applyBrowserFHeaders(req *fhttp.Request) {
 	if isFirefoxProfile() {
 		req.Header.Set("User-Agent", FirefoxUA)
 		req.Header.Del("Sec-CH-UA")

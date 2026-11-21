@@ -135,6 +135,7 @@ func uploadPost(url string, headers map[string]string, body []byte, proxyURL str
 	if err != nil {
 		return 0, nil, nil, err
 	}
+	applyBrowserFHeaders(req)
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
