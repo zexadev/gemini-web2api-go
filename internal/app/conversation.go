@@ -451,65 +451,99 @@ func callGeminiConv(messages []map[string]interface{}, mc ModelConfig,
 
 	var prompt string
 	if fresh {
-		// 首轮带上 tools 指令：模型要靠它知道怎么吐 tool_call 围栏，续接轮不再重发
-		//（指令已在服务端首轮历史里）。
+		// 首轮发送工具定义和完整协议，续接只补短提醒，定义留在上游历史。
 		prompt, _ = messagesToPrompt(messages, tools, toolChoice)
 		logf("[conv] 新会话，首轮发 %d 字节（tools=%d）", len(prompt), len(tools))
 	} else {
 		prompt = buildPrompt(messages[prefixLen:], nil, nil)
+		if reminder := toolContinuationReminder(tools, toolChoice); reminder != "" {
+			prompt += "\n\n" + reminder
+		}
 		logf("[conv] 续接命中 turn=%d，只发 %d 字节（新增 %d 条消息，历史留服务端）", conv.turn, len(prompt), len(messages)-prefixLen)
 	}
 
 	// strict_model 换号只对新会话做：续接的会话绑死在原来的号上，降级了只记冷却、
 	// 报错作废这路会话，客户端重试时当新会话全量重发，自然挑到别的号。
-	exclude := map[int64]bool{}
-	var res *StreamResult
-	var err error
-	for try := 0; try < maxCookieTries; try++ {
-		if fresh {
-			conv = &convState{}
-			// 有 cookie 池就用登录号（能力更全），否则匿名（首轮就地拿 session cookie）。
-			// #20 匿名优先：模型不需要登录态时不占号（多轮已被 gate 限成无图无工具，附件
-			// 恒无，所以第二个参数传 false）。必须在调用前短路：挑号会更新
-			// last_used_at，调了不用等于白占一轮。
-			if !anonFirstEligible(mc, false) {
-				a, _, perr := pickAccountForModel(mc, exclude)
-				if perr != nil {
-					var last *ModelDowngradedError
-					if try > 0 && errors.As(err, &last) {
-						// 换号时已经没号可挑：报上一个号真实的降级，补上解冻时间
-						last.RetryAfter = perr.(*ModelDowngradedError).RetryAfter
-						break
+	generate := func(p string, delta, reasoning func(string), retry bool) (*StreamResult, error) {
+		if retry {
+			// Keep account and egress ownership, but discard the hidden candidate's
+			// upstream history and native tool state before sending full history.
+			copy := *conv
+			copy.cid, copy.rid, copy.rcid, copy.tok26, copy.turn = "", "", "", "", 0
+			conv = &copy
+		}
+		exclude := map[int64]bool{}
+		var res *StreamResult
+		var err error
+		for try := 0; try < maxCookieTries; try++ {
+			if fresh && !retry {
+				conv = &convState{}
+				// 有 cookie 池就用登录号（能力更全），否则匿名（首轮就地拿 session cookie）。
+				// #20 匿名优先：模型不需要登录态时不占号（多轮已被 gate 限成无图无工具，附件
+				// 恒无，所以第二个参数传 false）。必须在调用前短路：挑号会更新
+				// last_used_at，调了不用等于白占一轮。
+				if !anonFirstEligible(mc, false) {
+					a, _, perr := pickAccountForModel(mc, exclude)
+					if perr != nil {
+						var last *ModelDowngradedError
+						if try > 0 && errors.As(err, &last) {
+							// 换号时已经没号可挑：报上一个号真实的降级，补上解冻时间
+							last.RetryAfter = perr.(*ModelDowngradedError).RetryAfter
+							break
+						}
+						return &StreamResult{}, perr
 					}
-					return "", nil, &StreamResult{}, perr
-				}
-				if a != nil {
-					conv.cookie = a.Cookie
-					conv.sapisid = extractSAPISID(a.Cookie)
-					conv.isLogin = true
-					conv.accountID = a.ID
-					conv.authuser = a.AuthUser
-					conv.proxyID = a.ProxyID
+					if a != nil {
+						conv.cookie = a.Cookie
+						conv.sapisid = extractSAPISID(a.Cookie)
+						conv.isLogin = true
+						conv.accountID = a.ID
+						conv.authuser = a.AuthUser
+						conv.proxyID = a.ProxyID
+					}
 				}
 			}
+			res, err = runConversationTurn(p, mc, conv, delta, reasoning)
+			if retry || !retryOnAnotherAccount(res, err, mc, exclude) || !fresh {
+				break
+			}
 		}
-		res, err = runConversationTurn(prompt, mc, conv, onDelta, onReasoning)
-		if !retryOnAnotherAccount(res, err, mc, exclude) || !fresh {
-			break
+		return res, err
+	}
+	var text string
+	var toolCalls []ToolCall
+	var res *StreamResult
+	var err error
+	if opt.recoverToolReply != nil && canRecoverToolReply(messages, tools, toolChoice) {
+		replyOpts := toolReplyOptions{
+			inlineOnly: true,
+			continueCorrection: func(correction string) (*StreamResult, error) {
+				if conv.cid == "" || conv.rid == "" {
+					return nil, fmt.Errorf("cannot correct oversized tool history: no upstream continuation head")
+				}
+				return runConversationTurn(correction, mc, conv, nil, nil)
+			},
+		}
+		text, toolCalls, res, err = generateToolReply(opt.recoverToolReply, prompt, messages, tools, toolChoice, onDelta, replyOpts,
+			func(p string, delta func(string), retry bool) (*StreamResult, error) {
+				return generate(p, delta, nil, retry)
+			})
+	} else {
+		res, err = generate(prompt, onDelta, onReasoning, false)
+		if err == nil {
+			text = extractResponseText(res.Raw)
+			if len(tools) > 0 {
+				text, toolCalls = parseToolCalls(text)
+			}
+			if text == "" && len(toolCalls) == 0 {
+				err = fmt.Errorf("upstream returned no content frame (raw %d bytes)", len(res.Raw))
+			}
 		}
 	}
 	if err != nil {
 		// The old head was consumed before generation; an ambiguous failure must
 		// not restore it because the upstream may already have advanced.
 		return "", nil, res, err
-	}
-	text := extractResponseText(res.Raw)
-	var toolCalls []ToolCall
-	if len(tools) > 0 {
-		text, toolCalls = parseToolCalls(text)
-	}
-	if text == "" && len(toolCalls) == 0 {
-		return "", nil, res, fmt.Errorf("upstream returned no content frame (raw %d bytes)", len(res.Raw))
 	}
 	// Save the exact logical assistant turn, including tool calls. Only the new
 	// head is published; tool-only replies must remain distinguishable.
