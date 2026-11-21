@@ -164,7 +164,7 @@ func makeSAPISIDHash(sapisid string) string {
 	return fmt.Sprintf("SAPISIDHASH %d_%s", ts, hex.EncodeToString(h[:]))
 }
 
-// ChromeUA 是给 stdlib 走代理时用的 Chrome 146 真实 UA 模板。
+// ChromeUA 是 Chrome 146 的真实 UA，也是模板：currentBrowserUA 把 146 换成 chromeMajor()。
 const ChromeUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
 
 // FirefoxUA 是走 Firefox/Zen 指纹时的 UA 模板。版本号对齐底层 TLS profile（tls-client 的
@@ -194,11 +194,22 @@ func effectiveImpersonate() string {
 	return rtCfg().Impersonate
 }
 
+// chromeMajor 是 TLS 指纹实际用的 Chrome 大版本，直接读 tls-client profile 的名字（"Chrome-133"）。
+// 跟 resolveProfile 是同一个来源：impersonate 填了表里没有的名字（如 chrome_157）会落到 146，
+// 这里也跟着报 146，UA / Sec-CH-UA 不会报一个握手里没有的版本。非 Chrome profile 返回 "146"。
+func chromeMajor() string {
+	s := resolveProfile(effectiveImpersonate()).GetClientHelloStr()
+	if v, ok := strings.CutPrefix(s, "Chrome-"); ok && v != "" {
+		return v
+	}
+	return "146"
+}
+
 func currentBrowserUA() string {
 	if isFirefoxProfile() {
 		return FirefoxUA
 	}
-	return ChromeUA
+	return strings.Replace(ChromeUA, "Chrome/146.", "Chrome/"+chromeMajor()+".", 1)
 }
 
 // applyChromeHeaders 给 stdlib 请求填上应用层 header（根据 impersonate 配置自动适配 Chrome 或 Firefox）。
@@ -206,10 +217,12 @@ func applyChromeHeaders(req *http.Request) {
 	applyBrowserHeaders(req)
 }
 
-// chromeClientHints 是 Chrome 指纹下要带的三个 Sec-CH-UA 头；Firefox 不发这组。
+// chromeClientHints 是 Chrome 指纹下要带的三个 Sec-CH-UA 头；Firefox 不发这组。版本跟 chromeMajor。
+// GREASE 那一项（"Not?A_Brand";v="24"）真 Chrome 每个版本不一样，这里没按版本细分。
 func chromeClientHints() map[string]string {
+	v := chromeMajor()
 	return map[string]string{
-		"Sec-CH-UA":          `"Chromium";v="146", "Google Chrome";v="146", "Not?A_Brand";v="24"`,
+		"Sec-CH-UA":          `"Chromium";v="` + v + `", "Google Chrome";v="` + v + `", "Not?A_Brand";v="24"`,
 		"Sec-CH-UA-Mobile":   "?0",
 		"Sec-CH-UA-Platform": `"Windows"`,
 	}

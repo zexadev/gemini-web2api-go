@@ -2,6 +2,7 @@ package app
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 
 	fhttp "github.com/bogdanfinn/fhttp"
@@ -141,5 +142,26 @@ func TestFetchSite(t *testing.T) {
 	applyBrowserFHeaders(req)
 	if got := req.Header.Get("Sec-Fetch-Site"); got != "cross-site" {
 		t.Errorf("下载链应是 cross-site，得到 %q", got)
+	}
+}
+
+// UA / Sec-CH-UA 报的版本要跟 TLS 指纹实际用的 Chrome 版本一致。
+func TestChromeVersionFollowsProfile(t *testing.T) {
+	old := rtCfg()
+	defer func() { rtMu.Lock(); rtVal = old; rtMu.Unlock() }()
+	cases := map[string]string{"chrome_133": "133", "chrome_146": "146", "chrome_157": "146", "": "146"}
+	for imp, want := range cases {
+		rtMu.Lock()
+		rtVal.Impersonate = imp
+		rtVal.FirefoxFingerprint = false
+		rtMu.Unlock()
+		req, _ := http.NewRequest("GET", "https://gemini.google.com/app", nil)
+		applyBrowserHeaders(req)
+		if ua := req.Header.Get("User-Agent"); !strings.Contains(ua, "Chrome/"+want+".0.0.0") {
+			t.Errorf("%q: UA %q 应报 Chrome/%s", imp, ua, want)
+		}
+		if ch := req.Header.Get("Sec-CH-UA"); !strings.Contains(ch, `"Google Chrome";v="`+want+`"`) {
+			t.Errorf("%q: Sec-CH-UA %q 应报 %s", imp, ch, want)
+		}
 	}
 }
