@@ -64,6 +64,14 @@ func putVideoJob(j *videoJob) {
 	videoJobsMu.Unlock()
 }
 
+// videoJobView 在锁里拷一份任务给响应序列化用。任务一建好后台 goroutine 就在改它
+// （Status/Error/Seconds…，都在 videoJobsMu 里改），直接把指针交给 writeJSON 等于不加锁读。
+func videoJobView(j *videoJob) videoJob {
+	videoJobsMu.Lock()
+	defer videoJobsMu.Unlock()
+	return *j
+}
+
 func getVideoJob(id string) *videoJob {
 	videoJobsMu.Lock()
 	defer videoJobsMu.Unlock()
@@ -152,7 +160,7 @@ func handleCreateVideo(w http.ResponseWriter, r *http.Request) {
 			"retry_after": retryAfterSeconds(reset)}})
 		return
 	}
-	writeJSON(w, 200, startVideoJob(model, prompt, size, images))
+	writeJSON(w, 200, videoJobView(startVideoJob(model, prompt, size, images)))
 }
 
 // startVideoJob 建一个视频任务并在后台跑，立即返回（status=queued）。
@@ -386,7 +394,7 @@ func handleExtendVideo(w http.ResponseWriter, r *http.Request, parentID string) 
 	}
 	putVideoJob(j)
 	go runVideoJobWith(j, images, acct, &ConvRef{CID: cid, RID: rid, RCID: rcid, Turn: turn + 1})
-	writeJSON(w, 200, j)
+	writeJSON(w, 200, videoJobView(j))
 }
 
 // mp4Duration reads mvhd (movie header) duration; 0 if not found.
@@ -447,5 +455,5 @@ func handleVideoItem(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(mp4)
 		return
 	}
-	writeJSON(w, 200, j)
+	writeJSON(w, 200, videoJobView(j))
 }
