@@ -18,22 +18,34 @@ This service bridges standard OpenAI-compatible REST API calls to Google's brows
 
 ---
 
-## 2. Recommended Reasoning Model
+## 2. Model Selection & Reasoning Effort
 
-Use **`gemini-4-neon-thinking`** for complex multi-step reasoning, architectural review, and strategic checking:
+The bridge supports three thinking tiers via OpenAI-compatible parameters or model names:
+
+### 2.1 Recommended for Agents: Medium Effort (Balanced)
+Avoids Google's 8-minute high-effort thinking ceiling on large prompts while still conducting full multi-step reasoning:
 
 ```json
 {
-  "model": "gemini-4-neon-thinking",
+  "model": "gemini-4-neon",
+  "reasoning_effort": "medium",
   "messages": [
     {"role": "user", "content": "..."}
   ],
-  "stream": false
+  "stream": true
 }
 ```
+*(Equivalent model name: `"model": "gemini-4-neon-thinking-medium"`)*
+* Reasoning is conducted internally on Google servers (~10–25s) without streaming out massive reasoning tokens, returning a clean final response.
 
-* **Thinking Chain**: Returned in `choices[0].message.reasoning_content`.
-* **Final Response**: Returned in `choices[0].message.content`.
+### 2.2 Low / Normal Effort (Fast Execution)
+Answers immediately in 2–6s without extended reasoning:
+* `"model": "gemini-4-neon"` (or `"reasoning_effort": "low"`)
+
+### 2.3 High Effort (Deep Chain-of-Thought)
+Produces explicit `reasoning_content`:
+* `"model": "gemini-4-neon-thinking"` (or `"reasoning_effort": "high"`)
+* **Caution**: Only use on short prompts (<2,500 tokens). On large contexts, Google's upstream reasoning worker can exceed its ~8-minute execution budget and abort with HTTP 502 `inner[31]`.
 
 ---
 

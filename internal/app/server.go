@@ -266,6 +266,19 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]interface{}{"error": map[string]string{"message": err.Error()}})
 		return
 	}
+	if effort := getStr(req, "reasoning_effort"); effort != "" {
+		switch strings.ToLower(effort) {
+		case "low", "minimal":
+			modelCfg.Thinking = false
+			modelCfg.ThinkWire = thinkingNormal
+		case "medium":
+			modelCfg.Thinking = false
+			modelCfg.ThinkWire = thinkingMedium
+		case "high", "xhigh":
+			modelCfg.Thinking = true
+			modelCfg.ThinkWire = thinkingExtended
+		}
+	}
 
 	messagesRaw, _ := req["messages"].([]interface{})
 	var messages []map[string]interface{}
@@ -534,6 +547,19 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeJSON(w, 400, map[string]interface{}{"error": map[string]string{"message": err.Error()}})
 		return
+	}
+	if effort := getStr(req, "reasoning_effort"); effort != "" {
+		switch strings.ToLower(effort) {
+		case "low", "minimal":
+			modelCfg.Thinking = false
+			modelCfg.ThinkWire = thinkingNormal
+		case "medium":
+			modelCfg.Thinking = false
+			modelCfg.ThinkWire = thinkingMedium
+		case "high", "xhigh":
+			modelCfg.Thinking = true
+			modelCfg.ThinkWire = thinkingExtended
+		}
 	}
 
 	messages := responsesToMessages(req)
