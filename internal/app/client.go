@@ -206,44 +206,39 @@ func applyChromeHeaders(req *http.Request) {
 	applyBrowserHeaders(req)
 }
 
+// chromeClientHints 是 Chrome 指纹下要带的三个 Sec-CH-UA 头；Firefox 不发这组。
+func chromeClientHints() map[string]string {
+	return map[string]string{
+		"Sec-CH-UA":          `"Chromium";v="146", "Google Chrome";v="146", "Not?A_Brand";v="24"`,
+		"Sec-CH-UA-Mobile":   "?0",
+		"Sec-CH-UA-Platform": `"Windows"`,
+	}
+}
+
+// writeBrowserHeaders 是浏览器应用层 header 的唯一来源，stdlib 和 fhttp 两种请求都经它写入，
+// 两条传输路径不会再各写一份、改一处漏一处。
+func writeBrowserHeaders(set func(k, v string), del func(k string)) {
+	set("User-Agent", currentBrowserUA())
+	if isFirefoxProfile() {
+		for k := range chromeClientHints() {
+			del(k)
+		}
+	} else {
+		for k, v := range chromeClientHints() {
+			set(k, v)
+		}
+	}
+	set("Sec-Fetch-Dest", "empty")
+	set("Sec-Fetch-Mode", "cors")
+	set("Sec-Fetch-Site", "same-origin")
+}
+
 // applyBrowserHeaders 给 stdlib 请求填上对应 impersonate 配置的应用层 header。
 func applyBrowserHeaders(req *http.Request) {
-	if isFirefoxProfile() {
-		req.Header.Set("User-Agent", FirefoxUA)
-		req.Header.Del("Sec-CH-UA")
-		req.Header.Del("Sec-CH-UA-Mobile")
-		req.Header.Del("Sec-CH-UA-Platform")
-		req.Header.Set("Sec-Fetch-Dest", "empty")
-		req.Header.Set("Sec-Fetch-Mode", "cors")
-		req.Header.Set("Sec-Fetch-Site", "same-origin")
-		return
-	}
-	req.Header.Set("User-Agent", ChromeUA)
-	req.Header.Set("Sec-CH-UA", `"Chromium";v="146", "Google Chrome";v="146", "Not?A_Brand";v="24"`)
-	req.Header.Set("Sec-CH-UA-Mobile", "?0")
-	req.Header.Set("Sec-CH-UA-Platform", `"Windows"`)
-	req.Header.Set("Sec-Fetch-Dest", "empty")
-	req.Header.Set("Sec-Fetch-Mode", "cors")
-	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	writeBrowserHeaders(req.Header.Set, req.Header.Del)
 }
 
 // applyBrowserFHeaders 给 fhttp (tls-client 直连) 请求填上对应 impersonate 配置的应用层 header。
 func applyBrowserFHeaders(req *fhttp.Request) {
-	if isFirefoxProfile() {
-		req.Header.Set("User-Agent", FirefoxUA)
-		req.Header.Del("Sec-CH-UA")
-		req.Header.Del("Sec-CH-UA-Mobile")
-		req.Header.Del("Sec-CH-UA-Platform")
-		req.Header.Set("Sec-Fetch-Dest", "empty")
-		req.Header.Set("Sec-Fetch-Mode", "cors")
-		req.Header.Set("Sec-Fetch-Site", "same-origin")
-		return
-	}
-	req.Header.Set("User-Agent", ChromeUA)
-	req.Header.Set("Sec-CH-UA", `"Chromium";v="146", "Google Chrome";v="146", "Not?A_Brand";v="24"`)
-	req.Header.Set("Sec-CH-UA-Mobile", "?0")
-	req.Header.Set("Sec-CH-UA-Platform", `"Windows"`)
-	req.Header.Set("Sec-Fetch-Dest", "empty")
-	req.Header.Set("Sec-Fetch-Mode", "cors")
-	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	writeBrowserHeaders(req.Header.Set, req.Header.Del)
 }
