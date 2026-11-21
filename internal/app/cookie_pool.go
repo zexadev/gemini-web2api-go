@@ -91,13 +91,20 @@ func cookieNames(cookie string) []string {
 	return names
 }
 
+func hasCookieName(cookie, name string) bool {
+	for _, n := range cookieNames(cookie) {
+		if n == name {
+			return true
+		}
+	}
+	return false
+}
+
 // warnMissingOSID 只记日志不拦。判据（2026-11-21 实测）：去掉 OSID 后 /app 302 到
 // ServiceLogin?osid=1，带上就 200。只验过一个号，所以不硬拦，免得挡掉能用的号。
 func warnMissingOSID(label, cookie string) {
-	for _, n := range cookieNames(cookie) {
-		if n == "OSID" {
-			return
-		}
+	if hasCookieName(cookie, "OSID") {
+		return
 	}
 	logf("[cookie] %s 里没有 OSID，gemini.google.com 会跳去登录页；请在 gemini.google.com 页面重新导出", label)
 }
@@ -595,6 +602,8 @@ func explainCookieFailure(err error) string {
 	// sorry 要排在 302 前面：跳 /sorry 也是 302，那是出口被拦不是 cookie 失效
 	case strings.Contains(msg, "HTTP 429"), strings.Contains(msg, "sorry"):
 		return "出口被上游限流，换个代理再试（不是 cookie 的问题）"
+	case strings.Contains(msg, "缺 OSID"):
+		return "cookie 缺 OSID：gemini.google.com 现在要求这一项，请在 gemini.google.com 页面重新导出"
 	case strings.Contains(msg, "HTTP 302"):
 		return "cookie 无效：被重定向到登录页"
 	default:

@@ -146,6 +146,30 @@ func TestExplainCookieFailureSorry(t *testing.T) {
 	}
 }
 
+// 跳登录页且 cookie 里没 OSID 要点名缺 OSID；有 OSID、或跳的是 /sorry，都不能误报。
+func TestAppPageErrorMissingOSID(t *testing.T) {
+	login := "https://accounts.google.com/ServiceLogin?passive=1209600&osid=1"
+	e := appPageError(302, login, "SID=a; SAPISID=b")
+	if !e.MissingOSID || !xsrfErrBlamesCookie(e) {
+		t.Fatalf("缺 OSID 跳登录：MissingOSID=%v blames=%v", e.MissingOSID, xsrfErrBlamesCookie(e))
+	}
+	if got := explainCookieFailure(e); got != "cookie 缺 OSID：gemini.google.com 现在要求这一项，请在 gemini.google.com 页面重新导出" {
+		t.Errorf("explain: got %q", got)
+	}
+	if e := appPageError(302, login, "SID=a; OSID=c; SAPISID=b"); e.MissingOSID {
+		t.Error("带 OSID 的不该报缺 OSID")
+	}
+	if e := appPageError(302, login, "SID=a; __Secure-OSID=c"); !e.MissingOSID {
+		t.Error("__Secure-OSID 不能当成 OSID")
+	}
+	if e := appPageError(302, "https://www.google.com/sorry/index", "SID=a"); e.MissingOSID {
+		t.Error("跳 /sorry 是出口问题，不该报缺 OSID")
+	}
+	if e := appPageError(302, login, ""); e.MissingOSID {
+		t.Error("匿名没有 cookie，不该报缺 OSID")
+	}
+}
+
 // 账号序号要能存能读，越界要拒。
 func TestAccountAuthUser(t *testing.T) {
 	id, err := accountAdd("multi", "SAPISID=ggg; __Secure-1PSID=hhh", "")

@@ -160,7 +160,7 @@ func fetchAppPage(cookie string, authuser int, proxyURL string) ([]byte, error) 
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode != 200 {
-			return nil, newAppPageStatusError(resp.StatusCode, resp.Header.Get("Location"))
+			return nil, appPageError(resp.StatusCode, resp.Header.Get("Location"), cookie)
 		}
 		body, err = io.ReadAll(resp.Body)
 		if err != nil {
@@ -180,7 +180,7 @@ func fetchAppPage(cookie string, authuser int, proxyURL string) ([]byte, error) 
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode != 200 {
-			return nil, newAppPageStatusError(resp.StatusCode, resp.Header.Get("Location"))
+			return nil, appPageError(resp.StatusCode, resp.Header.Get("Location"), cookie)
 		}
 		body, err = io.ReadAll(resp.Body)
 		if err != nil {
@@ -227,6 +227,17 @@ func isXSRFError(raw string) bool {
 type appPageStatusError struct {
 	Status   int
 	Location string // host+path，没有 Location 头时为空
+	// MissingOSID：跳的是登录页，且 cookie 里没有 OSID。2026-11-21 实测去掉 OSID
+	// 就 302 到 ServiceLogin?osid=1，带上就 200，所以这种组合直接点名缺 OSID。
+	MissingOSID bool
+}
+
+// appPageError 在 newAppPageStatusError 之上补 MissingOSID 判断（要看 cookie）。
+func appPageError(status int, location, cookie string) *appPageStatusError {
+	e := newAppPageStatusError(status, location)
+	e.MissingOSID = cookie != "" && strings.HasPrefix(e.Location, "accounts.google.com") &&
+		!hasCookieName(cookie, "OSID")
+	return e
 }
 
 func newAppPageStatusError(status int, location string) *appPageStatusError {
@@ -242,6 +253,9 @@ func newAppPageStatusError(status int, location string) *appPageStatusError {
 }
 
 func (e *appPageStatusError) Error() string {
+	if e.MissingOSID {
+		return fmt.Sprintf("fetch /app: HTTP %d -> %s (cookie 缺 OSID)", e.Status, e.Location)
+	}
 	if e.Location != "" {
 		return fmt.Sprintf("fetch /app: HTTP %d -> %s", e.Status, e.Location)
 	}
