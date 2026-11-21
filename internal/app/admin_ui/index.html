@@ -1071,6 +1071,8 @@ const RT_GROUPS = [
         hint: '代理连续失败 5 次后歇多久再放回池子。实测被拦的出口 106-121 分钟自恢复，默认 120；0=不恢复，要去代理池页面手动重置' },
       { k: 'fallback_direct', label: '无可用代理时退回直连', type: 'bool',
         hint: '关：直接返回 429，本机 IP 不会暴露给上游（默认）。开：可用性优先，但上游会看到本机真实出口' },
+      { k: 'strict_proxy_binding', label: '账号严格绑定出口', type: 'bool',
+        hint: '每个号第一次用到哪个代理就绑定哪个。关：绑定的代理满了或在熔断冷却时换别的出口并重新绑定，可用性优先（默认）。开：这时只换号、不换出口，号都出不去就返回 429；同一个号始终从同一个 IP 出去。代理被删除或手动禁用时仍会重新绑定。在 Cookie 池里可以手动指定绑定' },
       { k: 'fallback_anon', label: 'cookie 失效时降级匿名', type: 'bool',
         hint: '关：直接报错，能立刻发现该换号了（默认）。开：继续跑，但要登录的模型会被静默降级成 3.5 Flash-Lite、思考链消失，客户端看不出来' },
       { k: 'strict_model', label: '严格模型校验', type: 'bool',
@@ -2280,6 +2282,9 @@ const I18N_EN = {
   '自动跟随 bl 版本': 'Auto-follow bl version',
   '熔断冷却（分钟）': 'Circuit-breaker cooldown (min)',
   '无可用代理时退回直连': 'Fall back to direct when no proxy is available',
+  '账号严格绑定出口': 'Strict account-to-proxy binding',
+  '每个号第一次用到哪个代理就绑定哪个。关：绑定的代理满了或在熔断冷却时换别的出口并重新绑定，可用性优先（默认）。开：这时只换号、不换出口，号都出不去就返回 429；同一个号始终从同一个 IP 出去。代理被删除或手动禁用时仍会重新绑定。在 Cookie 池里可以手动指定绑定':
+    'Each account is bound to the first proxy it uses. Off: when the bound proxy is full or cooling down after failures, another proxy is used and the binding moves (availability first, default). On: another account is used instead and the proxy never changes; if no account can go out, it returns 429. An account always leaves from the same IP. Deleting or disabling a proxy still allows rebinding. The binding can be set manually in the Cookie pool',
   'cookie 失效时降级匿名': 'Downgrade to anonymous when cookie fails',
   '严格模型校验': 'Strict model check',
   '开：服务端自报的模型跟请求的不一致时（通常是这个号这一档额度用完、被静默降级），不把降级后的回答当成功返回，而是换下一个号重试；全池都被降级就回 429 insufficient_quota（code: model_downgraded）。流式在吐出第一个字之前就判断。关：照常返回降级后的回答（默认）':
