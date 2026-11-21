@@ -2,6 +2,23 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 4.31.1
+
+2026-11-20 前后起，**gemini.google.com 要求 cookie 里带 `OSID`**，缺了打开 Gemini 就被 302 到 Google 登录页
+（`accounts.google.com/ServiceLogin?...&osid=1`），所有登录号同时失效、换号换代理都一样（#90）。实测同一份
+Firefox 导出的 cookie：带 `OSID` 回 200 且有登录态，只去掉 `OSID` 就 302；`__Secure-OSID` 不是必需。
+
+**升级后请检查 Cookie 池**：标了「缺 OSID」的账号要在已登录的 gemini.google.com 页面重新导出（F12 → 网络 →
+任一发往 gemini.google.com 的请求 → 复制为 cURL，取 `Cookie:` 那一整行）。在 google.com 页面导出、或者只抄
+面板逐项模式那七项，都会漏掉 `OSID`。
+
+### 修复
+
+- **面板逐项模式加上 `OSID`**；列表里缺它的账号标「缺 OSID」，关键项从 9 项变成 10 项。
+- **导入缺 `OSID` 的 cookie 会先弹窗提醒**（可以「仍然导入」，不硬拦），日志里也记一条。
+- **「检测」和请求报错直接点名缺 `OSID`**：跳登录页且 cookie 里没有 `OSID` 时，不再只说「被重定向到登录页」。
+- 两份 README 的 cookie 导出说明改成推荐整串复制、必需项加 `OSID`，故障排查加一行。
+
 ## 4.31.0
 
 上游把 3.1 Pro 的位置换成了新模型 **4 Neon**（网页上描述是「Deeper analysis」）。2026-11-19 付费号的模型选择器是
