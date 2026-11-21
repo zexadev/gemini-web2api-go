@@ -47,5 +47,6 @@ USER nonroot:nonroot
 EXPOSE 8083
 
 ENV DB_PATH=/data/gemini.db
+ENV GEMINI_HOST=0.0.0.0
 ENTRYPOINT ["/app/gemini-web2api"]
 CMD ["--db", "/data/gemini.db", "--port", "8083"]
