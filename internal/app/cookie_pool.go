@@ -91,6 +91,17 @@ func cookieNames(cookie string) []string {
 	return names
 }
 
+// warnMissingOSID 只记日志不拦。判据（2026-11-21 实测）：去掉 OSID 后 /app 302 到
+// ServiceLogin?osid=1，带上就 200。只验过一个号，所以不硬拦，免得挡掉能用的号。
+func warnMissingOSID(label, cookie string) {
+	for _, n := range cookieNames(cookie) {
+		if n == "OSID" {
+			return
+		}
+	}
+	logf("[cookie] %s 里没有 OSID，gemini.google.com 会跳去登录页；请在 gemini.google.com 页面重新导出", label)
+}
+
 // accountAdd 往池里插一条。cookie 必须能取到非空的 SAPISID。
 // 这是面板/API 手工添加走的路，用户当场看得到错误提示，拦下来是对的。
 //
@@ -105,6 +116,7 @@ func accountAdd(label, cookie, note string) (int64, error) {
 	if extractSAPISID(c) == "" {
 		return 0, fmt.Errorf("cookie 里没有 SAPISID，多半没复制全（需要 gemini.google.com 下的完整 cookie，至少含 SID / HSID / SSID / APISID / SAPISID / __Secure-1PSID）")
 	}
+	warnMissingOSID(label, c)
 	return accountInsert(label, c, note)
 }
 
@@ -123,6 +135,7 @@ func accountAdopt(label, cookie, note string) (int64, error) {
 		logf("[cookie] %s 里没有 SAPISID，算不出 SAPISIDHASH 授权头，可能只当匿名处理；"+
 			"先按原样导入，请到面板核对", label)
 	}
+	warnMissingOSID(label, cookie)
 	return accountInsert(label, cookie, note)
 }
 

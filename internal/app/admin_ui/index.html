@@ -1407,6 +1407,15 @@ async function addCookieAcct() {
     },
   });
   if (!data) return;
+  // 只提醒不拦：OSID 2026-11 才变成必需，判据只来自一个号的实测，硬拦可能挡掉能用的号。
+  if (!/(^|;\s*)OSID=/.test(data.cookie)) {
+    const go = await modalConfirm({
+      title: '缺 OSID',
+      desc: '这串 cookie 里没有 OSID。gemini.google.com 现在要求这一项，缺了请求会被跳去登录页。请在已登录的 gemini.google.com 页面重新导出（F12 → 网络 → 任一发往 gemini.google.com 的请求 → 复制为 cURL）。',
+      confirmText: '仍然导入',
+    });
+    if (!go) return;
+  }
   const r = await fetch('api/cookies', {
     method: 'POST', credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
@@ -2237,6 +2246,8 @@ const I18N_EN = {
   '未命名': 'Unnamed',
   '缺 TS': 'Missing TS',
   '缺 OSID': 'Missing OSID',
+  '这串 cookie 里没有 OSID。gemini.google.com 现在要求这一项，缺了请求会被跳去登录页。请在已登录的 gemini.google.com 页面重新导出（F12 → 网络 → 任一发往 gemini.google.com 的请求 → 复制为 cURL）。': 'This cookie has no OSID. gemini.google.com now requires it and redirects requests to the sign-in page without it. Re-export on a signed-in gemini.google.com page (F12 → Network → any request to gemini.google.com → Copy as cURL).',
+  '仍然导入': 'Import anyway',
   '缺 OSID：gemini.google.com 现在要求这一项，缺了会被跳去登录页。请在 gemini.google.com 页面重新导出': 'Missing OSID: gemini.google.com now requires it and redirects to the sign-in page without it. Re-export the cookies on a gemini.google.com page',
   'gemini.google.com 自己的登录 cookie，缺了会被跳去登录页': "gemini.google.com's own login cookie; without it you are redirected to the sign-in page",
   '缺 __Secure-1PSIDTS，首次保活会尝试补发；失败请用 Firefox 重新导出': 'Missing __Secure-1PSIDTS; first keepalive will try to mint one. If that fails, re-export from Firefox',
