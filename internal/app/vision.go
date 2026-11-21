@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	fhttp "github.com/bogdanfinn/fhttp"
 )
 
 // 读图 / 读视频：把客户端传来的图片或视频上传成附件，再在对话里引用。
@@ -263,17 +265,9 @@ func fetchImage(src, proxyURL string, idx int) (pendingUpload, error) {
 	}
 	clientTimeout := time.Duration(timeoutSec) * time.Second
 
-	checkRedirect := func(req *http.Request, via []*http.Request) error {
-		if len(via) >= 5 {
-			return fmt.Errorf("stopped after 5 redirects")
-		}
-		if err := validateExternalURL(req.URL.String(), proxyURL); err != nil {
-			return fmt.Errorf("redirect target blocked: %w", err)
-		}
-		return nil
-	}
+	var body []byte
+	var ctype string
 
-	var client *http.Client
 	if proxyURL != "" {
 		u, err := url.Parse(proxyURL)
 		if err != nil {
@@ -286,36 +280,56 @@ func fetchImage(src, proxyURL string, idx int) (pendingUpload, error) {
 			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
 		}
-		client = &http.Client{
-			Timeout:       clientTimeout,
-			Transport:     tr,
-			CheckRedirect: checkRedirect,
+		client := &http.Client{
+			Timeout:   clientTimeout,
+			Transport: tr,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if len(via) >= 5 {
+					return fmt.Errorf("stopped after 5 redirects")
+				}
+				if err := validateExternalURL(req.URL.String(), proxyURL); err != nil {
+					return fmt.Errorf("redirect target blocked: %w", err)
+				}
+				return nil
+			},
+		}
+		req, err := http.NewRequest("GET", src, nil)
+		if err != nil {
+			return pendingUpload{}, err
+		}
+		applyChromeHeaders(req)
+		resp, err := client.Do(req)
+		if err != nil {
+			return pendingUpload{}, fmt.Errorf("image %d: fetch failed: %w", idx, err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != 200 {
+			return pendingUpload{}, fmt.Errorf("image %d: fetch returned HTTP %d", idx, resp.StatusCode)
+		}
+		ctype = resp.Header.Get("Content-Type")
+		body, err = io.ReadAll(io.LimitReader(resp.Body, maxImageBytes+1))
+		if err != nil {
+			return pendingUpload{}, err
 		}
 	} else {
-		client = &http.Client{
-			Timeout:       clientTimeout,
-			Transport:     directImageTransport,
-			CheckRedirect: checkRedirect,
+		req, err := fhttp.NewRequest("GET", src, nil)
+		if err != nil {
+			return pendingUpload{}, err
 		}
-	}
-
-	req, err := http.NewRequest("GET", src, nil)
-	if err != nil {
-		return pendingUpload{}, err
-	}
-	applyChromeHeaders(req)
-	resp, err := client.Do(req)
-	if err != nil {
-		return pendingUpload{}, fmt.Errorf("image %d: fetch failed: %w", idx, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return pendingUpload{}, fmt.Errorf("image %d: fetch returned HTTP %d", idx, resp.StatusCode)
-	}
-	ctype := resp.Header.Get("Content-Type")
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxImageBytes+1))
-	if err != nil {
-		return pendingUpload{}, err
+		applyBrowserFHeaders(req)
+		resp, err := getTLSClient().Do(req)
+		if err != nil {
+			return pendingUpload{}, fmt.Errorf("image %d: fetch failed: %w", idx, err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != 200 {
+			return pendingUpload{}, fmt.Errorf("image %d: fetch returned HTTP %d", idx, resp.StatusCode)
+		}
+		ctype = resp.Header.Get("Content-Type")
+		body, err = io.ReadAll(io.LimitReader(resp.Body, maxImageBytes+1))
+		if err != nil {
+			return pendingUpload{}, err
+		}
 	}
 
 	if i := strings.Index(ctype, ";"); i > 0 {

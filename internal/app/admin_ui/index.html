@@ -809,8 +809,9 @@ const pages = {
                   : '<span class="badge ok">正常</span>'
                 }</td>
                 <td class="nw" title="${LANG === 'en' ? 'Total ' + a.cookie_count + ' cookies, key items: ' + (a.key_cookies||[]).join(' / ') : '共 ' + a.cookie_count + ' 个 cookie，关键项：' + (a.key_cookies||[]).join(' / ')}">
-                  <span class="badge ${a.has_1psidts ? 'ok' : 'warn'}">${(a.key_cookies||[]).length}/9 项</span>
+                  <span class="badge ${a.has_1psidts && a.has_osid ? 'ok' : 'warn'}">${(a.key_cookies||[]).length}/10 项</span>
                   ${a.has_1psidts ? '' : '<span class="badge warn" title="缺 __Secure-1PSIDTS，首次保活会尝试补发；失败请用 Firefox 重新导出">缺 TS</span>'}
+                  ${a.has_osid ? '' : '<span class="badge warn" title="缺 OSID：gemini.google.com 现在要求这一项，缺了会被跳去登录页。请在 gemini.google.com 页面重新导出">缺 OSID</span>'}
                 </td>
                 <td class="pre nw">${a.sapisid_tail ? '…' + escapeHtml(a.sapisid_tail) : '—'}</td>
                 <td class="num nw">${a.fail_count > 0 ? '<span class="badge fail">' + a.fail_count + '</span>' : 0}</td>
@@ -821,7 +822,7 @@ const pages = {
                     <button class="btn muted" onclick="checkCookieAcct(${a.id}, this)">检测</button>
                     <button class="btn muted" onclick="rotateCookieAcct(${a.id}, this)">保活</button>
                     <button class="btn muted" onclick="toggleCookieAcct(${a.id})">${a.status === 'enabled' ? '禁用' : '启用'}</button>
-                    <button class="btn muted" onclick="editCookieAcct(${a.id}, ${JSON.stringify(a.label || '').replace(/"/g, '&quot;')}, ${JSON.stringify(a.note || '').replace(/"/g, '&quot;')}, ${a.authuser || 0})">编辑</button>
+                    <button class="btn muted" onclick="editCookieAcct(${a.id}, ${JSON.stringify(a.label || '').replace(/"/g, '&quot;')}, ${JSON.stringify(a.note || '').replace(/"/g, '&quot;')}, ${a.authuser || 0}, ${a.proxy_id || 0})">编辑</button>
                     <button class="btn danger" onclick="delCookieAcct(${a.id})">删除</button>
                   </span>
                 </td>
@@ -1263,7 +1264,7 @@ const RT_GROUPS = [
       { k: 'temporary_chat', label: '临时对话', type: 'bool',
         hint: '走网页端原生「临时对话」（inner[45]=1）：会话压根不进账号的会话列表、不用于训练，比「自动删网页会话」更干净，还省掉那次删除请求。只登录态有意义；开了「服务端多轮续接」时不生效（临时对话不留列表，多轮要靠服务端留会话）' },
       { k: 'multi_turn', label: '服务端多轮续接', type: 'bool',
-        hint: '走 Gemini 原生服务端多轮：按历史前缀认出这是上一轮的续接，命中就只发最新一句、历史留在服务端，同一串对话复用同一个 gemini 会话（不再每发一条就新开一个）。匿名/登录都行，带图或带工具时不生效。首轮/重启/改历史会退回整段重发。默认关' },
+        hint: '按完整历史匹配会话，命中后复用原账号，只发送全部新增消息。支持 function calling 和多条工具结果；图片输入、媒体模型不生效。保持历史、模型和工具配置稳定。会话状态保存在内存，空闲 90 分钟或重启后重建。续接命中不代表 Google 模型缓存命中。默认关' },
       { k: 'image_upscale', label: '生图下载原图/放大', type: 'bool',
         hint: '出图后照网页「下载」按钮那样取图：Ultra 号的图会放大到宽高各 2 倍（1376×768 → 2752×1536），普通号拿到未重新压缩的原始文件（尺寸不变、画质更好）。每张图多一次请求，返回体积大几倍。只登录态生效，取不到就退回原来那张，不会重新生成。默认关' },
       { k: 'anon_first', label: '匿名优先', type: 'bool',
@@ -1277,6 +1278,8 @@ const RT_GROUPS = [
         hint: '代理连续失败 5 次后歇多久再放回池子。实测被拦的出口 106-121 分钟自恢复，默认 120；0=不恢复，要去代理池页面手动重置' },
       { k: 'fallback_direct', label: '无可用代理时退回直连', type: 'bool',
         hint: '关：直接返回 429，本机 IP 不会暴露给上游（默认）。开：可用性优先，但上游会看到本机真实出口' },
+      { k: 'strict_proxy_binding', label: '账号严格绑定出口', type: 'bool',
+        hint: '每个号第一次用到哪个代理就绑定哪个。关：绑定的代理满了或在熔断冷却时换别的出口并重新绑定，可用性优先（默认）。开：这时只换号、不换出口，号都出不去就返回 429；同一个号始终从同一个 IP 出去。代理被删除或手动禁用时仍会重新绑定。在 Cookie 池里可以手动指定绑定' },
       { k: 'fallback_anon', label: 'cookie 失效时降级匿名', type: 'bool',
         hint: '关：直接报错，能立刻发现该换号了（默认）。开：继续跑，但要登录的模型会被静默降级成 3.5 Flash-Lite、思考链消失，客户端看不出来' },
       { k: 'strict_model', label: '严格模型校验', type: 'bool',
@@ -1469,6 +1472,7 @@ const COOKIE_KEYS = [
   { k: 'SAPISID', req: true, hint: '算授权头用，缺了会被当匿名' },
   { k: '__Secure-1PSIDTS', hint: '约 30 分钟过期，保活会自动换发' },
   { k: 'SID' }, { k: 'HSID' }, { k: 'SSID' }, { k: 'APISID' },
+  { k: 'OSID', hint: 'gemini.google.com 自己的登录 cookie，缺了会被跳去登录页' },
 ];
 
 // 把 "k=v; k=v" 拆成对象。值里可能含 '='（base64 补位），所以只在第一个等号处切。
@@ -1612,6 +1616,15 @@ async function addCookieAcct() {
     },
   });
   if (!data) return;
+  // 只提醒不拦：OSID 2026-11 才变成必需，判据只来自一个号的实测，硬拦可能挡掉能用的号。
+  if (!/(^|;\s*)OSID=/.test(data.cookie)) {
+    const go = await modalConfirm({
+      title: '缺 OSID',
+      desc: '这串 cookie 里没有 OSID。gemini.google.com 现在要求这一项，缺了请求会被跳去登录页。请在已登录的 gemini.google.com 页面重新导出（F12 → 网络 → 任一发往 gemini.google.com 的请求 → 复制为 cURL）。',
+      confirmText: '仍然导入',
+    });
+    if (!go) return;
+  }
   const r = await fetch('api/cookies', {
     method: 'POST', credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
@@ -1631,22 +1644,32 @@ function parseAuthUser(v) {
   return parseInt(s, 10);
 }
 
-async function editCookieAcct(id, label, note, authuser) {
+async function editCookieAcct(id, label, note, authuser, proxyId) {
+  const proxies = (await api('api/proxies')).items || [];
+  const proxyOptions = [{ value: '0', label: '自动（第一次用到哪个代理就绑哪个）' }]
+    .concat(proxies.map(p => ({ value: String(p.id), label: '#' + p.id + ' ' + (p.name || p.url) + (p.enabled ? '' : '（已禁用）') })));
+  const fields = [
+    { name: 'label', label: '标签', value: label || '', placeholder: '账号邮箱' },
+    { name: 'authuser', label: '账号序号', value: String(authuser || 0),
+      hint: '浏览器里同时登了多个 Google 号时用：地址栏 /u/1/ 填 1，没有 /u/ 填 0。' },
+    { name: 'note', label: '备注', value: note || '', placeholder: '可留空' },
+  ];
+  if (proxies.length) {
+    fields.push({ name: 'proxy_id', label: '绑定出口', value: String(proxyId || 0), options: proxyOptions,
+      hint: '这个号固定从哪个代理出去。配合设置里的「账号严格绑定出口」，绑定的代理满了也不会换 IP。' });
+  }
   const data = await modalForm({
     title: '编辑 Cookie #' + id,
-    desc: '只改标签、备注和账号序号，不动 cookie 本身。要换 cookie 请删掉重新导入。',
-    fields: [
-      { name: 'label', label: '标签', value: label || '', placeholder: '账号邮箱' },
-      { name: 'authuser', label: '账号序号', value: String(authuser || 0),
-        hint: '浏览器里同时登了多个 Google 号时用：地址栏 /u/1/ 填 1，没有 /u/ 填 0。' },
-      { name: 'note', label: '备注', value: note || '', placeholder: '可留空' },
-    ],
+    desc: '只改标签、备注、账号序号和绑定出口，不动 cookie 本身。要换 cookie 请删掉重新导入。',
+    fields,
   });
   if (!data) return;
   const au = parseAuthUser(data.authuser);
   if (au === null) return flash(t('账号序号要填 0 到 9 的整数'));
+  const body = { label: data.label, note: data.note, authuser: au };
+  if (data.proxy_id !== undefined) body.proxy_id = parseInt(data.proxy_id, 10) || 0;
   const j = await api('api/cookies/' + id, {
-    method: 'PATCH', body: JSON.stringify({ label: data.label, note: data.note, authuser: au }),
+    method: 'PATCH', body: JSON.stringify(body),
   });
   if (j.error) return flash(t('保存失败：') + t(j.error));
   flash(t('已保存'));
@@ -1930,9 +1953,11 @@ function modalForm({ title, desc, fields, submitText = '提交' }) {
   const html = fields.map(f => `
     <div class="field">
       <label>${escapeHtml(t(f.label))}${f.required ? ' *' : ''}</label>
-      <input data-name="${escapeHtml(f.name)}" type="${f.password ? 'password' : 'text'}"
+      ${f.options ? `<select data-name="${escapeHtml(f.name)}">${f.options.map(o =>
+        `<option value="${escapeHtml(o.value)}"${o.value === f.value ? ' selected' : ''}>${escapeHtml(t(o.label))}</option>`).join('')}</select>`
+      : `<input data-name="${escapeHtml(f.name)}" type="${f.password ? 'password' : 'text'}"
              placeholder="${escapeHtml(t(f.placeholder || ''))}"
-             value="${escapeHtml(f.value || '')}" />
+             value="${escapeHtml(f.value || '')}" />`}
       ${f.hint ? `<div class="hint">${escapeHtml(t(f.hint))}</div>` : ''}
     </div>`).join('');
   return buildModal({
@@ -2421,6 +2446,7 @@ const I18N_EN = {
   '启动参数': 'CLI args',
   'cookie 已失效：页面能打开但没有登录态，请求会被当匿名处理': 'Cookie expired: page opens but has no login state; requests will be treated as anonymous',
   'cookie 无效：被重定向到登录页': 'Cookie invalid: redirected to login page',
+  'cookie 缺 OSID：gemini.google.com 现在要求这一项，请在 gemini.google.com 页面重新导出': 'Cookie is missing OSID: gemini.google.com now requires it. Re-export the cookies on a gemini.google.com page',
   '出口被上游限流，换个代理再试（不是 cookie 的问题）': 'Egress rate limited by upstream, try another proxy (not a cookie issue)',
   '匿名 /app 没返回 Set-Cookie': 'Anonymous /app did not return Set-Cookie',
   'impersonate 不能为空': 'impersonate cannot be empty',
@@ -2626,6 +2652,11 @@ const I18N_EN = {
   '最近成功': 'Last success',
   '未命名': 'Unnamed',
   '缺 TS': 'Missing TS',
+  '缺 OSID': 'Missing OSID',
+  '这串 cookie 里没有 OSID。gemini.google.com 现在要求这一项，缺了请求会被跳去登录页。请在已登录的 gemini.google.com 页面重新导出（F12 → 网络 → 任一发往 gemini.google.com 的请求 → 复制为 cURL）。': 'This cookie has no OSID. gemini.google.com now requires it and redirects requests to the sign-in page without it. Re-export on a signed-in gemini.google.com page (F12 → Network → any request to gemini.google.com → Copy as cURL).',
+  '仍然导入': 'Import anyway',
+  '缺 OSID：gemini.google.com 现在要求这一项，缺了会被跳去登录页。请在 gemini.google.com 页面重新导出': 'Missing OSID: gemini.google.com now requires it and redirects to the sign-in page without it. Re-export the cookies on a gemini.google.com page',
+  'gemini.google.com 自己的登录 cookie，缺了会被跳去登录页': "gemini.google.com's own login cookie; without it you are redirected to the sign-in page",
   '缺 __Secure-1PSIDTS，首次保活会尝试补发；失败请用 Firefox 重新导出': 'Missing __Secure-1PSIDTS; first keepalive will try to mint one. If that fails, re-export from Firefox',
   '约 30 分钟过期，保活会自动换发': 'Expires in ~30 minutes; keepalive rotates it automatically',
   '检测': 'Check',
@@ -2655,6 +2686,9 @@ const I18N_EN = {
   '自动跟随 bl 版本': 'Auto-follow bl version',
   '熔断冷却（分钟）': 'Circuit-breaker cooldown (min)',
   '无可用代理时退回直连': 'Fall back to direct when no proxy is available',
+  '账号严格绑定出口': 'Strict account-to-proxy binding',
+  '每个号第一次用到哪个代理就绑定哪个。关：绑定的代理满了或在熔断冷却时换别的出口并重新绑定，可用性优先（默认）。开：这时只换号、不换出口，号都出不去就返回 429；同一个号始终从同一个 IP 出去。代理被删除或手动禁用时仍会重新绑定。在 Cookie 池里可以手动指定绑定':
+    'Each account is bound to the first proxy it uses. Off: when the bound proxy is full or cooling down after failures, another proxy is used and the binding moves (availability first, default). On: another account is used instead and the proxy never changes; if no account can go out, it returns 429. An account always leaves from the same IP. Deleting or disabling a proxy still allows rebinding. The binding can be set manually in the Cookie pool',
   'cookie 失效时降级匿名': 'Downgrade to anonymous when cookie fails',
   '严格模型校验': 'Strict model check',
   '开：服务端自报的模型跟请求的不一致时（通常是这个号这一档额度用完、被静默降级），不把降级后的回答当成功返回，而是换下一个号重试；全池都被降级就回 429 insufficient_quota（code: model_downgraded）。流式在吐出第一个字之前就判断。关：照常返回降级后的回答（默认）':
@@ -2727,6 +2761,10 @@ const I18N_EN = {
   'cookie 里没有 SAPISID，多半没复制全': 'No SAPISID in the cookie — you probably did not copy it all',
   '导入': 'Import',
   '只改标签、备注和账号序号，不动 cookie 本身。要换 cookie 请删掉重新导入。': 'Edits only the label, note and account index, not the cookie itself. To replace the cookie, delete and re-import.',
+  '只改标签、备注、账号序号和绑定出口，不动 cookie 本身。要换 cookie 请删掉重新导入。': 'Edits only the label, note, account index and bound proxy, not the cookie itself. To replace the cookie, delete and re-import.',
+  '绑定出口': 'Bound proxy',
+  '自动（第一次用到哪个代理就绑哪个）': 'Automatic (bind to the first proxy used)',
+  '这个号固定从哪个代理出去。配合设置里的「账号严格绑定出口」，绑定的代理满了也不会换 IP。': 'Which proxy this account always uses. With "Strict account-to-proxy binding" on in Settings, it will not switch IP even when that proxy is full.',
   '账号序号': 'Account index',
   '浏览器里同时登了多个 Google 号才需要改：打开那个号的 Gemini，地址栏是 /u/1/ 就填 1，没有 /u/ 就是 0。同一串 cookie 想当几个号用，就导入几次、各填各的序号。':
     'Only needed when several Google accounts are signed in to the same browser: open Gemini as that account — if the address bar shows /u/1/, enter 1; no /u/ means 0. To use one cookie string as several accounts, import it once per account with its own index.',
@@ -2761,8 +2799,8 @@ const I18N_EN = {
   '走网页端原生「临时对话」（inner[45]=1）：会话压根不进账号的会话列表、不用于训练，比「自动删网页会话」更干净，还省掉那次删除请求。只登录态有意义；开了「服务端多轮续接」时不生效（临时对话不留列表，多轮要靠服务端留会话）':
     'Uses web-native "Temporary Chat" (inner[45]=1): conversations never enter account history and are not used for training. Cleaner than auto-delete and eliminates the delete request. Effective only when logged in; inactive if "Server multi-turn resume" is enabled (temporary chat leaves no history, multi-turn requires server sessions)',
   '服务端多轮续接': 'Server multi-turn resume',
-  '走 Gemini 原生服务端多轮：按历史前缀认出这是上一轮的续接，命中就只发最新一句、历史留在服务端，同一串对话复用同一个 gemini 会话（不再每发一条就新开一个）。匿名/登录都行，带图或带工具时不生效。首轮/重启/改历史会退回整段重发。默认关':
-    'Uses Gemini native server-side multi-turn: recognizes prior context by history prefix, sending only the latest turn while upstream maintains history. Reuses the same Gemini session across conversation turns. Works for anonymous and logged-in; inactive with images or tools. Falls back to full replay on first turn, restart, or edited history. Default off',
+  '按完整历史匹配会话，命中后复用原账号，只发送全部新增消息。支持 function calling 和多条工具结果；图片输入、媒体模型不生效。保持历史、模型和工具配置稳定。会话状态保存在内存，空闲 90 分钟或重启后重建。续接命中不代表 Google 模型缓存命中。默认关':
+    'Matches sessions against full history, reuses the original account and sends all new messages. Supports function calling and batches of tool results; inactive with image input or media models. Keep history, model and tool configuration stable. State stays in memory and is rebuilt after 90 idle minutes or a restart. Session reuse does not indicate a Google model cache hit. Off by default',
   '生图下载原图/放大': 'Full-size image download',
   '出图后照网页「下载」按钮那样取图：Ultra 号的图会放大到宽高各 2 倍（1376×768 → 2752×1536），普通号拿到未重新压缩的原始文件（尺寸不变、画质更好）。每张图多一次请求，返回体积大几倍。只登录态生效，取不到就退回原来那张，不会重新生成。默认关':
     'Fetches generated images the way the web app\'s Download button does: on Ultra accounts the image is upscaled 2× in each dimension (1376×768 → 2752×1536); other accounts get the original file instead of the recompressed preview (same size, better quality). One extra request per image and a several-times larger response. Signed-in only; if it fails the regular image is returned, nothing is regenerated. Off by default',

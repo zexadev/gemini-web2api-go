@@ -44,32 +44,25 @@ var (
 	convStore = map[string]*convState{}
 )
 
-// convDelete 作废一路会话（续接失败时用，避免客户端重试还撞同一路死会话）。
-func convDelete(key string) {
-	if key == "" {
-		return
-	}
-	convMu.Lock()
-	delete(convStore, key)
-	convMu.Unlock()
-}
-
-// convGet 取一路会话，顺带清掉过期的。
-func convGet(key string) *convState {
-	if key == "" {
-		return nil
-	}
+// convTake atomically consumes the longest matching proper prefix. A state is
+// never left under an old fingerprint after Google advances it: concurrent
+// duplicates and forks start fresh instead of mutating the same upstream turn.
+func convTake(keys []string) (*convState, int) {
 	convMu.Lock()
 	defer convMu.Unlock()
-	st, ok := convStore[key]
-	if !ok {
-		return nil
+	for i := len(keys) - 2; i >= 0; i-- {
+		st, ok := convStore[keys[i]]
+		if !ok {
+			continue
+		}
+		delete(convStore, keys[i])
+		if time.Since(st.updated) > convTTL {
+			continue
+		}
+		copy := *st
+		return &copy, i + 1
 	}
-	if time.Since(st.updated) > convTTL {
-		delete(convStore, key)
-		return nil
-	}
-	return st
+	return nil, 0
 }
 
 // convPut 存一路会话，超量就按最旧的淘汰一批。
@@ -79,8 +72,9 @@ func convPut(key string, st *convState) {
 	}
 	convMu.Lock()
 	defer convMu.Unlock()
-	st.updated = time.Now()
-	convStore[key] = st
+	snapshot := *st
+	snapshot.updated = time.Now()
+	convStore[key] = &snapshot
 	if len(convStore) > convMax {
 		// 简单淘汰：删掉过期的；还超就删最旧的一小批。
 		var oldestK string
@@ -101,39 +95,16 @@ func convPut(key string, st *convState) {
 	}
 }
 
-// canonicalMessages 把消息列表压成 role+text 的稳定串，用来算会话指纹。
-// 只取 role 和文本内容 —— 客户端每轮重发同样的历史，压出来的串一致才能识别续接。
+// canonicalMessages retains the semantic message structure, including tools.
+// JSON escaping makes embedded control characters unambiguous.
 func canonicalMessages(messages []map[string]interface{}) string {
-	var b strings.Builder
-	for _, m := range messages {
-		b.WriteString(getStr(m, "role"))
-		b.WriteByte(0x1f)
-		b.WriteString(contentToString(m["content"]))
-		b.WriteByte(0x1e)
-	}
-	return b.String()
+	b, _ := json.Marshal(normalizeConversationMessages(messages))
+	return string(b)
 }
 
 func hashStr(s string) string {
 	h := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(h[:])
-}
-
-// convParentKey 是"这轮之前的历史"的指纹：除最后一条消息外的全部。
-// 命中 store 说明这是某路已知会话的延续，只要发最后一条新消息即可。
-func convParentKey(messages []map[string]interface{}) string {
-	if len(messages) < 2 {
-		return ""
-	}
-	return hashStr(canonicalMessages(messages[:len(messages)-1]))
-}
-
-// convChildKey 是"这轮之后的历史"的指纹：历史 + 本轮模型回复。
-// 下一轮请求的 parentKey 会正好等于它（客户端把我们的回复原样带回来），从而续上。
-func convChildKey(messages []map[string]interface{}, responseText string) string {
-	full := append(append([]map[string]interface{}{}, messages...),
-		map[string]interface{}{"role": "assistant", "content": responseText})
-	return hashStr(canonicalMessages(full))
 }
 
 var rcidRe = regexp.MustCompile(`"(rc_[A-Za-z0-9_-]{6,})"`)
@@ -197,6 +168,9 @@ func getAnonSession(proxyURL string) (string, error) {
 				return nil, nil, nil, err
 			}
 			applyChromeHeaders(r)
+			for k, v := range appPageHeaders() {
+				r.Header.Set(k, v)
+			}
 			resp, err := getStdlibClient(proxyURL).Do(r)
 			if err != nil {
 				return nil, nil, nil, err
@@ -207,7 +181,10 @@ func getAnonSession(proxyURL string) (string, error) {
 		if err != nil {
 			return nil, nil, nil, err
 		}
-		r.Header.Set("User-Agent", currentBrowserUA())
+		applyBrowserFHeaders(r)
+		for k, v := range appPageHeaders() {
+			r.Header.Set(k, v)
+		}
 		resp, err := getTLSClient().Do(r)
 		if err != nil {
 			return nil, nil, nil, err
@@ -238,10 +215,6 @@ func getAnonSession(proxyURL string) (string, error) {
 	}
 	return strings.Join(pairs, "; "), nil
 }
-
-// webUA 是匿名 GET /app 的 User-Agent（tls-client 路径要手动带）。
-const webUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-	"(KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
 
 // streamGenerateConv 发一路会话的一轮。turn==0 是首轮（建会话），>0 是续接（只发新消息）。
 // 整条会话绑定 conv.cookie / conv.proxyID，中途不换号不换出口。成功后回填 conv 的
@@ -460,15 +433,20 @@ func streamGenerateConv(prompt string, mc ModelConfig, conv *convState,
 }
 
 // callGeminiConv 是多轮开启时的入口：按历史前缀识别续接。
-//   - 命中已知会话 → 只发最后一条新消息（user 或 tool 结果），历史留服务端（绕开字节墙）。
+//   - 命中已知历史前缀 → 发全部新增消息（user 或 tool 结果），历史留服务端。
 //   - 没命中 → 新建会话，首轮发全量拼接的历史（含 tools 指令，把当前上下文交给服务端）。
 //
 // 支持 tools（续接里也解析 ```tool_call``` 围栏）；图片走原单轮路径（callGemini）。
 func callGeminiConv(messages []map[string]interface{}, mc ModelConfig,
 	tools []map[string]interface{}, toolChoice interface{},
-	onDelta, onReasoning func(string)) (string, []ToolCall, *StreamResult, error) {
-	parentKey := convParentKey(messages)
-	conv := convGet(parentKey)
+	onDelta, onReasoning func(string), options ...conversationOptions) (string, []ToolCall, *StreamResult, error) {
+	messages = normalizeConversationMessages(messages)
+	var opt conversationOptions
+	if len(options) > 0 {
+		opt = options[0]
+	}
+	scope := convScopeKey(mc, tools, toolChoice, opt.requestScope)
+	conv, prefixLen := convTake(convPrefixKeys(messages, scope, opt.normalizeToolIDs))
 	fresh := conv == nil
 
 	var prompt string
@@ -478,8 +456,8 @@ func callGeminiConv(messages []map[string]interface{}, mc ModelConfig,
 		prompt, _ = messagesToPrompt(messages, tools, toolChoice)
 		logf("[conv] 新会话，首轮发 %d 字节（tools=%d）", len(prompt), len(tools))
 	} else {
-		prompt = formatNewTurn(messages[len(messages)-1])
-		logf("[conv] 续接命中 turn=%d，只发 %d 字节（历史留服务端）", conv.turn, len(prompt))
+		prompt = buildPrompt(messages[prefixLen:], nil, nil)
+		logf("[conv] 续接命中 turn=%d，只发 %d 字节（新增 %d 条消息，历史留服务端）", conv.turn, len(prompt), len(messages)-prefixLen)
 	}
 
 	// strict_model 换号只对新会话做：续接的会话绑死在原来的号上，降级了只记冷却、
@@ -515,16 +493,14 @@ func callGeminiConv(messages []map[string]interface{}, mc ModelConfig,
 				}
 			}
 		}
-		res, err = streamGenerateConv(prompt, mc, conv, onDelta, onReasoning)
+		res, err = runConversationTurn(prompt, mc, conv, onDelta, onReasoning)
 		if !retryOnAnotherAccount(res, err, mc, exclude) || !fresh {
 			break
 		}
 	}
 	if err != nil {
-		if !fresh {
-			// 续接失败：这路会话作废，客户端重试时会当新会话全量重发。
-			convDelete(parentKey)
-		}
+		// The old head was consumed before generation; an ambiguous failure must
+		// not restore it because the upstream may already have advanced.
 		return "", nil, res, err
 	}
 	text := extractResponseText(res.Raw)
@@ -533,23 +509,16 @@ func callGeminiConv(messages []map[string]interface{}, mc ModelConfig,
 		text, toolCalls = parseToolCalls(text)
 	}
 	if text == "" && len(toolCalls) == 0 {
-		if !fresh {
-			convDelete(parentKey)
-		}
 		return "", nil, res, fmt.Errorf("upstream returned no content frame (raw %d bytes)", len(res.Raw))
 	}
-	// 存续接状态：客户端下一轮把这段回复原样带回来时，parentKey 会命中这里。
-	// 存的是解析掉围栏后的正文 —— 客户端把 assistant 消息带回来时 content 也是这段。
-	convPut(convChildKey(messages, text), conv)
+	// Save the exact logical assistant turn, including tool calls. Only the new
+	// head is published; tool-only replies must remain distinguishable.
+	keys := convPrefixKeys(conversationMessagesWithReply(messages, text, toolCalls), scope, opt.normalizeToolIDs)
+	if len(keys) > 0 {
+		convPut(keys[len(keys)-1], conv)
+	}
 	return text, toolCalls, res, nil
 }
 
-// formatNewTurn 把续接要发的那条新消息格式化，跟 messagesToPrompt 里各角色的写法对齐，
-// 好让服务端历史里的模型认得出这是工具结果还是用户新话。
-func formatNewTurn(msg map[string]interface{}) string {
-	content := contentToString(msg["content"])
-	if getStr(msg, "role") == "tool" {
-		return fmt.Sprintf("[Tool result for %s]: %s", getStr(msg, "name"), content)
-	}
-	return content
-}
+// runConversationTurn is the upstream seam used by continuation regression tests.
+var runConversationTurn = streamGenerateConv

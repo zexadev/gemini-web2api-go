@@ -34,6 +34,8 @@ type Config struct {
 	ProxyCooldownMin int `json:"proxy_cooldown_min"`
 	// 代理池无可用出口时是否退回直连。默认 false。
 	FallbackDirect bool `json:"fallback_direct"`
+	// 账号绑定的代理不可用时是否只换号、不换出口。默认 false。
+	StrictProxyBinding bool `json:"strict_proxy_binding"`
 	// cookie 失效时是否降级成匿名继续跑。默认 false。
 	FallbackAnon bool `json:"fallback_anon"`
 	// 是否自动从 /app 页面抓最新 bl 版本号。默认 true。
