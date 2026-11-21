@@ -558,16 +558,21 @@ Cookie 池（按 URL、cookie 内容去重），之后一律从面板管理。�
 > 匿名反而不受影响——早期版本踩过这个坑。）
 
 1. 浏览器登录 [gemini.google.com](https://gemini.google.com)
-2. DevTools (F12) → Application → Cookies → `https://gemini.google.com`
-3. 复制：`SID` / `HSID` / `SSID` / `APISID` / `SAPISID` / `__Secure-1PSID` / `__Secure-1PSIDTS`
+2. 推荐整串复制：DevTools (F12) → 网络 → 任一发往 `gemini.google.com` 的请求 → 右键「复制为 cURL」，
+   取里面 `Cookie:` 那一整行。也可以 Application → Cookies → `https://gemini.google.com` 逐项抄
+3. 至少要有：`SID` / `HSID` / `SSID` / `APISID` / `SAPISID` / `__Secure-1PSID` / `__Secure-1PSIDTS` / **`OSID`**
 4. 粘进面板「Cookie 池 → 添加账号」；或写成 `cookie.txt` 后启动加
    `--cookie-file cookie.txt`（启动时导入池子，之后从面板管理）：
 ```
-SID=...; HSID=...; SSID=...; APISID=...; SAPISID=...; __Secure-1PSID=...; __Secure-1PSIDTS=...
+SID=...; HSID=...; SSID=...; APISID=...; SAPISID=...; __Secure-1PSID=...; __Secure-1PSIDTS=...; OSID=...
 ```
 
 JSON 形式 `{"cookie": "SID=...; ...", "sapisid": "..."}` 也吃。带 `SAPISID` 的请求会自动
 算 `SAPISIDHASH` 授权头，所以这一项不能少。
+
+> **`OSID` 必须有**（2026-11 起）。它是 gemini.google.com 自己域名下的 cookie，缺了打开 Gemini
+> 就被跳去 Google 登录页（`ServiceLogin?...&osid=1`），面板会标「缺 OSID」、检测会直接报缺 OSID。
+> 在 google.com 的页面上导出、或者只抄了上面前七项，都会漏掉它，要在 **gemini.google.com 的页面上**导出。
 
 **cookie 只有「Cookie 池」这一个入口**：每个请求按最久未用优先挑一个 enabled 账号，
 挑中即推进轮转。池子里有 enabled 账号，`gemini-4-hydrogen` 等要登录的模型就会出现在模型列表里。
@@ -783,6 +788,7 @@ docker-compose.yml         单容器，默认拉 ghcr 镜像，sqlite 挂 volume
 | 启动即退出，报 `unable to open database file (14)` | 容器以 nonroot(uid 65532) 运行，而 bind mount 的宿主目录属主是 root，写不进去 | 改用具名卷（compose 默认已是），或 `sudo chown -R 65532:65532 ./data` |
 | 选 `gemini-4-hydrogen` 等直接报错 | 没配 cookie 时要登录的模型不暴露，这是故意的 | 在面板「Cookie 池」导入 cookie 后即可用 |
 | 挂了 cookie 后请求全部 502 | cookie 已失效，取不到 XSRF token | 重新导出 cookie。判据：请求 `gemini-4-hydrogen` 若回报 3.5 Flash-Lite 就是失效了 |
+| 「检测」报 **302 → `accounts.google.com/ServiceLogin`**，所有号同时出现 | 多半缺 `OSID`（2026-11 起必需），面板会标「缺 OSID」 | 在已登录的 gemini.google.com 页面重新导出完整 cookie（「复制为 cURL」取 `Cookie:` 行） |
 | cookie 大约半小时就失效，保活没用 | Chrome 设备绑定会话，`__Secure-1PSIDTS` 换发 401 | 用 **Firefox** 重新登录再导出；点面板「保活」应能看到刷新了 `__Secure-1PSIDTS` |
 | 付费号的 cookie，付费模型却回报 4 Hydrogen 或 3.5 Flash-Lite，「检测」显示登录态有效 | 浏览器里登了多个 Google 号，订阅不在默认号上，请求落到了默认号 | 在 Cookie 池给这条填「账号序号」（那个号的 Gemini 地址栏 `/u/1/` 就填 1），见上文 |
 | 面板打不开 / 401 | `--admin-token`（或 `ADMIN_TOKEN`）没对上 | token 留空则不鉴权，只有绑 127.0.0.1 时才可接受 |

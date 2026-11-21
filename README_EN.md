@@ -523,14 +523,18 @@ Attaching a Google account cookie makes requests run as a signed-in session. Wha
 A signed-in session unlocks 4 Hydrogen + reasoning chain, image/video input, **image generation (`gemini-image`) / music (`gemini-music`)** (see "Image & music" above), **canvas (`gemini-canvas`)** — an interactive HTML document returned inline — and **video generation (`gemini-video`, needs a Pro account)**. Deep research also needs a signed-in session but **is not implemented here yet**.
 
 1. Sign in to [gemini.google.com](https://gemini.google.com)
-2. DevTools (F12) → Application → Cookies → `https://gemini.google.com`
-3. Copy: `SID` / `HSID` / `SSID` / `APISID` / `SAPISID` / `__Secure-1PSID` / `__Secure-1PSIDTS`
+2. Recommended: copy the whole string. DevTools (F12) → Network → any request to `gemini.google.com` → right-click "Copy as cURL", and take the full `Cookie:` line. You can also copy items one by one from Application → Cookies → `https://gemini.google.com`
+3. It must contain at least: `SID` / `HSID` / `SSID` / `APISID` / `SAPISID` / `__Secure-1PSID` / `__Secure-1PSIDTS` / **`OSID`**
 4. Add it in the panel under Cookie pool → Add account, or write it to `cookie.txt` and start with `--cookie-file cookie.txt` (imported into the pool at startup, managed from the panel afterwards):
 ```
-SID=...; HSID=...; SSID=...; APISID=...; SAPISID=...; __Secure-1PSID=...; __Secure-1PSIDTS=...
+SID=...; HSID=...; SSID=...; APISID=...; SAPISID=...; __Secure-1PSID=...; __Secure-1PSIDTS=...; OSID=...
 ```
 
 The JSON form `{"cookie": "SID=...; ...", "sapisid": "..."}` is also accepted. Requests carrying `SAPISID` get a computed `SAPISIDHASH` authorization header, so that entry cannot be missing.
+
+> **`OSID` is required** (since 2026-11). It is a cookie of the gemini.google.com host itself; without it, opening Gemini
+> redirects to the Google sign-in page (`ServiceLogin?...&osid=1`). The panel marks such accounts "Missing OSID" and the check reports it directly.
+> Exporting from a google.com page, or copying only the first seven items above, drops it. Export **on a gemini.google.com page**.
 
 **The Cookie pool page is the only place cookies live.** Each request picks an enabled account least-recently-used first and advances the rotation. As soon as the pool holds an enabled account, `gemini-4-hydrogen` and the other login-only models appear in the model list.
 
@@ -710,6 +714,7 @@ docker-compose.yml         single container, pulls the ghcr image by default, sq
 | Exits at startup with `unable to open database file (14)` | The container runs as nonroot (uid 65532) but the bind-mounted host directory is owned by root, so it can't be written | Use a named volume (the default in compose), or `sudo chown -R 65532:65532 ./data` |
 | `gemini-4-hydrogen` etc. error out immediately | Login-only models aren't exposed without a cookie, by design | Add an account on the Cookie pool page and they become available |
 | Every request returns 502 after attaching a cookie | The cookie expired, so the XSRF token can't be fetched | Re-export the cookie. Quick check: if `gemini-4-hydrogen` reports 3.5 Flash-Lite, it's expired |
+| "Check" reports **302 → `accounts.google.com/ServiceLogin`** on every account at once | Most likely `OSID` is missing (required since 2026-11); the panel marks it "Missing OSID" | Re-export the full cookie on a signed-in gemini.google.com page ("Copy as cURL", take the `Cookie:` line) |
 | Cookie dies in about 30 minutes; keepalive does nothing | Chrome device-bound session; rotating `__Secure-1PSIDTS` returns 401 | Re-login in **Firefox** and export again. The panel Keep-alive button should report that `__Secure-1PSIDTS` was refreshed |
 | Cookie from a paid account, but paid models report 4 Hydrogen or 3.5 Flash-Lite and "check" says the session is valid | Several Google accounts are signed in to the browser and the subscription isn't on the default one, so requests land on the default account | Set the "account index" for that entry in the Cookie pool (`/u/1/` in that account's Gemini address bar means 1); see above |
 | Panel won't open / 401 | `--admin-token` (or `ADMIN_TOKEN`) doesn't match | An empty token disables auth, which is only acceptable when bound to 127.0.0.1 |
