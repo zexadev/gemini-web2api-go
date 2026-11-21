@@ -714,8 +714,9 @@ const pages = {
                   : '<span class="badge ok">正常</span>'
                 }</td>
                 <td class="nw" title="${LANG === 'en' ? 'Total ' + a.cookie_count + ' cookies, key items: ' + (a.key_cookies||[]).join(' / ') : '共 ' + a.cookie_count + ' 个 cookie，关键项：' + (a.key_cookies||[]).join(' / ')}">
-                  <span class="badge ${a.has_1psidts ? 'ok' : 'warn'}">${(a.key_cookies||[]).length}/9 项</span>
+                  <span class="badge ${a.has_1psidts && a.has_osid ? 'ok' : 'warn'}">${(a.key_cookies||[]).length}/10 项</span>
                   ${a.has_1psidts ? '' : '<span class="badge warn" title="缺 __Secure-1PSIDTS，首次保活会尝试补发；失败请用 Firefox 重新导出">缺 TS</span>'}
+                  ${a.has_osid ? '' : '<span class="badge warn" title="缺 OSID：gemini.google.com 现在要求这一项，缺了会被跳去登录页。请在 gemini.google.com 页面重新导出">缺 OSID</span>'}
                 </td>
                 <td class="pre nw">${a.sapisid_tail ? '…' + escapeHtml(a.sapisid_tail) : '—'}</td>
                 <td class="num nw">${a.fail_count > 0 ? '<span class="badge fail">' + a.fail_count + '</span>' : 0}</td>
@@ -1262,6 +1263,7 @@ const COOKIE_KEYS = [
   { k: 'SAPISID', req: true, hint: '算授权头用，缺了会被当匿名' },
   { k: '__Secure-1PSIDTS', hint: '约 30 分钟过期，保活会自动换发' },
   { k: 'SID' }, { k: 'HSID' }, { k: 'SSID' }, { k: 'APISID' },
+  { k: 'OSID', hint: 'gemini.google.com 自己的登录 cookie，缺了会被跳去登录页' },
 ];
 
 // 把 "k=v; k=v" 拆成对象。值里可能含 '='（base64 补位），所以只在第一个等号处切。
@@ -2234,6 +2236,9 @@ const I18N_EN = {
   '最近成功': 'Last success',
   '未命名': 'Unnamed',
   '缺 TS': 'Missing TS',
+  '缺 OSID': 'Missing OSID',
+  '缺 OSID：gemini.google.com 现在要求这一项，缺了会被跳去登录页。请在 gemini.google.com 页面重新导出': 'Missing OSID: gemini.google.com now requires it and redirects to the sign-in page without it. Re-export the cookies on a gemini.google.com page',
+  'gemini.google.com 自己的登录 cookie，缺了会被跳去登录页': "gemini.google.com's own login cookie; without it you are redirected to the sign-in page",
   '缺 __Secure-1PSIDTS，首次保活会尝试补发；失败请用 Firefox 重新导出': 'Missing __Secure-1PSIDTS; first keepalive will try to mint one. If that fails, re-export from Firefox',
   '约 30 分钟过期，保活会自动换发': 'Expires in ~30 minutes; keepalive rotates it automatically',
   '检测': 'Check',

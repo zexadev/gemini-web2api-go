@@ -342,6 +342,7 @@ func dropSeededCookie(prevCookie string) {
 // 顺序必须确定：同一份 cookie 若因键顺序不同拼出两种串，按内容去重就失效了。
 var cookieTemplateOrder = []string{
 	"SID", "HSID", "SSID", "APISID", "SAPISID", "__Secure-1PSID", "__Secure-1PSIDTS",
+	"OSID",
 }
 
 // normalizeCookie 把各种输入形态归一化成池子要的裸 "k=v; k=v" 串。

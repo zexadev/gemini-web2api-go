@@ -15,7 +15,7 @@ import (
 // 每请求必带的登录态项。这里只挑最能反映"复制全没全"的几个来展示，不是说
 // 别的不重要 —— 我们把整串原样转发，少一个就是少发一个。
 var keyCookieWants = []string{"SID", "HSID", "SSID", "APISID", "SAPISID",
-	"__Secure-1PSID", "__Secure-1PSIDTS", "__Secure-1PAPISID", "__Secure-1PSIDCC"}
+	"__Secure-1PSID", "__Secure-1PSIDTS", "__Secure-1PAPISID", "__Secure-1PSIDCC", "OSID"}
 
 // cookieAcctView 是账号的脱敏视图：**不含完整 cookie 值**，只回状态摘要。
 // 凭证没必要从服务端再发回浏览器一次（跟旧 handleAdminCookie 同原则）。
@@ -66,6 +66,7 @@ func cookieAcctView(a CookieAccount) map[string]interface{} {
 		"key_cookies":  key,
 		"sapisid_tail": tail,
 		"has_1psidts":  nameSet["__Secure-1PSIDTS"],
+		"has_osid":     nameSet["OSID"],
 		"proxy_id":     a.ProxyID,
 		"proxy_name":   proxyNameByID(a.ProxyID),
 		"authuser":     a.AuthUser,
