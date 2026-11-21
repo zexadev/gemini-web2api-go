@@ -278,6 +278,10 @@ func writeGeminiError(w http.ResponseWriter, code int, msg string) {
 
 // writeGeminiCallError 跟 OpenAI 那两条路同一套分流：降级 429、超长 400、限流 429、其余 502。
 func writeGeminiCallError(w http.ResponseWriter, err error) {
+	if isGeminiRefusalError(err) {
+		writeGeminiError(w, 422, err.Error())
+		return
+	}
 	switch e := err.(type) {
 	case *ModelDowngradedError:
 		if e.RetryAfter > 0 {
@@ -479,9 +483,11 @@ type geminiCall struct {
 	images     []pendingUpload
 	prompt     string
 	latest     string
+	refusal    bool
 }
 
 func prepareGemini(w http.ResponseWriter, r *http.Request, model string) (*geminiCall, bool) {
+	checkRefusal := rtCfg().RefusalAsError
 	req, messages, tools, toolChoice, ok := parseGeminiRequest(w, r)
 	if !ok {
 		return nil, false
@@ -509,16 +515,16 @@ func prepareGemini(w http.ResponseWriter, r *http.Request, model string) (*gemin
 		writeGeminiError(w, 400, "contents is empty")
 		return nil, false
 	}
-	return &geminiCall{req: req, modelName: modelName, modelCfg: modelCfg, messages: messages,
+	return &geminiCall{refusal: checkRefusal, req: req, modelName: modelName, modelCfg: modelCfg, messages: messages,
 		tools: tools, toolChoice: toolChoice, images: images, prompt: prompt, latest: latest}, true
 }
 
 // run 调上游；多轮开关的分流跟 /v1/chat/completions 一致。
 func (g *geminiCall) run(onDelta, onReasoning func(string)) (string, []ToolCall, *StreamResult, error) {
 	if rtCfg().MultiTurn && len(g.images) == 0 && g.modelCfg.Tool == 0 {
-		return callGeminiConv(g.messages, g.modelCfg, g.tools, g.toolChoice, onDelta, onReasoning)
+		return callGeminiConv(g.messages, g.modelCfg, g.tools, g.toolChoice, onDelta, onReasoning, g.refusal)
 	}
-	return callGemini(g.prompt, g.latest, g.modelCfg, g.tools, g.images, onDelta, onReasoning)
+	return callGeminiChecked(g.prompt, g.latest, g.modelCfg, g.tools, g.images, onDelta, onReasoning, g.refusal)
 }
 
 // runGeminiCall 是调上游那一步，测试里替换成桩。
@@ -534,6 +540,9 @@ func handleGenerateContent(w http.ResponseWriter, r *http.Request, model string)
 	text, calls, res, err := runGeminiCall(g, nil, nil)
 	if err != nil {
 		status := 502
+		if isGeminiRefusalError(err) {
+			status = 422
+		}
 		if _, ok := err.(*ModelDowngradedError); ok {
 			status = 429
 		}
@@ -672,13 +681,19 @@ func handleStreamGenerateContent(w http.ResponseWriter, r *http.Request, model s
 	if includeThoughts {
 		onReasoning = st.thought
 	}
-	ka := startKeepalive(st.ping)
+	var ka *streamKeepalive
+	if !g.refusal || g.modelCfg.Tool != 0 {
+		ka = startKeepalive(st.ping)
+	}
 	onDelta, onReasoning = ka.guard(onDelta), ka.guard(onReasoning)
 
 	text, calls, res, err := runGeminiCall(g, onDelta, onReasoning)
 	ka.Stop() // 之后的收尾回到单 goroutine 写；Started() 也要在保活停下后再看
 	if err != nil {
 		status := 502
+		if isGeminiRefusalError(err) {
+			status = 422
+		}
 		if _, ok := err.(*ModelDowngradedError); ok {
 			status = 429
 		}

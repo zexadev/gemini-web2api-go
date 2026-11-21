@@ -13,6 +13,7 @@ type Config struct {
 	RetryDelaySec  int    `json:"retry_delay_sec"`
 	RequestTimeout int    `json:"request_timeout_sec"`
 	RetryOnTimeout bool   `json:"retry_on_timeout"`
+	RefusalAsError bool   `json:"refusal_as_error"`
 	GeminiBL       string `json:"gemini_bl"`
 	DefaultModel   string `json:"default_model"`
 	LogRequests    bool   `json:"log_requests"`
