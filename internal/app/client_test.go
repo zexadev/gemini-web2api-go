@@ -118,3 +118,28 @@ func TestFirefoxFingerprintToggle(t *testing.T) {
 		t.Error("toggle 开时应去掉 Sec-CH-UA")
 	}
 }
+
+// Sec-Fetch-Site 按目标主机算，发起方固定是 gemini.google.com 页面。
+func TestFetchSite(t *testing.T) {
+	cases := map[string]string{
+		"gemini.google.com":                "same-origin",
+		"GEMINI.google.com":                "same-origin",
+		"accounts.google.com":              "same-site",
+		"geminiweb-pa.clients6.google.com": "same-site",
+		"google.com":                       "same-site",
+		"lh3.googleusercontent.com":        "cross-site",
+		"content-push.googleapis.com":      "cross-site",
+		"example.com":                      "cross-site",
+		"evilgoogle.com":                   "cross-site",
+	}
+	for host, want := range cases {
+		if got := fetchSite(host); got != want {
+			t.Errorf("fetchSite(%q) = %q, want %q", host, got, want)
+		}
+	}
+	req, _ := fhttp.NewRequest("GET", "https://lh3.googleusercontent.com/gg-dl/x", nil)
+	applyBrowserFHeaders(req)
+	if got := req.Header.Get("Sec-Fetch-Site"); got != "cross-site" {
+		t.Errorf("下载链应是 cross-site，得到 %q", got)
+	}
+}

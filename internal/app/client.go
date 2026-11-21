@@ -215,9 +215,25 @@ func chromeClientHints() map[string]string {
 	}
 }
 
+// fetchSite 按目标主机算 Sec-Fetch-Site：所有请求都假定由 gemini.google.com 页面发起。
+// 浏览器的规则是同源 same-origin、同一可注册域（google.com）same-site、其余 cross-site。
+// 以前一律写 same-origin，发往 accounts / clients6（同站）和 lh3.googleusercontent.com、
+// content-push.googleapis.com、用户给的外部图片（跨站）的请求都跟真浏览器对不上。
+func fetchSite(host string) string {
+	host = strings.ToLower(host)
+	switch {
+	case host == "gemini.google.com":
+		return "same-origin"
+	case host == "google.com" || strings.HasSuffix(host, ".google.com"):
+		return "same-site"
+	default:
+		return "cross-site"
+	}
+}
+
 // writeBrowserHeaders 是浏览器应用层 header 的唯一来源，stdlib 和 fhttp 两种请求都经它写入，
-// 两条传输路径不会再各写一份、改一处漏一处。
-func writeBrowserHeaders(set func(k, v string), del func(k string)) {
+// 两条传输路径不会再各写一份、改一处漏一处。host 是请求的目标主机，用来算 Sec-Fetch-Site。
+func writeBrowserHeaders(host string, set func(k, v string), del func(k string)) {
 	set("User-Agent", currentBrowserUA())
 	if isFirefoxProfile() {
 		for k := range chromeClientHints() {
@@ -230,15 +246,15 @@ func writeBrowserHeaders(set func(k, v string), del func(k string)) {
 	}
 	set("Sec-Fetch-Dest", "empty")
 	set("Sec-Fetch-Mode", "cors")
-	set("Sec-Fetch-Site", "same-origin")
+	set("Sec-Fetch-Site", fetchSite(host))
 }
 
 // applyBrowserHeaders 给 stdlib 请求填上对应 impersonate 配置的应用层 header。
 func applyBrowserHeaders(req *http.Request) {
-	writeBrowserHeaders(req.Header.Set, req.Header.Del)
+	writeBrowserHeaders(req.URL.Hostname(), req.Header.Set, req.Header.Del)
 }
 
 // applyBrowserFHeaders 给 fhttp (tls-client 直连) 请求填上对应 impersonate 配置的应用层 header。
 func applyBrowserFHeaders(req *fhttp.Request) {
-	writeBrowserHeaders(req.Header.Set, req.Header.Del)
+	writeBrowserHeaders(req.URL.Hostname(), req.Header.Set, req.Header.Del)
 }
