@@ -106,9 +106,13 @@ func responsesToMessages(req map[string]interface{}) []map[string]interface{} {
 					}
 				}
 			}
-			messages = append(messages, map[string]interface{}{
+			message := map[string]interface{}{
 				"role": "tool", "tool_call_id": id, "name": name, "content": content,
-			})
+			}
+			if hasToolResultError(item) {
+				message["is_error"] = true
+			}
+			messages = append(messages, message)
 			continue
 		case "", "message":
 			// Ordinary input and replayed assistant message items are handled below.
