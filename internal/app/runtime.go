@@ -39,6 +39,10 @@ type RuntimeConfig struct {
 	// FallbackDirect 决定代理池一个出口都用不上时是退回直连还是直接 429。
 	// 默认 false：配了代理池就意味着不想暴露本机 IP，悄悄直连会把这个前提废掉。
 	FallbackDirect bool `json:"fallback_direct"`
+	// StrictProxyBinding 开着时，账号绑定的代理满了或在冷却，这个号这次就不用（换号），
+	// 不换到别的出口；号都出不去就 429。默认 false：可用性优先，满了就换出口并重新绑定。
+	// 绑定的代理被删除或手动禁用时仍允许重绑，否则这个号会永远卡死。
+	StrictProxyBinding bool `json:"strict_proxy_binding"`
 	// FallbackAnon 决定 cookie 失效时是降级成匿名继续跑还是直接报错。
 	// 默认 false：匿名档拿不到 3.1 Pro / 扩展思考 / 生图，降级了客户端也看不出来。
 	FallbackAnon bool `json:"fallback_anon"`
@@ -116,12 +120,13 @@ func initRuntimeConfig() {
 		Impersonate:     cfg.Impersonate,
 		GeminiBL:        cfg.GeminiBL,
 
-		ProxyCooldownMin: cfg.ProxyCooldownMin,
-		FallbackDirect:   cfg.FallbackDirect,
-		FallbackAnon:     cfg.FallbackAnon,
-		GeminiBLAuto:     cfg.GeminiBLAuto,
-		MaxPromptBytes:   cfg.MaxPromptBytes,
-		MultiTurn:        cfg.MultiTurn,
+		ProxyCooldownMin:   cfg.ProxyCooldownMin,
+		FallbackDirect:     cfg.FallbackDirect,
+		StrictProxyBinding: cfg.StrictProxyBinding,
+		FallbackAnon:       cfg.FallbackAnon,
+		GeminiBLAuto:       cfg.GeminiBLAuto,
+		MaxPromptBytes:     cfg.MaxPromptBytes,
+		MultiTurn:          cfg.MultiTurn,
 
 		AutoDeleteConversation: cfg.AutoDeleteConversation,
 		AnonFirst:              cfg.AnonFirst,

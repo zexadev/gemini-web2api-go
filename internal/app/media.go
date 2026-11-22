@@ -762,6 +762,7 @@ func mediaGetOnce(rawURL string, headers map[string]string, proxyURL string) (in
 	if err != nil {
 		return 0, nil, nil, err
 	}
+	applyBrowserFHeaders(req)
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}

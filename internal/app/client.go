@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	fhttp "github.com/bogdanfinn/fhttp"
 	tls_client "github.com/bogdanfinn/tls-client"
 	"github.com/bogdanfinn/tls-client/profiles"
 )
@@ -163,7 +164,7 @@ func makeSAPISIDHash(sapisid string) string {
 	return fmt.Sprintf("SAPISIDHASH %d_%s", ts, hex.EncodeToString(h[:]))
 }
 
-// ChromeUA 是给 stdlib 走代理时用的 Chrome 146 真实 UA 模板。
+// ChromeUA 是 Chrome 146 的真实 UA，也是模板：currentBrowserUA 把 146 换成 chromeMajor()。
 const ChromeUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
 
 // FirefoxUA 是走 Firefox/Zen 指纹时的 UA 模板。版本号对齐底层 TLS profile（tls-client 的
@@ -193,11 +194,22 @@ func effectiveImpersonate() string {
 	return rtCfg().Impersonate
 }
 
+// chromeMajor 是 TLS 指纹实际用的 Chrome 大版本，直接读 tls-client profile 的名字（"Chrome-133"）。
+// 跟 resolveProfile 是同一个来源：impersonate 填了表里没有的名字（如 chrome_157）会落到 146，
+// 这里也跟着报 146，UA / Sec-CH-UA 不会报一个握手里没有的版本。非 Chrome profile 返回 "146"。
+func chromeMajor() string {
+	s := resolveProfile(effectiveImpersonate()).GetClientHelloStr()
+	if v, ok := strings.CutPrefix(s, "Chrome-"); ok && v != "" {
+		return v
+	}
+	return "146"
+}
+
 func currentBrowserUA() string {
 	if isFirefoxProfile() {
 		return FirefoxUA
 	}
-	return ChromeUA
+	return strings.Replace(ChromeUA, "Chrome/146.", "Chrome/"+chromeMajor()+".", 1)
 }
 
 // applyChromeHeaders 给 stdlib 请求填上应用层 header（根据 impersonate 配置自动适配 Chrome 或 Firefox）。
@@ -205,23 +217,57 @@ func applyChromeHeaders(req *http.Request) {
 	applyBrowserHeaders(req)
 }
 
+// chromeClientHints 是 Chrome 指纹下要带的三个 Sec-CH-UA 头；Firefox 不发这组。版本跟 chromeMajor。
+// GREASE 那一项（"Not?A_Brand";v="24"）真 Chrome 每个版本不一样，这里没按版本细分。
+func chromeClientHints() map[string]string {
+	v := chromeMajor()
+	return map[string]string{
+		"Sec-CH-UA":          `"Chromium";v="` + v + `", "Google Chrome";v="` + v + `", "Not?A_Brand";v="24"`,
+		"Sec-CH-UA-Mobile":   "?0",
+		"Sec-CH-UA-Platform": `"Windows"`,
+	}
+}
+
+// fetchSite 按目标主机算 Sec-Fetch-Site：所有请求都假定由 gemini.google.com 页面发起。
+// 浏览器的规则是同源 same-origin、同一可注册域（google.com）same-site、其余 cross-site。
+// 以前一律写 same-origin，发往 accounts / clients6（同站）和 lh3.googleusercontent.com、
+// content-push.googleapis.com、用户给的外部图片（跨站）的请求都跟真浏览器对不上。
+func fetchSite(host string) string {
+	host = strings.ToLower(host)
+	switch {
+	case host == "gemini.google.com":
+		return "same-origin"
+	case host == "google.com" || strings.HasSuffix(host, ".google.com"):
+		return "same-site"
+	default:
+		return "cross-site"
+	}
+}
+
+// writeBrowserHeaders 是浏览器应用层 header 的唯一来源，stdlib 和 fhttp 两种请求都经它写入，
+// 两条传输路径不会再各写一份、改一处漏一处。host 是请求的目标主机，用来算 Sec-Fetch-Site。
+func writeBrowserHeaders(host string, set func(k, v string), del func(k string)) {
+	set("User-Agent", currentBrowserUA())
+	if isFirefoxProfile() {
+		for k := range chromeClientHints() {
+			del(k)
+		}
+	} else {
+		for k, v := range chromeClientHints() {
+			set(k, v)
+		}
+	}
+	set("Sec-Fetch-Dest", "empty")
+	set("Sec-Fetch-Mode", "cors")
+	set("Sec-Fetch-Site", fetchSite(host))
+}
+
 // applyBrowserHeaders 给 stdlib 请求填上对应 impersonate 配置的应用层 header。
 func applyBrowserHeaders(req *http.Request) {
-	if isFirefoxProfile() {
-		req.Header.Set("User-Agent", FirefoxUA)
-		req.Header.Del("Sec-CH-UA")
-		req.Header.Del("Sec-CH-UA-Mobile")
-		req.Header.Del("Sec-CH-UA-Platform")
-		req.Header.Set("Sec-Fetch-Dest", "empty")
-		req.Header.Set("Sec-Fetch-Mode", "cors")
-		req.Header.Set("Sec-Fetch-Site", "same-origin")
-		return
-	}
-	req.Header.Set("User-Agent", ChromeUA)
-	req.Header.Set("Sec-CH-UA", `"Chromium";v="146", "Google Chrome";v="146", "Not?A_Brand";v="24"`)
-	req.Header.Set("Sec-CH-UA-Mobile", "?0")
-	req.Header.Set("Sec-CH-UA-Platform", `"Windows"`)
-	req.Header.Set("Sec-Fetch-Dest", "empty")
-	req.Header.Set("Sec-Fetch-Mode", "cors")
-	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	writeBrowserHeaders(req.URL.Hostname(), req.Header.Set, req.Header.Del)
+}
+
+// applyBrowserFHeaders 给 fhttp (tls-client 直连) 请求填上对应 impersonate 配置的应用层 header。
+func applyBrowserFHeaders(req *fhttp.Request) {
+	writeBrowserHeaders(req.URL.Hostname(), req.Header.Set, req.Header.Del)
 }

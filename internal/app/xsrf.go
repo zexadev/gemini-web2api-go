@@ -129,6 +129,20 @@ func getUploadTokens(cookie string, authuser int, proxyURL string) (pushID, pctx
 	return e.pushID, e.pctx, nil
 }
 
+// appPageHeaders 是 GET /app 这种「打开网页」请求的 header：浏览器地址栏打开页面是
+// document / navigate，不是页面里发的 XHR（empty / cors）。抓 token 和匿名拿会话都用它，
+// 盖在 writeBrowserHeaders 的 XHR 默认值上面。
+func appPageHeaders() map[string]string {
+	return map[string]string{
+		"Accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+		"Accept-Language":           "en-US,en;q=0.9",
+		"Upgrade-Insecure-Requests": "1",
+		"Sec-Fetch-Dest":            "document",
+		"Sec-Fetch-Mode":            "navigate",
+		"Sec-Fetch-Site":            "none",
+	}
+}
+
 // fetchAppPage 抓 gemini.google.com/app 的 HTML。
 // 走跟主请求相同的出口：配了代理走 stdlib，没配走 tls-client，
 // 免得页面里取到的 token 和后续请求来自两个不同 IP。
@@ -136,10 +150,7 @@ func getUploadTokens(cookie string, authuser int, proxyURL string) (pushID, pctx
 // authuser>0 抓 /u/N/app，页面里的 token 才是第 N 个号的。
 func fetchAppPage(cookie string, authuser int, proxyURL string) ([]byte, error) {
 	pageURL := geminiBase(authuser) + "/app"
-	headers := map[string]string{
-		"Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-		"Accept-Language": "en-US,en;q=0.9",
-	}
+	headers := appPageHeaders()
 	if cookie != "" {
 		headers["Cookie"] = cookie
 	}
@@ -160,7 +171,7 @@ func fetchAppPage(cookie string, authuser int, proxyURL string) ([]byte, error) 
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode != 200 {
-			return nil, newAppPageStatusError(resp.StatusCode, resp.Header.Get("Location"))
+			return nil, appPageError(resp.StatusCode, resp.Header.Get("Location"), cookie)
 		}
 		body, err = io.ReadAll(resp.Body)
 		if err != nil {
@@ -171,6 +182,7 @@ func fetchAppPage(cookie string, authuser int, proxyURL string) ([]byte, error) 
 		if err != nil {
 			return nil, err
 		}
+		applyBrowserFHeaders(req)
 		for k, v := range headers {
 			req.Header.Set(k, v)
 		}
@@ -180,7 +192,7 @@ func fetchAppPage(cookie string, authuser int, proxyURL string) ([]byte, error) 
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode != 200 {
-			return nil, newAppPageStatusError(resp.StatusCode, resp.Header.Get("Location"))
+			return nil, appPageError(resp.StatusCode, resp.Header.Get("Location"), cookie)
 		}
 		body, err = io.ReadAll(resp.Body)
 		if err != nil {
@@ -227,6 +239,17 @@ func isXSRFError(raw string) bool {
 type appPageStatusError struct {
 	Status   int
 	Location string // host+path，没有 Location 头时为空
+	// MissingOSID：跳的是登录页，且 cookie 里没有 OSID。2026-11-21 实测去掉 OSID
+	// 就 302 到 ServiceLogin?osid=1，带上就 200，所以这种组合直接点名缺 OSID。
+	MissingOSID bool
+}
+
+// appPageError 在 newAppPageStatusError 之上补 MissingOSID 判断（要看 cookie）。
+func appPageError(status int, location, cookie string) *appPageStatusError {
+	e := newAppPageStatusError(status, location)
+	e.MissingOSID = cookie != "" && strings.HasPrefix(e.Location, "accounts.google.com") &&
+		!hasCookieName(cookie, "OSID")
+	return e
 }
 
 func newAppPageStatusError(status int, location string) *appPageStatusError {
@@ -242,6 +265,9 @@ func newAppPageStatusError(status int, location string) *appPageStatusError {
 }
 
 func (e *appPageStatusError) Error() string {
+	if e.MissingOSID {
+		return fmt.Sprintf("fetch /app: HTTP %d -> %s (cookie 缺 OSID)", e.Status, e.Location)
+	}
 	if e.Location != "" {
 		return fmt.Sprintf("fetch /app: HTTP %d -> %s", e.Status, e.Location)
 	}

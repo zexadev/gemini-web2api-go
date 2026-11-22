@@ -160,21 +160,27 @@ func TestRefusalHTTPAndNormalStreaming(t *testing.T) {
 
 func TestRefusalInvalidatesConversation(t *testing.T) {
 	setRefusalCheck(t, true)
-	old := generateGeminiConversation
-	t.Cleanup(func() { generateGeminiConversation = old })
+	resetConversationTestState(t)
+	old := runConversationTurn
+	t.Cleanup(func() { runConversationTurn = old })
 	messages := []map[string]interface{}{{"role": "user", "content": "earlier"}, {"role": "assistant", "content": "answer"}, {"role": "user", "content": "hi"}}
-	key := convParentKey(messages)
+	mc := Models["gemini-3.6-flash"]
+	scope := convScopeKey(mc, nil, nil, "")
+	keys := convPrefixKeys(messages, scope)
+	key := keys[len(keys)-2]
 	convPut(key, &convState{updated: time.Now()})
-	t.Cleanup(func() { convDelete(key); convDelete(convChildKey(messages, refusalSample)) })
-	generateGeminiConversation = func(_ string, _ ModelConfig, _ *convState, delta, reason func(string)) (*StreamResult, error) {
+	runConversationTurn = func(_ string, _ ModelConfig, _ *convState, delta, reason func(string)) (*StreamResult, error) {
 		if delta != nil {
 			delta(refusalSample)
 		}
 		return &StreamResult{Raw: refusalTestFrame(refusalSample), Emitted: refusalSample}, nil
 	}
 	var emitted strings.Builder
-	_, _, _, err := callGeminiConv(messages, Models["gemini-3.6-flash"], nil, nil, func(s string) { emitted.WriteString(s) }, nil, true)
-	if !isGeminiRefusalError(err) || emitted.Len() != 0 || convGet(key) != nil || convGet(convChildKey(messages, refusalSample)) != nil {
+	_, _, _, err := callGeminiConv(messages, mc, nil, nil, func(s string) { emitted.WriteString(s) }, nil, conversationOptions{checkRefusal: true})
+	convMu.Lock()
+	remaining := len(convStore)
+	convMu.Unlock()
+	if !isGeminiRefusalError(err) || emitted.Len() != 0 || remaining != 0 {
 		t.Fatal("refusal leaked or poisoned cached conversation")
 	}
 }

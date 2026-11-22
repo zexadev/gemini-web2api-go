@@ -91,6 +91,24 @@ func cookieNames(cookie string) []string {
 	return names
 }
 
+func hasCookieName(cookie, name string) bool {
+	for _, n := range cookieNames(cookie) {
+		if n == name {
+			return true
+		}
+	}
+	return false
+}
+
+// warnMissingOSID 只记日志不拦。判据（2026-11-21 实测）：去掉 OSID 后 /app 302 到
+// ServiceLogin?osid=1，带上就 200。只验过一个号，所以不硬拦，免得挡掉能用的号。
+func warnMissingOSID(label, cookie string) {
+	if hasCookieName(cookie, "OSID") {
+		return
+	}
+	logf("[cookie] %s 里没有 OSID，gemini.google.com 会跳去登录页；请在 gemini.google.com 页面重新导出", label)
+}
+
 // accountAdd 往池里插一条。cookie 必须能取到非空的 SAPISID。
 // 这是面板/API 手工添加走的路，用户当场看得到错误提示，拦下来是对的。
 //
@@ -105,6 +123,7 @@ func accountAdd(label, cookie, note string) (int64, error) {
 	if extractSAPISID(c) == "" {
 		return 0, fmt.Errorf("cookie 里没有 SAPISID，多半没复制全（需要 gemini.google.com 下的完整 cookie，至少含 SID / HSID / SSID / APISID / SAPISID / __Secure-1PSID）")
 	}
+	warnMissingOSID(label, c)
 	return accountInsert(label, c, note)
 }
 
@@ -123,6 +142,7 @@ func accountAdopt(label, cookie, note string) (int64, error) {
 		logf("[cookie] %s 里没有 SAPISID，算不出 SAPISIDHASH 授权头，可能只当匿名处理；"+
 			"先按原样导入，请到面板核对", label)
 	}
+	warnMissingOSID(label, cookie)
 	return accountInsert(label, cookie, note)
 }
 
@@ -342,6 +362,7 @@ func dropSeededCookie(prevCookie string) {
 // 顺序必须确定：同一份 cookie 若因键顺序不同拼出两种串，按内容去重就失效了。
 var cookieTemplateOrder = []string{
 	"SID", "HSID", "SSID", "APISID", "SAPISID", "__Secure-1PSID", "__Secure-1PSIDTS",
+	"OSID",
 }
 
 // normalizeCookie 把各种输入形态归一化成池子要的裸 "k=v; k=v" 串。
@@ -581,6 +602,8 @@ func explainCookieFailure(err error) string {
 	// sorry 要排在 302 前面：跳 /sorry 也是 302，那是出口被拦不是 cookie 失效
 	case strings.Contains(msg, "HTTP 429"), strings.Contains(msg, "sorry"):
 		return "出口被上游限流，换个代理再试（不是 cookie 的问题）"
+	case strings.Contains(msg, "缺 OSID"):
+		return "cookie 缺 OSID：gemini.google.com 现在要求这一项，请在 gemini.google.com 页面重新导出"
 	case strings.Contains(msg, "HTTP 302"):
 		return "cookie 无效：被重定向到登录页"
 	default:

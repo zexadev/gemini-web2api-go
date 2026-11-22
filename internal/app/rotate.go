@@ -381,9 +381,9 @@ func rotateDo(method, url string, headers map[string]string, body []byte, proxyU
 		"Accept-Language": "en-US,en;q=0.9",
 	}
 	if !isFirefoxProfile() {
-		merged["Sec-CH-UA"] = `"Chromium";v="146", "Google Chrome";v="146", "Not?A_Brand";v="24"`
-		merged["Sec-CH-UA-Mobile"] = "?0"
-		merged["Sec-CH-UA-Platform"] = `"Windows"`
+		for k, v := range chromeClientHints() {
+			merged[k] = v
+		}
 	}
 	for k, v := range headers {
 		merged[k] = v

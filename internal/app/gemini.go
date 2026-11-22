@@ -310,9 +310,14 @@ type StreamResult struct {
 type RateLimitError struct {
 	Reason  string // "concurrent" / "rpm" / "rph"
 	ProxyID int64  // 0 = 直连 slot 满
+	// Bound：strict_proxy_binding 开着，账号绑定的那个出口（ProxyID）用不上，没换到别的出口。
+	Bound bool
 }
 
 func (e *RateLimitError) Error() string {
+	if e.Bound {
+		return fmt.Sprintf("account's bound proxy #%d unavailable (%s) and strict_proxy_binding is on", e.ProxyID, e.Reason)
+	}
 	if e.ProxyID == 0 {
 		return "direct IP slot full: " + e.Reason + " limit reached (configure proxies to scale)"
 	}
@@ -330,6 +335,16 @@ func acquireSlot(preferProxyID int64) (Proxy, bool, error) {
 	hasProxies := len(proxyCache) > 0
 	proxyMu.RUnlock()
 
+	if hasProxies && preferProxyID > 0 && rtCfg().StrictProxyBinding {
+		// 严格绑定：只认这个号绑的出口，满了/冷却中就报错让调用方换号，不换 IP。
+		// 绑定已失效（代理删了或手动禁用）时往下照常轮询，调用方会重绑。
+		if p, ok, reason, bound := pickBoundProxy(preferProxyID); bound {
+			if ok {
+				return p, true, nil
+			}
+			return Proxy{}, false, &RateLimitError{Reason: reason, ProxyID: preferProxyID, Bound: true}
+		}
+	}
 	if hasProxies {
 		if p, ok, reason := pickProxyPreferring(preferProxyID); ok {
 			return p, true, nil
@@ -497,6 +512,25 @@ func streamGenerateOnce(prompt, latest string, mc ModelConfig, pending []pending
 
 	// 通过限流器拿一个 slot（代理或直连）。所有 slot 满 → 直接 429。
 	p, slotOK, slotErr := acquireSlot(preferProxy)
+	// strict_proxy_binding：这个号绑的出口用不上，就换一个号（它有自己的出口），不换 IP。
+	// 换不到号就报绑定出口不可用（429），不能落到 pickAccountForModel 的「全池降级」那个错。
+	var bindErr *RateLimitError
+	if !slotOK && acct != nil && mc.PinAccountID == 0 && errors.As(slotErr, &bindErr) && bindErr.Bound {
+		busy := map[int64]bool{}
+		for id := range skip {
+			busy[id] = true
+		}
+		for !slotOK && errors.As(slotErr, &bindErr) && bindErr.Bound {
+			busy[acct.ID] = true
+			next, ok := pickCookieAccountExcept(busy)
+			if !ok {
+				break
+			}
+			acct = next
+			p, slotOK, slotErr = acquireSlot(acct.ProxyID)
+		}
+		skip = busy
+	}
 	if !slotOK {
 		return attrib(slotErr)
 	}
@@ -580,6 +614,11 @@ func streamGenerateOnce(prompt, latest string, mc ModelConfig, pending []pending
 			next[id] = true
 		}
 		acct, _ = pickCookieAccountExcept(next) // 取不到时返回 nil，循环自然结束
+		// 严格绑定：出口已经定了，绑在别的出口上的号不能借用这个出口。
+		for acct != nil && strictBoundElsewhere(acct, picked.ID) {
+			next[acct.ID] = true
+			acct, _ = pickCookieAccountExcept(next)
+		}
 	}
 	if lastCookieErr != nil && cookieStr == "" {
 		if mc.PinAccountID > 0 {
@@ -1110,6 +1149,7 @@ func doGeminiRequest(endpoint, body string, headers map[string]string, proxyURL 
 	if err != nil {
 		return 0, nil, 0, nil, err
 	}
+	applyBrowserFHeaders(req)
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
@@ -1585,6 +1625,7 @@ func probeGemini(prompt, proxyURL string) ProbeResult {
 			res.Diagnostic = "构建请求失败: " + e.Error()
 			return res
 		}
+		applyBrowserFHeaders(req)
 		for k, v := range headers {
 			req.Header.Set(k, v)
 		}

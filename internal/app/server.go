@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const Version = "4.31.0"
+const Version = "4.32.0"
 
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	body, _ := json.Marshal(data)
@@ -342,7 +342,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	var res *StreamResult
 	if rtCfg().MultiTurn && len(images) == 0 && modelCfg.Tool == 0 {
 		// 多轮：按历史前缀识别续接，命中就只发新消息、历史留服务端。带 tools 也走这条。
-		text, toolCalls, res, err = callGeminiConv(messages, modelCfg, tools, req["tool_choice"], onDelta, onReasoning, checkRefusal)
+		text, toolCalls, res, err = callGeminiConv(messages, modelCfg, tools, req["tool_choice"], onDelta, onReasoning, conversationOptions{requestScope: conversationRequestScope(r, getStr(req, "prompt_cache_key"), getStr(req, "user")), checkRefusal: checkRefusal})
 	} else {
 		text, toolCalls, res, err = callGeminiChecked(prompt, latest, modelCfg, tools, images, onDelta, onReasoning, checkRefusal)
 	}
@@ -512,79 +512,7 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var messages []map[string]interface{}
-	if instr := getStr(req, "instructions"); instr != "" {
-		messages = append(messages, map[string]interface{}{"role": "system", "content": instr})
-	}
-
-	switch input := req["input"].(type) {
-	case string:
-		messages = append(messages, map[string]interface{}{"role": "user", "content": input})
-	case []interface{}:
-		for _, raw := range input {
-			switch item := raw.(type) {
-			case string:
-				messages = append(messages, map[string]interface{}{"role": "user", "content": item})
-			case map[string]interface{}:
-				if t := getStr(item, "type"); t == "function_call_output" {
-					messages = append(messages, map[string]interface{}{
-						"role":         "tool",
-						"tool_call_id": getStr(item, "call_id"),
-						"name":         getStr(item, "name"),
-						"content":      getStr(item, "output"),
-					})
-					continue
-				}
-				role := getStr(item, "role")
-				if role == "assistant" || (getStr(item, "type") == "message" && role == "assistant") {
-					var textAcc strings.Builder
-					var tcList []map[string]interface{}
-					if cp, ok := item["content"].([]interface{}); ok {
-						for _, c := range cp {
-							cm, ok := c.(map[string]interface{})
-							if !ok {
-								continue
-							}
-							switch getStr(cm, "type") {
-							case "output_text":
-								textAcc.WriteString(getStr(cm, "text"))
-							case "function_call":
-								tcList = append(tcList, cm)
-							}
-						}
-					} else if s, ok := item["content"].(string); ok {
-						textAcc.WriteString(s)
-					}
-					m := map[string]interface{}{"role": "assistant", "content": textAcc.String()}
-					if len(tcList) > 0 {
-						var tcs []map[string]interface{}
-						for i, tc := range tcList {
-							id := getStr(tc, "call_id")
-							if id == "" {
-								id = fmt.Sprintf("call_%d", i)
-							}
-							tcs = append(tcs, map[string]interface{}{
-								"id":   id,
-								"type": "function",
-								"function": map[string]interface{}{
-									"name":      getStr(tc, "name"),
-									"arguments": getStr(tc, "arguments"),
-								},
-							})
-						}
-						m["tool_calls"] = tcs
-					}
-					messages = append(messages, m)
-				} else {
-					if role == "" {
-						role = "user"
-					}
-					content := contentToString(item["content"])
-					messages = append(messages, map[string]interface{}{"role": role, "content": content})
-				}
-			}
-		}
-	}
+	messages := responsesToMessages(req)
 
 	toolsRaw, _ := req["tools"].([]interface{})
 	var tools []map[string]interface{}
@@ -740,7 +668,7 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 	var toolCalls []ToolCall
 	var res *StreamResult
 	if rtCfg().MultiTurn && len(images) == 0 && modelCfg.Tool == 0 {
-		text, toolCalls, res, err = callGeminiConv(messages, modelCfg, tools, req["tool_choice"], onDelta, nil, checkRefusal)
+		text, toolCalls, res, err = callGeminiConv(messages, modelCfg, tools, req["tool_choice"], onDelta, nil, conversationOptions{requestScope: conversationRequestScope(r, getStr(req, "prompt_cache_key"), getStr(req, "user")), checkRefusal: checkRefusal})
 	} else {
 		text, toolCalls, res, err = callGeminiChecked(prompt, latest, modelCfg, tools, images, onDelta, nil, checkRefusal)
 	}

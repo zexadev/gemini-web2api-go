@@ -471,6 +471,61 @@ func proxyNameByID(id int64) string {
 
 // proxyUsableByID 这个出口现在还能不能用（存在 + enabled + 没熔断或已过冷却）。
 // 判断账号绑定的出口是不是还有效，无效才该重新绑。
+// pickBoundProxy 只试账号绑定的那个出口（strict_proxy_binding 用）。
+// bound=false 表示这个绑定已经不算数了（代理被删除或被手动禁用），调用方应照常轮询并重绑；
+// bound=true 时 ok 说明拿没拿到它的 slot，reason 是没拿到的原因（熔断冷却记成 "cooling"）。
+func pickBoundProxy(id int64) (p Proxy, ok bool, reason string, bound bool) {
+	if id <= 0 {
+		return Proxy{}, false, "", false
+	}
+	proxyMu.RLock()
+	var found *Proxy
+	for i := range proxyCache {
+		if proxyCache[i].ID == id {
+			c := proxyCache[i]
+			found = &c
+			break
+		}
+	}
+	proxyMu.RUnlock()
+	if found == nil || !found.Enabled {
+		return Proxy{}, false, "", false
+	}
+	if !proxyUsable(*found, time.Now().Unix(), rtCfg().ProxyCooldownMin) {
+		return *found, false, "cooling", true
+	}
+	if ok, reason := trySlotAcquire(found.ID); !ok {
+		return *found, false, reason, true
+	}
+	return *found, true, "", true
+}
+
+func proxyExists(id int64) bool {
+	proxyMu.RLock()
+	defer proxyMu.RUnlock()
+	for _, p := range proxyCache {
+		if p.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// strictBoundElsewhere：严格绑定开着时，这个号绑在另一个仍然有效的出口上，就不能借用当前出口。
+func strictBoundElsewhere(a *CookieAccount, proxyID int64) bool {
+	if a == nil || !rtCfg().StrictProxyBinding || a.ProxyID <= 0 || a.ProxyID == proxyID {
+		return false
+	}
+	proxyMu.RLock()
+	defer proxyMu.RUnlock()
+	for _, p := range proxyCache {
+		if p.ID == a.ProxyID {
+			return p.Enabled
+		}
+	}
+	return false
+}
+
 func proxyUsableByID(id int64) bool {
 	if id <= 0 {
 		return false

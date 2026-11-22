@@ -166,7 +166,7 @@ go build -o gemini-web2api-go .
 启动后会看到 banner：
 
 ```
-gemini-web2api-go v4.31.0
+gemini-web2api-go v4.32.0
   Listening:   http://0.0.0.0:8083
   Base URL:    http://localhost:8083/v1
   API key:     sk-gemini-XX...XXXX  (mutable in admin UI)
@@ -451,7 +451,7 @@ curl http://127.0.0.1:8083/v1/chat/completions \
 默认那张约 0.2MB）。每张图多一次请求，返回体积大几倍。取不到就退回默认那张，不会重新生成。
 
 **多轮上下文默认是把 `messages` 拼成单个 prompt 发的**（打开「设置」里的服务端多轮续接
-`multi_turn` 后，认出是续接就只发最新一句、历史留在服务端，见[配置](#配置)）。拼接的代价是每轮重发全部历史，于是撞上
+`multi_turn` 后，认出是续接就只发新增消息、历史留在服务端，见[配置](#配置)）。拼接的代价是每轮重发全部历史，于是撞上
 单次输入的长度墙：**约 13 万 UTF-8 字节**，超了上游**从尾部静默截断且不报错**——而最新
 消息拼在末尾，被吃掉的正是你刚问的那句，表现像"模型突然变笨"。
 
@@ -474,7 +474,7 @@ curl http://127.0.0.1:8083/v1/chat/completions \
 | 默认模型 | 客户端没传 `model` 时用哪个 |
 | 每 slot 并发 / RPM / RPH | 限流额度，0 = 不限 |
 | Prompt 字节上限 | 超了：挂 cookie 时转成文本附件发（可用长度到约 16 万字节），没挂时返回 400 `context_length_exceeded`。都不静默截断。按 UTF-8 字节算（上游的墙跟 token 无关），默认 128000。0 = 不限 |
-| 多轮（`multi_turn`） | 默认关。开启后走 Gemini 原生 conversation_id 服务端续接——客户端每轮重发全历史，服务端识别续接后只发最新一句、历史留服务端，长会话不再撞单请求字节墙。登录/匿名都可用。**注意**：不放大模型上下文窗口，超窗的早期内容仍会被挤出，解决的是"长对话不撞墙 + 保住最近上下文"，不是"喂超长文档"。 |
+| 多轮（`multi_turn`） | 默认关。客户端每轮重发完整历史；匹配同一模型、工具配置和请求作用域内最长的已知历史前缀后，复用 Gemini 会话，只发送全部新增的用户消息或工具结果。支持普通聊天、function calling 和一批多条工具结果；图片输入和媒体模型不走续接。状态只保存在进程内，空闲 90 分钟或重启后需重建。不会扩大模型上下文窗口，也不提供 Google 模型缓存命中统计。 |
 | 自动删会话（`auto_delete_conversation`） | 默认关。开启后每次出完结果自动删掉 gemini.google.com 上留下的这条会话，免得登录账号里堆一堆。只登录态生效，异步 best-effort、删失败不影响响应。 |
 | 临时对话（`temporary_chat`） | 默认关。开启后走 Gemini 网页端原生「临时对话」：会话压根不进账号的会话列表、不用于模型训练，比「自动删会话」更干净，还省掉那次删除请求。只登录态有意义；开了「服务端多轮续接」时自动不生效（临时对话不留列表，多轮要靠服务端留会话）。 |
 | 生图下载原图/放大（`image_upscale`） | 默认关。开启后照网页「下载」按钮取生成的图：Ultra 号放大到宽高各 2 倍，普通号拿到未重新压缩的原始文件。每张图多一次请求；取不到就退回默认那张。见上文「生图 / 音乐」。 |
@@ -491,6 +491,7 @@ curl http://127.0.0.1:8083/v1/chat/completions \
 | 自动跟随 bl 版本（`gemini_bl_auto`） | 每 6 小时从 `/app` 页面抓一次最新版本号，抓不到或格式不对就用上面钉的值 |
 | 熔断冷却（`proxy_cooldown_min`） | 代理连续失败 5 次后歇多久再自动放回池子，默认 120 分钟（实测被拦的出口 106-121 分钟自恢复）。0 = 不自动恢复，要去代理池页手动重置 |
 | 无可用代理时退回直连（`fallback_direct`） | 默认关：代理全满或全熔断时直接报错，本机 IP 不暴露给上游。开：可用性优先，但上游会看到本机出口 |
+| 账号严格绑定出口（`strict_proxy_binding`） | 默认关：账号绑定的代理满了或在熔断冷却时换别的出口并改绑。开：只换号、不换出口，号都出不去就返回 429，同一个号始终从同一个 IP 出去。代理被删除或手动禁用时仍会重新绑定 |
 | cookie 失效时降级匿名（`fallback_anon`） | 默认关：直接报错，能立刻发现该换号了。开：继续跑，但要登录的模型会被静默降级成 3.5 Flash-Lite、思考链消失 |
 | 新协议（`web_channel`） | 默认关。开启后对话改走网页新版用的 processSession（WebChannel）接口，而不是老的 StreamGenerate。后端是同一个，只换传输方式；老接口目前仍正常，老接口出问题时再打开。文本、看图、生图、匿名都已实测；多轮续接仍走老接口；扩展思考在新协议上暂时不生效（回报普通档）。 |
 | 打印请求日志 | |
@@ -558,16 +559,21 @@ Cookie 池（按 URL、cookie 内容去重），之后一律从面板管理。�
 > 匿名反而不受影响——早期版本踩过这个坑。）
 
 1. 浏览器登录 [gemini.google.com](https://gemini.google.com)
-2. DevTools (F12) → Application → Cookies → `https://gemini.google.com`
-3. 复制：`SID` / `HSID` / `SSID` / `APISID` / `SAPISID` / `__Secure-1PSID` / `__Secure-1PSIDTS`
+2. 推荐整串复制：DevTools (F12) → 网络 → 任一发往 `gemini.google.com` 的请求 → 右键「复制为 cURL」，
+   取里面 `Cookie:` 那一整行。也可以 Application → Cookies → `https://gemini.google.com` 逐项抄
+3. 至少要有：`SID` / `HSID` / `SSID` / `APISID` / `SAPISID` / `__Secure-1PSID` / `__Secure-1PSIDTS` / **`OSID`**
 4. 粘进面板「Cookie 池 → 添加账号」；或写成 `cookie.txt` 后启动加
    `--cookie-file cookie.txt`（启动时导入池子，之后从面板管理）：
 ```
-SID=...; HSID=...; SSID=...; APISID=...; SAPISID=...; __Secure-1PSID=...; __Secure-1PSIDTS=...
+SID=...; HSID=...; SSID=...; APISID=...; SAPISID=...; __Secure-1PSID=...; __Secure-1PSIDTS=...; OSID=...
 ```
 
 JSON 形式 `{"cookie": "SID=...; ...", "sapisid": "..."}` 也吃。带 `SAPISID` 的请求会自动
 算 `SAPISIDHASH` 授权头，所以这一项不能少。
+
+> **`OSID` 必须有**（2026-11 起）。它是 gemini.google.com 自己域名下的 cookie，缺了打开 Gemini
+> 就被跳去 Google 登录页（`ServiceLogin?...&osid=1`），面板会标「缺 OSID」、检测会直接报缺 OSID。
+> 在 google.com 的页面上导出、或者只抄了上面前七项，都会漏掉它，要在 **gemini.google.com 的页面上**导出。
 
 **cookie 只有「Cookie 池」这一个入口**：每个请求按最久未用优先挑一个 enabled 账号，
 挑中即推进轮转。池子里有 enabled 账号，`gemini-4-hydrogen` 等要登录的模型就会出现在模型列表里。
@@ -595,7 +601,9 @@ JSON 形式 `{"cookie": "SID=...; ...", "sapisid": "..."}` 也吃。带 `SAPISID
 
 **每个账号会粘住自己的出口**。cookie 池和代理池如果各自独立轮转，同一个 Google 账号会
 从几十个不同 IP 发出请求，这在 Google 眼里是账号共享的典型特征。账号首次用到哪个出口就
-绑定下来，出口不可用了才换。
+绑定下来，出口不可用了才换。默认「不可用」包括满了（并发 / RPM / RPH）和熔断冷却，这时会换出口并改绑；
+打开 `strict_proxy_binding`（设置里「账号严格绑定出口」）后只换号不换出口，号都出不去就返回 429。
+绑定也可以在 Cookie 池「编辑」里手动指定。
 
 **浏览器里登了多个 Google 号？填「账号序号」。** 同一个浏览器里的多个号共用一份 cookie，
 导出的那串 cookie 能当其中任何一个号用，具体是哪个号由请求地址决定（`/u/1/` 是第二个号）。
@@ -722,7 +730,7 @@ internal/app/              全部实现
   client.go                tls-client (chrome146) + stdlib (走代理) 双 client
   gemini.go                模型表 + 80 槽 payload + 模型 header + StreamGenerate + wrb.fr 解析
   webchannel.go            新协议 processSession（WebChannel）传输，开关 web_channel
-  conversation.go          服务端多轮续接（multi_turn）：按历史前缀认续接，只发最新一句
+  conversation.go          服务端多轮续接（multi_turn）：匹配历史前缀，只发新增消息
   media.go                 生图 / 音乐 / 画布 / 视频：工具位 + 产物抽取与下载
   image_upscale.go         生图下载原图/放大（rpc c8o8Fe，开关 image_upscale）
   search.go                联网搜索引用来源抽取
@@ -783,6 +791,7 @@ docker-compose.yml         单容器，默认拉 ghcr 镜像，sqlite 挂 volume
 | 启动即退出，报 `unable to open database file (14)` | 容器以 nonroot(uid 65532) 运行，而 bind mount 的宿主目录属主是 root，写不进去 | 改用具名卷（compose 默认已是），或 `sudo chown -R 65532:65532 ./data` |
 | 选 `gemini-4-hydrogen` 等直接报错 | 没配 cookie 时要登录的模型不暴露，这是故意的 | 在面板「Cookie 池」导入 cookie 后即可用 |
 | 挂了 cookie 后请求全部 502 | cookie 已失效，取不到 XSRF token | 重新导出 cookie。判据：请求 `gemini-4-hydrogen` 若回报 3.5 Flash-Lite 就是失效了 |
+| 「检测」报 **302 → `accounts.google.com/ServiceLogin`**，所有号同时出现 | 多半缺 `OSID`（2026-11 起必需），面板会标「缺 OSID」 | 在已登录的 gemini.google.com 页面重新导出完整 cookie（「复制为 cURL」取 `Cookie:` 行） |
 | cookie 大约半小时就失效，保活没用 | Chrome 设备绑定会话，`__Secure-1PSIDTS` 换发 401 | 用 **Firefox** 重新登录再导出；点面板「保活」应能看到刷新了 `__Secure-1PSIDTS` |
 | 付费号的 cookie，付费模型却回报 4 Hydrogen 或 3.5 Flash-Lite，「检测」显示登录态有效 | 浏览器里登了多个 Google 号，订阅不在默认号上，请求落到了默认号 | 在 Cookie 池给这条填「账号序号」（那个号的 Gemini 地址栏 `/u/1/` 就填 1），见上文 |
 | 面板打不开 / 401 | `--admin-token`（或 `ADMIN_TOKEN`）没对上 | token 留空则不鉴权，只有绑 127.0.0.1 时才可接受 |
@@ -823,9 +832,13 @@ Docker 用默认 bridge 网络时上游可能返回空内容（Google 拒绝某�
 
 ### 为什么每发一条消息，gemini.google.com 里就多出一个会话？
 
-默认每个请求是独立会话。在面板「设置」勾选**服务端多轮续接**（`multi_turn`）后，同一串连续对话会复用同一个网页会话，
-只发最新一句、历史留在服务端。不想让网页端堆会话有两种办法：勾**临时对话**（`temporary_chat`）让会话压根不进列表（更干净、不入训练、不用删，推荐），
-或勾**自动删网页会话**（`auto_delete_conversation`）出完结果再删掉。两者都只对登录号有意义。
+默认每个请求是独立会话。在面板「设置」勾选**服务端多轮续接**（`multi_turn`）后，匹配历史的请求会复用同一个网页会话和账号，只向 Gemini 发送新增消息，历史留在服务端。普通 function calling 和一次多条工具结果也能续接；图片输入、生图等媒体模型仍走独立请求。
+
+客户端仍需每轮发送完整历史，包括 assistant 正文、工具调用及对应结果；保持系统提示、模型、工具定义和 `tool_choice` 稳定。历史被压缩或改写、配置变化、首次请求或服务重启时会新建会话。状态只在当前进程内保存，空闲 90 分钟过期；同一会话应顺序请求，并发分支会新建独立会话。
+
+`/v1/responses` 和 `/v1/chat/completions` 可给每条独立会话设置不同的 `prompt_cache_key`，同一条会话后续保持不变；`user` 也参与会话作用域区分。`prompt_cache_key` 在这里仅用于**本地会话隔离**，不会向 Google 创建提示词缓存。共用 API key 的客户端应自行提供不同的会话标识，否则相同历史可能匹配同一个本地会话。Responses 只传 `previous_response_id` 不能替代完整历史。API 的 token 用量仍是本地对完整历史的估算，不是 Google 返回的真实用量或 `cached_tokens`。
+
+开启「打印请求日志」后，`[conv] 续接命中` 表示匹配了本地会话；结合请求是否成功判断续接结果。它不能证明 Google 模型内部的缓存命中。需要复用网页会话时保留会话；「临时对话」在多轮开启时不会生效。若选择每次独立请求，可用「临时对话」或「自动删网页会话」减少网页列表中的会话。
 
 ### 能当 Cursor / Dify / WorkBuddy 这类 agent 工具的后端吗？
 
