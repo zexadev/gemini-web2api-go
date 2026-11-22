@@ -257,10 +257,13 @@ func TestCallGeminiConvSendsAllNewToolAndUserMessages(t *testing.T) {
 	if len(turns) != 2 || turns[0] != 0 || turns[1] != 1 {
 		t.Fatalf("expected same upstream conversation, turns=%v", turns)
 	}
-	for _, want := range []string{"result-one", "result-two", "time-context-message", "continue-now", "[Tool result for read_file]"} {
+	for _, want := range []string{"result-one", "result-two", "time-context-message", "continue-now", "[Tool result for read_file]", toolExecutionBridge, "[Tool protocol reminder]"} {
 		if !strings.Contains(prompts[1], want) {
 			t.Errorf("continuation dropped %q: %s", want, prompts[1])
 		}
+	}
+	if strings.LastIndex(prompts[1], "[Tool protocol reminder]") < strings.LastIndex(prompts[1], "continue-now") {
+		t.Fatal("tool protocol must follow all new messages")
 	}
 	for _, old := range []string{"stable-system", "original-question", "Available tools"} {
 		if strings.Contains(prompts[1], old) {
