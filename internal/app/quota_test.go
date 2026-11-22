@@ -44,6 +44,34 @@ func TestParseQuotaPayload_Valid(t *testing.T) {
 	}
 }
 
+func TestParseQuotaPayload_WrappedEnvelope(t *testing.T) {
+	// Live batchexecute response shape: [[[[], 2, 17, [sec, nsec], budget, remaining]], ""]
+	nestedPayload := []any{
+		[]any{
+			[]any{
+				[]any{},
+				float64(2),
+				float64(17),
+				[]any{float64(1795365365), float64(842252000)},
+				float64(48384),
+				float64(39862),
+			},
+		},
+		"",
+	}
+
+	q, err := parseQuotaPayload(7, nestedPayload)
+	if err != nil {
+		t.Fatalf("unexpected parse error on nested payload: %v", err)
+	}
+	if q.AccountID != 7 || q.Budget != 48384 || q.Remaining != 39862 {
+		t.Fatalf("unexpected parsed quota from nested envelope: %+v", q)
+	}
+	if q.Exhausted {
+		t.Fatal("expected Exhausted to be false")
+	}
+}
+
 func TestParseQuotaPayload_JspbOmittedRemaining(t *testing.T) {
 	// Case 1: len == 5 (omitted entirely in jspb)
 	payloadLen5 := []any{

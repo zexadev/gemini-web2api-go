@@ -235,11 +235,22 @@ func fetchAccountQuotaUpstream(ctx context.Context, accountID int64) (AccountQuo
 
 // parseQuotaPayload parses the inner array from wrb.fr payload of qpEbW.
 // Expected Protobuf jspb array shape: [[], 2, 17, [sec, (nsec)], budget, (remaining)]
+// - In batchexecute responses, Google often wraps the inner array in outer envelopes:
+//   e.g. [[[[], 2, 17, [sec, nsec], budget, remaining]], ""]
 // - payload[3] may be [sec], [sec, nsec], or null.
 // - payload[4] is total budget units.
 // - payload[5] is remaining units. Protobuf jspb omits zero-values, so if remaining is 0,
 //   payload[5] is frequently null or omitted entirely (len == 5).
 func parseQuotaPayload(accountID int64, payload []any) (AccountQuota, error) {
+	// Unwrap any outer envelopes (e.g. [[[...]], ""])
+	for len(payload) > 0 && len(payload) < 5 {
+		if inner, ok := payload[0].([]any); ok {
+			payload = inner
+		} else {
+			break
+		}
+	}
+
 	if len(payload) < 5 {
 		raw, _ := json.Marshal(payload)
 		logf("[quota] WARN: qpEbW payload too short (<5) for account #%d: %s", accountID, string(raw))
