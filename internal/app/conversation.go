@@ -506,7 +506,10 @@ func callGeminiConv(messages []map[string]interface{}, mc ModelConfig,
 	text := extractResponseText(res.Raw)
 	var toolCalls []ToolCall
 	if len(tools) > 0 {
-		text, toolCalls = parseToolCalls(text)
+		text, toolCalls, err = parseToolCalls(text)
+		if err != nil {
+			return "", nil, res, err
+		}
 	}
 	if text == "" && len(toolCalls) == 0 {
 		return "", nil, res, fmt.Errorf("upstream returned no content frame (raw %d bytes)", len(res.Raw))

@@ -174,13 +174,10 @@ func callGemini(prompt, latest string, mc ModelConfig, tools []map[string]interf
 	}
 	var toolCalls []ToolCall
 	if len(tools) > 0 {
-		text, toolCalls = parseToolCalls(text)
-	}
-	// 回复只有一个解析不了的 ```tool_call``` 围栏（JSON 写坏 / 没有工具名）时，
-	// parseToolCalls 剥掉围栏后正文为空、也没有调用。跟 callGeminiConv 一样报错，
-	// 不能回 200 + content:null 且不带 tool_calls —— 客户端看不出请求其实失败了。
-	if text == "" && len(toolCalls) == 0 {
-		return "", nil, res, fmt.Errorf("upstream reply had only an unparseable tool_call block (raw %d bytes)", len(res.Raw))
+		text, toolCalls, err = parseToolCalls(text)
+		if err != nil {
+			return "", nil, res, err
+		}
 	}
 	return text, toolCalls, res, nil
 }
@@ -632,6 +629,9 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 			errObj := map[string]string{"message": err.Error()}
 			if downgraded {
 				errObj["code"] = "model_downgraded"
+			}
+			if _, ok := err.(*ToolCallParseError); ok {
+				errObj["code"] = "tool_call_parse_error"
 			}
 			writeEvent("response.failed", map[string]interface{}{
 				"type": "response.failed",

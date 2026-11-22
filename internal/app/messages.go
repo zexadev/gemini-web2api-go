@@ -4,9 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"regexp"
 	"slices"
 	"strings"
@@ -323,7 +321,7 @@ func (g *toolFenceGate) Push(delta string) {
 	g.buf += delta
 	for {
 		if g.inFence {
-			_, next, ok := toolFenceEnd(g.buf, false)
+			_, next, ok := toolFenceEnd(g.buf)
 			if !ok {
 				return // 围栏还没闭合，整段扣住
 			}
@@ -364,47 +362,39 @@ func partialPrefixLen(s, marker string) int {
 // toolFenceEnd 在开围栏之后的文本 s 里找闭合围栏：body 是围栏体的长度，next 是
 // 闭合围栏之后的位置。ok=false 表示还判定不了（流式时等下一帧）或者没闭合。
 //
-// 闭合判据：先按 JSON 解析出围栏体里的一个完整值，它后面的第一个 ``` 才是闭合围栏。
+// 闭合判据：完整 JSON 对象带有工具名，紧随其后的 ``` 才是闭合围栏。
 // 不能直接找第一个 ```：写代码类工具的参数里常带 markdown 代码块，JSON 字符串里的
 // ``` 是原样出现的，按第一个算会把调用截成半截 JSON，后半截漏给客户端。
 //
-// JSON 写坏了（语法错）退回「第一个 ```」。JSON 没写完：流式时等，final 时同样退回
-// 第一个 ```。JSON 语法错在出错的那个字符到达时就能判定，所以流式和 final 对同一份
-// 文本给出同一个闭合位置，闸门已发的内容始终是最终文本的前缀。
-func toolFenceEnd(s string, final bool) (body, next int, ok bool) {
-	from := 0
+// JSON 写坏、未写完或闭围栏缺失时都不猜测边界。流式闸门继续扣住，最终解析报错，
+// 避免把参数里的代码块当成闭围栏、丢掉调用头后将剩余参数泄漏为正文。
+func toolFenceEnd(s string) (body, next int, ok bool) {
 	dec := json.NewDecoder(strings.NewReader(s))
-	var v json.RawMessage
-	err := dec.Decode(&v)
-	switch {
-	case err == nil:
-		off := int(dec.InputOffset())
-		rest := strings.TrimLeft(s[off:], " \t\r\n")
-		if strings.HasPrefix(rest, toolFenceClose) {
-			body = len(s) - len(rest)
-			return body, body + len(toolFenceClose), true
-		}
-		if !final && strings.HasPrefix(toolFenceClose, rest) {
-			return 0, 0, false
-		}
-		from = off
-	case errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF):
-		if !final {
-			return 0, 0, false
-		}
-	}
-	j := strings.Index(s[from:], toolFenceClose)
-	if j < 0 {
+	var raw map[string]interface{}
+	if err := dec.Decode(&raw); err != nil || toolCallName(raw) == "" {
 		return 0, 0, false
 	}
-	return from + j, from + j + len(toolFenceClose), true
+	rest := strings.TrimLeft(s[int(dec.InputOffset()):], " \t\r\n")
+	if !strings.HasPrefix(rest, toolFenceClose) {
+		return 0, 0, false
+	}
+	body = len(s) - len(rest)
+	return body, body + len(toolFenceClose), true
+}
+
+// ToolCallParseError indicates an upstream tool block that cannot be executed.
+// Do not include the raw block: arguments may contain private file contents.
+type ToolCallParseError struct{}
+
+func (*ToolCallParseError) Error() string {
+	return "upstream returned a malformed or incomplete tool_call block"
 }
 
 // parseToolCalls extracts ```tool_call``` blocks. Returns clean text + tool_calls.
 //
 // 围栏内不强求前后换行——模型有时吐 ```tool_call\n{...}\n```、有时一行内；内容交给
-// JSON 解析。闭合位置见 toolFenceEnd。解析不出的围栏也从正文里去掉，未闭合的原样留下。
-func parseToolCalls(text string) (string, []ToolCall) {
+// JSON 解析。任一围栏无效则整轮失败，不返回部分调用，也不把残缺参数作为正文。
+func parseToolCalls(text string) (string, []ToolCall, error) {
 	var toolCalls []ToolCall
 	var clean strings.Builder
 	rest := text
@@ -414,19 +404,19 @@ func parseToolCalls(text string) (string, []ToolCall) {
 			break
 		}
 		after := rest[i+len(toolFenceOpen):]
-		body, next, ok := toolFenceEnd(after, true)
+		body, next, ok := toolFenceEnd(after)
 		if !ok {
-			break
+			return "", nil, &ToolCallParseError{}
 		}
 		clean.WriteString(rest[:i])
 		rest = after[next:]
 		var raw map[string]interface{}
 		if err := json.Unmarshal([]byte(strings.TrimSpace(after[:body])), &raw); err != nil || raw == nil {
-			continue
+			return "", nil, &ToolCallParseError{}
 		}
 		name := toolCallName(raw)
 		if name == "" {
-			continue
+			return "", nil, &ToolCallParseError{}
 		}
 		toolCalls = append(toolCalls, ToolCall{
 			ID:   "call_" + randHex(8),
@@ -438,7 +428,7 @@ func parseToolCalls(text string) (string, []ToolCall) {
 		})
 	}
 	clean.WriteString(rest)
-	return strings.TrimSpace(clean.String()), toolCalls
+	return strings.TrimSpace(clean.String()), toolCalls, nil
 }
 
 // toolCallNameKeys 是模型写工具名时用过的键。
