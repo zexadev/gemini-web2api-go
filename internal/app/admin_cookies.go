@@ -51,7 +51,7 @@ func cookieAcctView(a CookieAccount) map[string]interface{} {
 	case a.LastOkAt == 0:
 		health = "unknown"
 	}
-	return map[string]interface{}{
+	view := map[string]interface{}{
 		"id":           a.ID,
 		"label":        a.Label,
 		"status":       a.Status,
@@ -71,6 +71,10 @@ func cookieAcctView(a CookieAccount) map[string]interface{} {
 		"proxy_name":   proxyNameByID(a.ProxyID),
 		"authuser":     a.AuthUser,
 	}
+	if q, ok := getCachedAccountQuota(a.ID); ok {
+		view["quota"] = q
+	}
+	return view
 }
 
 // handleAdminCookies — GET 列出池 / POST 新增一条。

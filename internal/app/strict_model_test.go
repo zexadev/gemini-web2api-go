@@ -214,3 +214,148 @@ func TestEveryChatModelHasUpstream(t *testing.T) {
 		}
 	}
 }
+
+func TestStrictModel_TransientShed_NoLongCooldown(t *testing.T) {
+	setStrictModel(t, true)
+	resetDowngrades(t)
+
+	mockTime := time.Date(2026, 11, 22, 20, 0, 0, 0, time.UTC)
+	oldNow := quotaNow
+	quotaNow = func() time.Time { return mockTime }
+	defer func() { quotaNow = oldNow }()
+
+	neon := Models["gemini-4-neon"]
+	acctID := addTestAccount(t, "healthy_quota_acct")
+	clearTransientShed(acctID, "")
+
+	// Seed cache with healthy quota (80% remaining)
+	putCachedAccountQuota(acctID, AccountQuota{
+		AccountID: acctID,
+		Budget:    50000,
+		Remaining: 40000,
+		Ratio:     0.8,
+		Exhausted: false,
+		FetchedAt: mockTime,
+	})
+
+	// Trigger downgrade
+	cooldown, isTransient := markDowngraded(acctID, neon, "4 Hydrogen High")
+	if !isTransient {
+		t.Fatalf("expected isTransient=true when quota is 80%% intact, got %v", isTransient)
+	}
+	if cooldown != 15*time.Second {
+		t.Fatalf("expected 15s retry duration, got %v", cooldown)
+	}
+
+	// Verify account is NOT in downgradeUntil cooling map
+	cooling, _ := coolingAccounts(neon)
+	if cooling[acctID] {
+		t.Fatalf("account with healthy quota should NOT be locked in cooling map: %v", cooling)
+	}
+
+	// Verify pickAccountForModel can pick this account immediately for next request
+	picked, _, err := pickAccountForModel(neon, nil)
+	if err != nil || picked == nil || picked.ID != acctID {
+		t.Fatalf("expected account to be immediately selectable on subsequent request, got %v %v", picked, err)
+	}
+}
+
+func TestStrictModel_ConsecutiveTransientSheds_CircuitBreaker(t *testing.T) {
+	setStrictModel(t, true)
+	resetDowngrades(t)
+
+	mockTime := time.Date(2026, 11, 22, 20, 0, 0, 0, time.UTC)
+	oldNow := quotaNow
+	quotaNow = func() time.Time { return mockTime }
+	defer func() { quotaNow = oldNow }()
+
+	neon := Models["gemini-4-neon"]
+	acctID := addTestAccount(t, "breaker_acct")
+	clearTransientShed(acctID, "")
+
+	putCachedAccountQuota(acctID, AccountQuota{
+		AccountID: acctID,
+		Budget:    50000,
+		Remaining: 40000,
+		Ratio:     0.8,
+		Exhausted: false,
+		FetchedAt: mockTime,
+	})
+
+	// 1st shed
+	_, t1 := markDowngraded(acctID, neon, "4 Hydrogen High")
+	if !t1 {
+		t.Fatal("expected t1 true")
+	}
+
+	// 2nd shed
+	mockTime = mockTime.Add(20 * time.Second)
+	_, t2 := markDowngraded(acctID, neon, "4 Hydrogen High")
+	if !t2 {
+		t.Fatal("expected t2 true")
+	}
+
+	// 3rd shed -> triggers circuit breaker
+	mockTime = mockTime.Add(20 * time.Second)
+	cooldown3, t3 := markDowngraded(acctID, neon, "4 Hydrogen High")
+	if t3 {
+		t.Fatal("expected 3rd shed to trigger circuit breaker (isTransient=false)")
+	}
+	if cooldown3 != 10*time.Minute {
+		t.Fatalf("expected 10m circuit breaker cooldown, got %v", cooldown3)
+	}
+
+	// Account should now be cooling
+	cooling, soonest := coolingAccounts(neon)
+	if !cooling[acctID] {
+		t.Fatal("expected breaker_acct to be in cooling accounts after circuit breaker triggered")
+	}
+	if soonest < 9*time.Minute {
+		t.Fatalf("expected ~10m soonest, got %v", soonest)
+	}
+}
+
+func TestStrictModel_GenuineExhaustion_DynamicResetTime(t *testing.T) {
+	setStrictModel(t, true)
+	resetDowngrades(t)
+
+	mockTime := time.Date(2026, 11, 22, 20, 0, 0, 0, time.UTC)
+	oldNow := quotaNow
+	quotaNow = func() time.Time { return mockTime }
+	defer func() { quotaNow = oldNow }()
+
+	neon := Models["gemini-4-neon"]
+	acctID := addTestAccount(t, "exhausted_acct")
+
+	// Upstream reset is in 45 minutes
+	resetTime := mockTime.Add(45 * time.Minute)
+	putCachedAccountQuota(acctID, AccountQuota{
+		AccountID: acctID,
+		Budget:    50000,
+		Remaining: 0,
+		Ratio:     0.0,
+		Exhausted: true,
+		ResetAt:   resetTime,
+		FetchedAt: mockTime,
+	})
+
+	cooldown, isTransient := markDowngraded(acctID, neon, "4 Hydrogen High")
+	if isTransient {
+		t.Fatal("expected isTransient=false on genuine quota exhaustion")
+	}
+
+	// Cooldown should be 45m + 15s jitter = 45m15s
+	expectedCooldown := 45*time.Minute + 15*time.Second
+	if cooldown < expectedCooldown-time.Second || cooldown > expectedCooldown+time.Second {
+		t.Fatalf("expected dynamic cooldown %v, got %v", expectedCooldown, cooldown)
+	}
+
+	cooling, soonest := coolingAccounts(neon)
+	if !cooling[acctID] {
+		t.Fatal("expected exhausted_acct to be cooling")
+	}
+	if soonest < 45*time.Minute || soonest > 46*time.Minute {
+		t.Fatalf("expected soonest ~45m15s, got %v", soonest)
+	}
+}
+

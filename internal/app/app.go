@@ -162,6 +162,7 @@ func Run() {
 		mux.HandleFunc("/admin/api/queue/", requireAuth(handleAdminCancelQueue))
 		mux.HandleFunc("/admin/api/test", requireAuth(handleAdminTest))
 		mux.HandleFunc("/admin/api/video-quota", requireAuth(handleAdminVideoQuota))
+		mux.HandleFunc("/admin/api/quota", requireAuth(handleAdminQuota))
 		mux.HandleFunc("/admin/api/logs", requireAuth(handleAdminLogs))
 	}
 
