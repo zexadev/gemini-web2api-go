@@ -149,6 +149,7 @@ func Run() {
 		mux.HandleFunc("/admin/api/config", requireAuth(handleAdminConfig))
 		mux.HandleFunc("/admin/api/cookies", requireAuth(handleAdminCookies))
 		mux.HandleFunc("/admin/api/cookies/", requireAuth(handleAdminCookieItem))
+		mux.HandleFunc("/admin/api/cookies/sync", requireAuth(handleAdminCookieSync))
 		mux.HandleFunc("/admin/api/test", requireAuth(handleAdminTest))
 		mux.HandleFunc("/admin/api/video-quota", requireAuth(handleAdminVideoQuota))
 	}

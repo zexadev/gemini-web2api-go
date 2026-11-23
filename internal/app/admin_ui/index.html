@@ -359,28 +359,10 @@
   .modal-body { margin: 14px 0 18px; }
   .modal-err { color: var(--fail); font-size: 12.5px; margin-bottom: 10px; }
 
-  /* ── 分段切换（导入 Cookie 的两种填法）────────────────────────────────
-     两种填法各有各的场景：逐项适合照着 DevTools 一条条抄，整串适合已经有
-     "k=v; k=v" 现成串的。做成 tab 而不是两个入口，是因为切换时数据要互相
-     带过去——否则填一半换个模式就白填了。 */
-  .segbar { display: inline-flex; background: var(--bg); border-radius: 999px;
-            padding: 3px; gap: 2px; margin-bottom: 14px; }
-  .segbar button { border: none; background: transparent; cursor: pointer;
-                   font: inherit; font-size: 12.5px; color: var(--muted);
-                   padding: 6px 14px; border-radius: 999px; transition: all .15s; }
-  .segbar button.on { background: var(--card); color: var(--fg);
-                      box-shadow: 0 1px 3px rgba(60,64,67,.16); }
-  .ck-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
-             gap: 10px 12px; }
-  .ck-grid .field { margin-bottom: 0; }
-  .ck-grid .field.wide { grid-column: 1 / -1; }
-  .ck-grid label { display: block; font-size: 11.5px; color: var(--muted);
-                   margin-bottom: 4px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-  .ck-grid label .req { color: var(--fail); }
-  .ck-grid input { width: 100%; font-family: var(--mono); font-size: 12px;
-                   text-overflow: ellipsis; }
-  .ck-extra { font-size: 12px; color: var(--muted); margin-top: 10px; line-height: 1.6; }
-  /* 逐项模式列了 7 个框，窄屏下别把弹窗撑爆 */
+  /* 导入 Cookie 时粘贴框下面的识别预览 */
+  .ck-extra { font-size: 12px; color: var(--muted); margin-top: 6px; line-height: 1.6; }
+  .field label .req { color: var(--fail); }
+  /* 导入 Cookie 的 JSON 框要宽一点，窄屏下别把弹窗撑爆 */
   .modal.wide { width: min(620px, 94vw); }
 
   @media (max-width: 1100px) { .grid-main { grid-template-columns: 1fr; } }
@@ -1257,16 +1239,19 @@ async function resetProxy(id) {
 }
 // Cookie 池 ────────────────────────────────────────────────────────────────
 
-// 逐项模式列出的 cookie。顺序按"从 DevTools 里找的难易"排，不是字母序。
-// req 只标 SAPISID：后端也只强制这一项（要用它算 SAPISIDHASH 授权头），
-// 其余缺了不一定不能用，标成必填会把能用的号挡在外面。
+// 导入预览里逐个打勾的关键项。req 只标 SAPISID：后端也只强制这一项（要用它算
+// SAPISIDHASH 授权头），其余缺了不一定不能用，标成必填会把能用的号挡在外面。
 const COOKIE_KEYS = [
-  { k: '__Secure-1PSID', hint: '主会话' },
-  { k: 'SAPISID', req: true, hint: '算授权头用，缺了会被当匿名' },
-  { k: '__Secure-1PSIDTS', hint: '约 30 分钟过期，保活会自动换发' },
-  { k: 'SID' }, { k: 'HSID' }, { k: 'SSID' }, { k: 'APISID' },
-  { k: 'OSID', hint: 'gemini.google.com 自己的登录 cookie，缺了会被跳去登录页' },
+  { k: 'SAPISID', req: true },
+  { k: '__Secure-1PSID' },
+  { k: '__Secure-1PSIDTS' },
+  { k: 'OSID' },
 ];
+
+// 跟后端 cookieTemplateOrder 保持一致：对象形态的 JSON 按这个顺序拼，再接上按名字排序的其余项。
+// 顺序必须确定，否则同一份 cookie 因键顺序不同拼出两种串，按内容去重就失效了。
+const COOKIE_TEMPLATE_ORDER = ['SID', 'HSID', 'SSID', 'APISID', 'SAPISID', '__Secure-1PSID', '__Secure-1PSIDTS', 'OSID'];
+const COOKIE_TARGET_HOST = 'gemini.google.com';
 
 // 把 "k=v; k=v" 拆成对象。值里可能含 '='（base64 补位），所以只在第一个等号处切。
 function parseCookieStr(s) {
@@ -1279,21 +1264,92 @@ function parseCookieStr(s) {
   return out;
 }
 
-function joinCookieObj(obj) {
-  return Object.entries(obj).filter(([, v]) => (v || '').trim())
-    .map(([k, v]) => `${k}=${String(v).trim()}`).join('; ');
+// 跟后端 cookieDomainMatches 一样：浏览器会不会把这条发给 gemini.google.com。
+// 导出"全部 cookie"时会混进 youtube.com、accounts.google.com（它也有个 OSID）之类的。
+function cookieDomainMatches(domain) {
+  const d = String(domain || '').trim().replace(/^\./, '').toLowerCase();
+  return !d || d === COOKIE_TARGET_HOST || COOKIE_TARGET_HOST.endsWith('.' + d);
 }
 
-async function addCookieAcct() {
-  // 两个模式共用这一份状态，切 tab 时互相带过去。extras 存的是不在
-  // COOKIE_KEYS 里的项——整串粘贴进来的 cookie 往往还带一堆别的，
-  // 切到逐项再切回去不能把它们弄丢。
-  let extras = {};
+// 浏览器扩展导出的数组 → "k=v; k=v"。保留导出顺序；同名时 domain 更具体的胜出。
+function joinCookieEntries(arr) {
+  const order = [], byName = {};
+  for (const e of arr) {
+    if (!e || typeof e !== 'object') continue;
+    const name = String(e.name ?? '').trim();
+    const val = String(e.value ?? '').trim();
+    if (!name || !val || !cookieDomainMatches(e.domain)) continue;
+    const dl = String(e.domain || '').trim().replace(/^\./, '').length;
+    if (name in byName) {
+      if (dl > byName[name].dl) byName[name] = { val, dl };
+      continue;
+    }
+    order.push(name);
+    byName[name] = { val, dl };
+  }
+  return order.map(n => `${n}=${byName[n].val}`).join('; ');
+}
 
+function joinCookieMap(m) {
+  const str = k => (typeof m[k] === 'string' ? m[k].trim() : '');
+  const parts = [];
+  COOKIE_TEMPLATE_ORDER.forEach(k => { if (str(k)) parts.push(`${k}=${str(k)}`); });
+  Object.keys(m).filter(k => !COOKIE_TEMPLATE_ORDER.includes(k) && k !== 'sapisid' && str(k))
+    .sort().forEach(k => parts.push(`${k}=${str(k)}`));
+  return parts.join('; ');
+}
+
+// parseCookieInput 把用户粘进来的任何形态归一成裸串，并说明认出来的是哪种。认的：
+//   - Cookie-Editor / EditThisCookie 等扩展导出的 JSON 数组 [{name, value, domain}, ...]
+//   - Playwright / Puppeteer storageState {"cookies": [...]}
+//   - 名字→值的对象 {"SID": "...", ...}，以及旧格式 {"cookie": "k=v; ..."}
+//   - DevTools「复制为 cURL」整段（取 -b / Cookie 头）
+//   - 普通 "k=v; k=v" 串（可带 "Cookie:" 前缀）
+// 返回 { cookie, kind } 或 { error }。
+function parseCookieInput(text) {
+  let s = String(text || '').trim();
+  if (!s) return { cookie: '', kind: '' };
+
+  if (s[0] === '[' || s[0] === '{') {
+    let v;
+    try { v = JSON.parse(s); } catch (e) {
+      return { error: (LANG === 'en' ? 'Invalid JSON: ' : 'JSON 格式不对：') + e.message };
+    }
+    if (Array.isArray(v)) return { cookie: joinCookieEntries(v), kind: 'json-array' };
+    if (v && Array.isArray(v.cookies)) return { cookie: joinCookieEntries(v.cookies), kind: 'storage-state' };
+    if (v && typeof v.cookie === 'string' && v.cookie.trim()) return { cookie: v.cookie.trim(), kind: 'json-cookie' };
+    if (v && typeof v === 'object') return { cookie: joinCookieMap(v), kind: 'json-map' };
+    return { error: LANG === 'en' ? 'Unrecognized JSON shape' : '认不出这段 JSON 的结构' };
+  }
+
+  // Windows 上浏览器给的是 cmd 版：Firefox 以 curl.exe 开头，引号和换行都用 ^ 转义（^" / 行尾 ^）。
+  // 先还原成普通引号再取 cookie；只在认出 cmd 转义时才去 ^，POSIX 版的值里可能真有 ^。
+  if (/^curl(\.exe)?\s/i.test(s)) {
+    if (/\^"|\^\r?\n/.test(s)) s = s.replace(/\^\r?\n/g, ' ').replace(/\^(.)/g, '$1');
+    const m = s.match(/(?:-b|--cookie)\s+(['"])([\s\S]*?)\1/) ||
+              s.match(/-H\s+(['"])cookie:\s*([\s\S]*?)\1/i);
+    if (!m) return { error: LANG === 'en' ? 'No cookie found in this cURL command' : '这段 cURL 里没找到 cookie' };
+    return { cookie: m[2].trim(), kind: 'curl' };
+  }
+
+  s = s.replace(/^cookie:\s*/i, '');
+  return { cookie: Object.keys(parseCookieStr(s)).length ? s : '', kind: 'string' };
+}
+
+const COOKIE_KIND_LABEL = {
+  'json-array': ['扩展导出的 JSON', 'extension JSON export'],
+  'storage-state': ['Playwright storageState', 'Playwright storageState'],
+  'json-cookie': ['JSON（cookie 字段）', 'JSON (cookie field)'],
+  'json-map': ['JSON 对象', 'JSON object'],
+  'curl': ['cURL 命令', 'cURL command'],
+  'string': ['cookie 串', 'cookie string'],
+};
+
+async function addCookieAcct() {
   const data = await buildModal({
     title: '导入 Cookie',
     wide: true,
-    desc: '浏览器 F12 → Application → Cookies → 选 <code>https://gemini.google.com</code>。逐项抄或整串粘贴都行，两种填法可随时切换，已填的内容会带过去。',
+    desc: '在已登录的 <code>https://gemini.google.com</code> 页面用 Cookie-Editor 之类的扩展 <b>Export → JSON</b>，整段粘到下面即可。',
     bodyHTML: `
       <div class="field">
         <label>标签</label>
@@ -1307,35 +1363,16 @@ async function addCookieAcct() {
         <div class="hint">浏览器里同时登了多个 Google 号才需要改：打开那个号的 Gemini，地址栏是 /u/1/ 就填 1，没有 /u/ 就是 0。同一串 cookie 想当几个号用，就导入几次、各填各的序号。</div>
       </div>
 
-      <div class="segbar" data-role="seg">
-        <button type="button" data-mode="raw" class="on">整串粘贴（推荐）</button>
-        <button type="button" data-mode="fields">逐项填写</button>
-      </div>
-
-      <div data-pane="fields" style="display:none;">
-        <div class="ck-grid">
-          ${COOKIE_KEYS.map(c => `
-            <div class="field${c.k.length > 12 ? ' wide' : ''}">
-              <label>${escapeHtml(c.k)}${c.req ? ' <span class="req">*</span>' : ''}</label>
-              <input data-ck="${escapeHtml(c.k)}" type="text" autocomplete="off" spellcheck="false"
-                     placeholder="${escapeHtml(c.hint || '')}" />
-            </div>`).join('')}
-        </div>
-        <div class="ck-extra" data-role="extras"></div>
-        <div class="ck-extra">前三项是同类项目实践里的最小可用集合，下面四项补齐更稳。
-        抓包实测浏览器每次实际会发 <b>20 多个</b> cookie，而我们把整串原样转发
-        （代码里只解析 SAPISID 用来算授权头），所以
-        <b>整串粘贴比逐项填更接近真实浏览器</b>；逐项模式适合手头只有零散几项时用。</div>
-      </div>
-
-      <div data-pane="raw">
-        <div class="field">
-          <textarea data-name="cookie" rows="6" spellcheck="false"
-            placeholder="SID=...; HSID=...; SSID=...; APISID=...; SAPISID=...; __Secure-1PSID=...; __Secure-1PSIDTS=..."></textarea>
-          <div class="hint">整行粘贴，分号分隔。至少要含 SAPISID 和 __Secure-1PSID。
-          建议用 Firefox 导出（Chrome 新版本的会话绑在设备上，续不了）。DevTools 里全选复制即可，
-          多余的项会一并保留 —— 发得越全越像真实浏览器。</div>
-        </div>
+      <div class="field">
+        <label>Cookie JSON <span class="req">*</span>
+          <a href="#" data-role="pickfile" style="float:right;font-weight:normal;">从文件读取</a></label>
+        <input type="file" data-role="file" accept=".json,.txt,application/json,text/plain" style="display:none;" />
+        <textarea data-name="cookie" rows="9" spellcheck="false" style="font-family:var(--mono);font-size:12px;"
+          placeholder='[{"domain": ".google.com", "name": "SAPISID", "value": "..."}, ...]'></textarea>
+        <div class="ck-extra" data-role="preview"></div>
+        <div class="hint">不是 gemini.google.com 的项（youtube.com、accounts.google.com 等）会自动丢掉。
+        也认 <code>{"SID": "...", ...}</code> 对象、Playwright storageState、DevTools「复制为 cURL」和普通的 <code>k=v; k=v</code> 串。
+        建议用 Firefox 导出（Chrome 新版本的会话绑在设备上，续不了）。</div>
       </div>
 
       <div class="field" style="margin-top:14px;">
@@ -1344,67 +1381,51 @@ async function addCookieAcct() {
       </div>`,
     submitText: '导入',
     onReady: (overlay) => {
-      const $ = (s) => overlay.querySelector(s);
-      const inputs = () => [...overlay.querySelectorAll('[data-ck]')];
-      const ta = $('[data-name=cookie]');
+      const ta = overlay.querySelector('[data-name=cookie]');
+      const pv = overlay.querySelector('[data-role=preview]');
+      const fileIn = overlay.querySelector('[data-role=file]');
+      const en = LANG === 'en';
 
-      const fieldsToRaw = () => {
-        const obj = {};
-        inputs().forEach(el => { if (el.value.trim()) obj[el.dataset.ck] = el.value.trim(); });
-        ta.value = joinCookieObj({ ...obj, ...extras });
+      const render = () => {
+        const r = parseCookieInput(ta.value);
+        if (r.error) { pv.innerHTML = `<span style="color:var(--fail)">${escapeHtml(r.error)}</span>`; return; }
+        if (!r.kind) { pv.textContent = ''; return; }
+        const obj = parseCookieStr(r.cookie);
+        const n = Object.keys(obj).length;
+        if (!n) {
+          pv.innerHTML = `<span style="color:var(--fail)">${en
+            ? 'No cookies for gemini.google.com found'
+            : '没认出发往 gemini.google.com 的 cookie'}</span>`;
+          return;
+        }
+        const kind = COOKIE_KIND_LABEL[r.kind][en ? 1 : 0];
+        const checks = COOKIE_KEYS.map(c => obj[c.k]
+          ? `<span style="color:var(--ok)">✓ ${escapeHtml(c.k)}</span>`
+          : `<span style="color:${c.req ? 'var(--fail)' : 'var(--warn)'}">✗ ${escapeHtml(c.k)}</span>`).join(' &nbsp;');
+        pv.innerHTML = (en ? `Recognized ${escapeHtml(kind)}, ${n} cookie${n > 1 ? 's' : ''}: `
+                           : `识别为${escapeHtml(kind)}，共 ${n} 项：`) + checks;
       };
-      const rawToFields = () => {
-        const obj = parseCookieStr(ta.value);
-        const known = new Set(COOKIE_KEYS.map(c => c.k));
-        extras = {};
-        Object.entries(obj).forEach(([k, v]) => { if (!known.has(k)) extras[k] = v; });
-        inputs().forEach(el => { el.value = obj[el.dataset.ck] || ''; });
-        const n = Object.keys(extras).length;
-        $('[data-role=extras]').textContent = n
-          ? (LANG === 'en'
-              ? `${n} additional item${n > 1 ? 's' : ''} not listed above (${Object.keys(extras).slice(0, 4).join(', ')}${n > 4 ? ' …' : ''}) will be kept.`
-              : `另有 ${n} 项未在上面列出（${Object.keys(extras).slice(0, 4).join(', ')}${n > 4 ? ' …' : ''}），会一并保留。`)
-          : '';
-      };
+      ta.addEventListener('input', render);
 
-      overlay.querySelectorAll('[data-role=seg] button').forEach(btn => {
-        btn.onclick = () => {
-          const mode = btn.dataset.mode;
-          if (mode === 'raw') fieldsToRaw(); else rawToFields();
-          overlay.querySelectorAll('[data-role=seg] button')
-            .forEach(b => b.classList.toggle('on', b === btn));
-          $('[data-pane=fields]').style.display = mode === 'fields' ? '' : 'none';
-          $('[data-pane=raw]').style.display = mode === 'raw' ? '' : 'none';
-          if (LANG === 'en') translateTree(overlay, true);
-        };
-      });
-      // 在逐项模式里直接粘贴一整串时自动拆开，省得用户先去切 tab
-      inputs().forEach(el => el.addEventListener('paste', (ev) => {
-        const txt = (ev.clipboardData || window.clipboardData).getData('text') || '';
-        if (!txt.includes(';') || !txt.includes('=')) return;
-        ev.preventDefault();
-        ta.value = txt.trim();
-        rawToFields();
-      }));
+      overlay.querySelector('[data-role=pickfile]').onclick = (ev) => { ev.preventDefault(); fileIn.click(); };
+      fileIn.onchange = async () => {
+        const f = fileIn.files && fileIn.files[0];
+        if (!f) return;
+        ta.value = (await f.text()).trim();
+        fileIn.value = '';
+        render();
+      };
     },
     onSubmit: (overlay) => {
       const label = (overlay.querySelector('[data-name=label]').value || '').trim();
       const note = (overlay.querySelector('[data-name=note]').value || '').trim();
       const authuser = parseAuthUser(overlay.querySelector('[data-name=authuser]').value);
       if (authuser === null) return { error: '账号序号要填 0 到 9 的整数' };
-      const isRaw =overlay.querySelector('[data-role=seg] button.on').dataset.mode === 'raw';
-      let cookie;
-      if (isRaw) {
-        cookie = (overlay.querySelector('[data-name=cookie]').value || '').trim();
-      } else {
-        const obj = {};
-        overlay.querySelectorAll('[data-ck]').forEach(el => {
-          if (el.value.trim()) obj[el.dataset.ck] = el.value.trim();
-        });
-        cookie = joinCookieObj(obj);
-      }
+      const r = parseCookieInput(overlay.querySelector('[data-name=cookie]').value);
+      if (r.error) return { error: r.error };
+      const cookie = r.cookie;
       if (!cookie) return { error: 'Cookie 不能为空' };
-      if (!cookie.includes('SAPISID')) return { error: 'cookie 里没有 SAPISID，多半没复制全' };
+      if (!parseCookieStr(cookie).SAPISID) return { error: 'cookie 里没有 SAPISID，多半没复制全' };
       return { label, cookie, note, authuser };
     },
   });
@@ -2360,10 +2381,7 @@ const I18N_EN = {
   '删除代理': 'Delete proxy',
   '导入 Cookie': 'Import Cookie',
   '仅用于面板里区分账号，不参与请求。': 'Only used to tell accounts apart in the panel; not sent with requests.',
-  '整串粘贴（推荐）': 'Paste full string (recommended)',
-  '逐项填写': 'Fill in individually',
-  '整行粘贴，分号分隔。至少要含 SAPISID 和 __Secure-1PSID。 建议用 Firefox 导出（Chrome 新版本的会话绑在设备上，续不了）。DevTools 里全选复制即可， 多余的项会一并保留 —— 发得越全越像真实浏览器。':
-    'Paste the whole line, semicolon-separated. Must contain at least SAPISID and __Secure-1PSID. Prefer Firefox (recent Chrome binds the session to the device and it will not renew). Select-all and copy in DevTools; extra items are kept too — the more complete, the more it looks like a real browser.',
+  '从文件读取': 'Load from file',
   '备注': 'Note',
   'Cookie 不能为空': 'Cookie cannot be empty',
   'cookie 里没有 SAPISID，多半没复制全': 'No SAPISID in the cookie — you probably did not copy it all',
@@ -2550,11 +2568,11 @@ const I18N_HTML_EN = {
   '改这些本来就要重启进程，所以放在 <code>docker-compose.yml</code> 里管， 不做成网页表单——凭证也不该经过浏览器。':
     'Changing these requires restarting the process, so they are managed in <code>docker-compose.yml</code> rather than web forms — credentials should never traverse the browser.',
 
-  '浏览器 F12 → Application → Cookies → 选 <code>https://gemini.google.com</code>。逐项抄或整串粘贴都行，两种填法可随时切换，已填的内容会带过去。':
-    'Browser F12 → Application → Cookies → select <code>https://gemini.google.com</code>. Either copy item-by-item or paste the full string; you can switch between modes anytime and entered values will carry over.',
+  '在已登录的 <code>https://gemini.google.com</code> 页面用 Cookie-Editor 之类的扩展 <b>Export → JSON</b>，整段粘到下面即可。':
+    'On a signed-in <code>https://gemini.google.com</code> page, use an extension such as Cookie-Editor to <b>Export → JSON</b> and paste the whole thing below.',
 
-  '前三项是同类项目实践里的最小可用集合，下面四项补齐更稳。 抓包实测浏览器每次实际会发 <b>20 多个</b> cookie，而我们把整串原样转发 （代码里只解析 SAPISID 用来算授权头），所以 <b>整串粘贴比逐项填更接近真实浏览器</b>；逐项模式适合手头只有零散几项时用。':
-    'The first three items form the minimum viable set in similar projects; adding the bottom four is more stable. Packet captures show real browsers send <b>over 20</b> cookies, and we forward the full string intact (only parsing SAPISID to compute the authorization header). Therefore, <b>pasting the full string resembles a real browser more closely than filling items individually</b>; individual mode is suited when only sparse items are available.',
+  '不是 gemini.google.com 的项（youtube.com、accounts.google.com 等）会自动丢掉。 也认 <code>{"SID": "...", ...}</code> 对象、Playwright storageState、DevTools「复制为 cURL」和普通的 <code>k=v; k=v</code> 串。 建议用 Firefox 导出（Chrome 新版本的会话绑在设备上，续不了）。':
+    'Entries not sent to gemini.google.com (youtube.com, accounts.google.com, …) are dropped automatically. Also accepts a <code>{"SID": "...", ...}</code> object, Playwright storageState, DevTools "Copy as cURL" and a plain <code>k=v; k=v</code> string. Prefer exporting from Firefox (recent Chrome binds the session to the device and it will not renew).',
   '打一次真实请求看是否通。不消耗限流配额、不写入请求记录。 返回 302/429 就是出口进了黑名单，该换 IP。':
     'Send a real request to verify connectivity. Does not consume rate limits or write to request logs. Returning 302/429 means the egress IP was blacklisted and needs rotation.',
 };

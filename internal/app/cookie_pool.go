@@ -367,14 +367,24 @@ var cookieTemplateOrder = []string{
 
 // normalizeCookie 把各种输入形态归一化成池子要的裸 "k=v; k=v" 串。
 //
-// 吃三种：
+// 吃这几种：
 //   - 裸串，原样返回
 //   - 旧单 cookie 路径的 {"cookie":"k=v; k=v","sapisid":"..."}
-//   - 面板逐项模式的 {"SID":"a","SAPISID":"b",...}
+//   - 名字→值的对象 {"SID":"a","SAPISID":"b",...}
+//   - 浏览器扩展导出的数组 [{"name":"SID","value":"a","domain":".google.com"},...]
+//     以及 Playwright storageState {"cookies":[...]}，按 domain 过滤到 gemini.google.com
 //
 // 不归一化的话池子里会存进一整段 JSON，SAPISID 提取和后续请求全错。
 func normalizeCookie(raw, who string) (string, bool) {
 	raw = strings.TrimSpace(raw)
+	if strings.HasPrefix(raw, "[") {
+		var arr []cookieJSONEntry
+		if err := json.Unmarshal([]byte(raw), &arr); err != nil {
+			logf("[cookie] %s 是 JSON 数组但解析失败，跳过: %v", who, err)
+			return "", false
+		}
+		return joinCookieEntries(arr, who)
+	}
 	if !strings.HasPrefix(raw, "{") {
 		return raw, true
 	}
@@ -382,6 +392,17 @@ func normalizeCookie(raw, who string) (string, bool) {
 	if err := json.Unmarshal([]byte(raw), &m); err != nil {
 		logf("[cookie] %s 是 JSON 但解析失败，跳过: %v", who, err)
 		return "", false
+	}
+	// Playwright / Puppeteer 的 storageState：{"cookies":[{name,value,domain}...], "origins":[...]}
+	if _, ok := m["cookies"].([]interface{}); ok {
+		var st struct {
+			Cookies []cookieJSONEntry `json:"cookies"`
+		}
+		if err := json.Unmarshal([]byte(raw), &st); err != nil {
+			logf("[cookie] %s 的 cookies 数组解析失败，跳过: %v", who, err)
+			return "", false
+		}
+		return joinCookieEntries(st.Cookies, who)
 	}
 	if c, ok := m["cookie"].(string); ok && strings.TrimSpace(c) != "" {
 		return strings.TrimSpace(c), true
@@ -413,6 +434,66 @@ func normalizeCookie(raw, who string) (string, bool) {
 	if len(parts) == 0 {
 		logf("[cookie] %s 是 JSON 但一项非空值都没有，跳过", who)
 		return "", false
+	}
+	return strings.Join(parts, "; "), true
+}
+
+// cookieJSONEntry 是浏览器扩展（Cookie-Editor / EditThisCookie / Get cookies.txt 的 JSON 版）
+// 和 Playwright storageState 导出的单条 cookie。只用得到这三个字段。
+type cookieJSONEntry struct {
+	Name   string `json:"name"`
+	Value  string `json:"value"`
+	Domain string `json:"domain"`
+}
+
+// cookieTargetHost 是这些 cookie 最终要发往的主机，用来按 domain 过滤导出文件。
+const cookieTargetHost = "gemini.google.com"
+
+// cookieDomainMatches 按 RFC 6265 的 domain-match 规则判断这条 cookie 浏览器会不会发给
+// gemini.google.com。导出"全部 cookie"时会混进 youtube.com、accounts.google.com 之类的，
+// 那些不该进串里——尤其 accounts.google.com 也有一个 OSID，混进来会顶掉真正的那个。
+// domain 为空（有些导出不带）就当匹配。
+func cookieDomainMatches(domain string) bool {
+	d := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(domain), "."))
+	if d == "" {
+		return true
+	}
+	return d == cookieTargetHost || strings.HasSuffix(cookieTargetHost, "."+d)
+}
+
+// joinCookieEntries 把导出的 cookie 数组拼成 "k=v; k=v"。保留导出里的原始顺序（接近浏览器
+// 实际发送的顺序）；同名的按 domain 更具体的那条为准——host-only 的 gemini.google.com
+// 优先于 .google.com。
+func joinCookieEntries(arr []cookieJSONEntry, who string) (string, bool) {
+	type kept struct {
+		value  string
+		domLen int
+	}
+	var order []string
+	byName := map[string]kept{}
+	for _, e := range arr {
+		name := strings.TrimSpace(e.Name)
+		val := strings.TrimSpace(e.Value)
+		if name == "" || val == "" || !cookieDomainMatches(e.Domain) {
+			continue
+		}
+		dl := len(strings.TrimPrefix(strings.TrimSpace(e.Domain), "."))
+		if prev, ok := byName[name]; ok {
+			if dl > prev.domLen {
+				byName[name] = kept{val, dl}
+			}
+			continue
+		}
+		order = append(order, name)
+		byName[name] = kept{val, dl}
+	}
+	if len(order) == 0 {
+		logf("[cookie] %s 是 cookie 数组但没有发往 %s 的有效项，跳过", who, cookieTargetHost)
+		return "", false
+	}
+	parts := make([]string, 0, len(order))
+	for _, n := range order {
+		parts = append(parts, n+"="+byName[n].value)
 	}
 	return strings.Join(parts, "; "), true
 }
@@ -736,4 +817,86 @@ func xsrfErrBlamesCookie(err error) bool {
 		return strings.HasPrefix(se.Location, "accounts.google.com")
 	}
 	return false
+}
+
+// accountSyncResult 是 accountSync 的结果：动作是 added / updated / unchanged。
+type accountSyncResult struct {
+	ID     int64  `json:"id"`
+	Action string `json:"action"`
+}
+
+// accountSync 是浏览器扩展定时推 cookie 用的「有就更新、没有就新建」。
+//
+// 找哪一行，按顺序：
+//  1. 同一会话（cookieIdentity：SAPISID + __Secure-1PSID）且同一账号序号 —— 正常的定时刷新
+//  2. 同标签（不分大小写、非空）且同一账号序号 —— 用户重新登录过，会话换了但还是这个号
+//  3. 都没有就新建
+//
+// 账号序号必须一起比：同一串 cookie 可以按不同 /u/N 导入成几个号（见面板说明），
+// 只比会话会把 /u/1 的刷新写进 /u/0 那行。
+//
+// 写入时清掉失败计数。被**自动停用**的号（fail_count 到了阈值）一并重新启用——
+// 它停用的原因就是 cookie 失效，现在换了新的；用户手动停用的（fail_count 没到阈值）不动。
+func accountSync(label string, authuser int, cookie string) (accountSyncResult, error) {
+	if authuser < 0 || authuser > maxAuthUser {
+		return accountSyncResult{}, fmt.Errorf("账号序号要在 0..%d 之间", maxAuthUser)
+	}
+	c, ok := normalizeCookie(cookie, "扩展推送的 cookie")
+	if !ok {
+		return accountSyncResult{}, fmt.Errorf("cookie 解析失败：既不是 \"k=v; k=v\" 串，也不是可识别的 JSON")
+	}
+	if extractSAPISID(c) == "" {
+		return accountSyncResult{}, fmt.Errorf("cookie 里没有 SAPISID，浏览器可能没登录 Google")
+	}
+	label = strings.TrimSpace(label)
+	warnMissingOSID(label, c)
+
+	accts := accountList()
+	var hit *CookieAccount
+	ident := cookieIdentity(c)
+	for i := range accts {
+		if accts[i].AuthUser == authuser && cookieIdentity(accts[i].Cookie) == ident {
+			hit = &accts[i]
+			break
+		}
+	}
+	if hit == nil && label != "" {
+		for i := range accts {
+			if accts[i].AuthUser == authuser && strings.EqualFold(strings.TrimSpace(accts[i].Label), label) {
+				hit = &accts[i]
+				break
+			}
+		}
+	}
+
+	if hit == nil {
+		id, err := accountInsert(label, c, "由浏览器扩展同步")
+		if err != nil {
+			return accountSyncResult{}, err
+		}
+		if authuser != 0 {
+			if err := accountSetAuthUser(id, authuser); err != nil {
+				return accountSyncResult{}, err
+			}
+		}
+		return accountSyncResult{ID: id, Action: "added"}, nil
+	}
+
+	if hit.Cookie == c && hit.FailCount == 0 {
+		return accountSyncResult{ID: hit.ID, Action: "unchanged"}, nil
+	}
+	reenable := hit.Status == "disabled" && hit.FailCount >= maxCookieAuthFailures
+	status := hit.Status
+	if reenable {
+		status = "enabled"
+	}
+	if _, err := getDB().Exec(
+		`UPDATE accounts SET cookie=?, fail_count=0, last_error='', status=? WHERE id=?`,
+		c, status, hit.ID); err != nil {
+		return accountSyncResult{}, err
+	}
+	if reenable {
+		logf("[cookie] 账号 #%d 收到新 cookie，已从自动停用中恢复", hit.ID)
+	}
+	return accountSyncResult{ID: hit.ID, Action: "updated"}, nil
 }
