@@ -1,11 +1,15 @@
 package app
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
+	"time"
 
 	fhttp "github.com/bogdanfinn/fhttp"
 )
@@ -131,18 +135,170 @@ func decodeDataURL(src string, idx int) (pendingUpload, error) {
 	return newMediaUpload(data, mime, idx)
 }
 
+var (
+	_, cgnatNet, _ = net.ParseCIDR("100.64.0.0/10")
+	_, zeroNet, _  = net.ParseCIDR("0.0.0.0/8")
+
+	directImageTransport = &http.Transport{
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			dialer := &net.Dialer{
+				Timeout:   30 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}
+			if ip := net.ParseIP(host); ip != nil {
+				if isBlockedIP(ip) {
+					return nil, fmt.Errorf("dial target IP %s is blocked", ip.String())
+				}
+				return dialer.DialContext(ctx, network, addr)
+			}
+			ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+			if err != nil {
+				return nil, fmt.Errorf("lookup ip %q: %w", host, err)
+			}
+			if len(ips) == 0 {
+				return nil, fmt.Errorf("no IP found for %q", host)
+			}
+			for _, ip := range ips {
+				if isBlockedIP(ip) {
+					return nil, fmt.Errorf("resolved IP %s for host %q is blocked", ip.String(), host)
+				}
+			}
+			var lastErr error
+			for _, ip := range ips {
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
+				target := net.JoinHostPort(ip.String(), port)
+				conn, err := dialer.DialContext(ctx, network, target)
+				if err == nil {
+					return conn, nil
+				}
+				lastErr = err
+			}
+			return nil, fmt.Errorf("failed to dial %q: %w", host, lastErr)
+		},
+	}
+)
+
+// isBlockedIP checks if an IP is in a private, loopback, link-local, multicast,
+// CGNAT (Tailscale), or unspecified range to guard against SSRF.
+func isBlockedIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
+		return true
+	}
+	if cgnatNet != nil && (cgnatNet.Contains(ip) || (ip.To4() != nil && cgnatNet.Contains(ip.To4()))) {
+		return true
+	}
+	if zeroNet != nil && (zeroNet.Contains(ip) || (ip.To4() != nil && zeroNet.Contains(ip.To4()))) {
+		return true
+	}
+	return false
+}
+
+// validateExternalURL checks that a URL is a valid http/https URL and does not target
+// localhost, loopback, private networks, link-local, or cloud metadata endpoints (SSRF guard).
+// If no proxy is configured, it fails closed if net.LookupIP fails.
+func validateExternalURL(rawURL string, proxyURL ...string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("unsupported scheme %q (only http and https allowed)", u.Scheme)
+	}
+	hostname := u.Hostname()
+	if hostname == "" {
+		return fmt.Errorf("missing host in URL")
+	}
+	lowerHost := strings.TrimSuffix(strings.ToLower(hostname), ".")
+	if lowerHost == "localhost" || strings.HasSuffix(lowerHost, ".localhost") ||
+		lowerHost == "169.254.169.254" || lowerHost == "metadata.google.internal" ||
+		lowerHost == "metadata" {
+		return fmt.Errorf("access to local/metadata host %q is forbidden", hostname)
+	}
+	if ip := net.ParseIP(hostname); ip != nil {
+		if isBlockedIP(ip) {
+			return fmt.Errorf("access to blocked IP %s is forbidden", ip.String())
+		}
+	} else {
+		hasProxy := len(proxyURL) > 0 && strings.TrimSpace(proxyURL[0]) != ""
+		ips, err := net.LookupIP(hostname)
+		if err != nil {
+			if !hasProxy {
+				return fmt.Errorf("failed to resolve host %q: %w", hostname, err)
+			}
+		} else {
+			if len(ips) == 0 && !hasProxy {
+				return fmt.Errorf("no IP addresses found for host %q", hostname)
+			}
+			for _, ip := range ips {
+				if isBlockedIP(ip) {
+					return fmt.Errorf("host %q resolves to blocked IP %s", hostname, ip.String())
+				}
+			}
+		}
+	}
+	return nil
+}
+
 // fetchImage 下载远程图片。走跟正式请求同一个出口：图从别的 IP 拉、对话从这个 IP 发，
 // 除了慢一点没别的好处，还多暴露一个出口。
 func fetchImage(src, proxyURL string, idx int) (pendingUpload, error) {
+	if err := validateExternalURL(src, proxyURL); err != nil {
+		return pendingUpload{}, fmt.Errorf("image %d: %w", idx, err)
+	}
+
+	timeoutSec := 30
+	if rtCfg().RequestTimeout > 0 {
+		timeoutSec = rtCfg().RequestTimeout
+	}
+	clientTimeout := time.Duration(timeoutSec) * time.Second
+
 	var body []byte
 	var ctype string
+
 	if proxyURL != "" {
+		u, err := url.Parse(proxyURL)
+		if err != nil {
+			return pendingUpload{}, fmt.Errorf("image %d: invalid proxy URL: %w", idx, err)
+		}
+		tr := &http.Transport{
+			Proxy:                 http.ProxyURL(u),
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		}
+		client := &http.Client{
+			Timeout:   clientTimeout,
+			Transport: tr,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if len(via) >= 5 {
+					return fmt.Errorf("stopped after 5 redirects")
+				}
+				if err := validateExternalURL(req.URL.String(), proxyURL); err != nil {
+					return fmt.Errorf("redirect target blocked: %w", err)
+				}
+				return nil
+			},
+		}
 		req, err := http.NewRequest("GET", src, nil)
 		if err != nil {
 			return pendingUpload{}, err
 		}
 		applyChromeHeaders(req)
-		resp, err := getStdlibClient(proxyURL).Do(req)
+		resp, err := client.Do(req)
 		if err != nil {
 			return pendingUpload{}, fmt.Errorf("image %d: fetch failed: %w", idx, err)
 		}
@@ -175,6 +331,7 @@ func fetchImage(src, proxyURL string, idx int) (pendingUpload, error) {
 			return pendingUpload{}, err
 		}
 	}
+
 	if i := strings.Index(ctype, ";"); i > 0 {
 		ctype = ctype[:i]
 	}

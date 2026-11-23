@@ -140,6 +140,9 @@ func upscaleDownloadURL(u string) string {
 // downloadUpscaled 下载放大图。带 alr=yes 的链不回 302，而是回 200 text/plain、正文是下一跳
 // 地址（浏览器抓包：lh3 → work.fife → lh3，前两跳都是这样），照着正文往下跳直到拿到图。
 func downloadUpscaled(u, cookie, proxyURL, defaultMime string, authuser int) (string, []byte, error) {
+	if parsed, err := url.Parse(u); err != nil || !isAllowedGoogleMediaURL(parsed) {
+		return "", nil, fmt.Errorf("insecure upscale URL blocked: %s", u)
+	}
 	for hop := 0; hop < 5; hop++ {
 		mime, data, err := downloadBytes(u, cookie, proxyURL, defaultMime, authuser)
 		if err != nil {
@@ -147,6 +150,10 @@ func downloadUpscaled(u, cookie, proxyURL, defaultMime string, authuser int) (st
 		}
 		next := strings.TrimSpace(string(data))
 		if len(data) < 4096 && strings.HasPrefix(next, "https://") && !strings.ContainsAny(next, " \n<") {
+			parsed, perr := url.Parse(next)
+			if perr != nil || !isAllowedGoogleMediaURL(parsed) {
+				return "", nil, fmt.Errorf("insecure upscale redirect blocked: %s", next)
+			}
 			u = next
 			continue
 		}

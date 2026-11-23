@@ -696,6 +696,16 @@ func downloadBytes(rawURL, cookie, proxyURL, defaultMime string, authuser int) (
 	return mime, body, nil
 }
 
+// isAllowedGoogleMediaURL ensures that media URLs and redirect targets are HTTPS and on official Google domains.
+func isAllowedGoogleMediaURL(u *url.URL) bool {
+	if u == nil || u.Scheme != "https" {
+		return false
+	}
+	h := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+	return h == "google.com" || strings.HasSuffix(h, ".google.com") ||
+		h == "googleusercontent.com" || strings.HasSuffix(h, ".googleusercontent.com")
+}
+
 // mediaGetFollow 手动跟随重定向（最多 6 跳），每跳都把同一套 header（含 Cookie）重发。
 //
 // 为什么不用客户端自带的跟随：图片链会跨域 302（lh3 → work.fife.usercontent.google.com），
@@ -703,6 +713,9 @@ func downloadBytes(rawURL, cookie, proxyURL, defaultMime string, authuser int) (
 // 手动跟随、每跳重发 cookie 才能过。两个 client 本来也都配了「不自动跟随」。
 func mediaGetFollow(rawURL string, headers map[string]string, proxyURL string) (int, map[string]string, []byte, error) {
 	cur := rawURL
+	if u, err := url.Parse(cur); err != nil || !isAllowedGoogleMediaURL(u) {
+		return 0, nil, nil, fmt.Errorf("insecure media URL blocked: %s", cur)
+	}
 	for hop := 0; hop < 6; hop++ {
 		status, respHead, body, err := mediaGetOnce(cur, headers, proxyURL)
 		if err != nil {
@@ -716,6 +729,10 @@ func mediaGetFollow(rawURL string, headers map[string]string, proxyURL string) (
 			next, err := resolveRef(cur, loc)
 			if err != nil {
 				return status, respHead, body, err
+			}
+			uNext, err := url.Parse(next)
+			if err != nil || !isAllowedGoogleMediaURL(uNext) {
+				return status, respHead, body, fmt.Errorf("insecure redirect target blocked: %s", next)
 			}
 			cur = next
 			continue

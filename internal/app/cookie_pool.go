@@ -506,6 +506,7 @@ func markAccountResult(id int64, ok bool, errStr string) {
 		return
 	}
 	if ok {
+		clearTransientShed(id, "")
 		_, _ = getDB().Exec(
 			`UPDATE accounts SET last_ok_at=?, fail_count=0, last_error='' WHERE id=?`,
 			time.Now().Unix(), id)

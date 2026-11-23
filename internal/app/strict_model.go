@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -15,14 +16,20 @@ import (
 // ModelDowngradedError 表示 strict_model 开着时上游把请求静默降级了。
 // 它不是上游故障：同一个号重试只会再降级一次，所以重试循环见到它直接停。
 type ModelDowngradedError struct {
-	Requested string // 请求模型的显示名（ModelConfig.Upstream）
-	Reported  string // 服务端自报实际用的
-	AccountID int64  // 被降级的号，0 = 匿名
-	// RetryAfter 是全池都在冷却时最早那个号解冻还要多久，0 = 不知道。
-	RetryAfter time.Duration
+	Requested  string        // 请求模型的显示名（ModelConfig.Upstream）
+	Reported   string        // 服务端自报实际用的
+	AccountID  int64         // 被降级的号，0 = 匿名
+	RetryAfter time.Duration // 是全池都在冷却时最早那个号解冻还要多久，0 = 不知道。
+	Transient  bool          // 是否为集群瞬时容量降级（上游额度仍充裕）
+	QuotaRatio float64       // 剩余额度比例（0.0 ~ 1.0）
 }
 
 func (e *ModelDowngradedError) Error() string {
+	if e.Transient {
+		return fmt.Sprintf("requested %s but upstream answered with %s "+
+			"(upstream capacity shed; quota has %.0f%% remaining, please retry in a moment)",
+			e.Requested, e.Reported, e.QuotaRatio*100)
+	}
 	if e.Reported == "" {
 		return fmt.Sprintf("every cookie account was recently downgraded on %s "+
 			"(quota exhausted; strict_model is on), retry after %s", e.Requested, e.RetryAfter.Round(time.Second))
@@ -43,21 +50,65 @@ var (
 	downgradeUntil = map[downgradeKey]time.Time{}
 )
 
-func markDowngraded(accountID int64, mc ModelConfig) {
-	mins := rtCfg().StrictModelCooldownMin
-	if accountID == 0 || mins <= 0 {
-		return
+func markDowngraded(accountID int64, mc ModelConfig, reported ...string) (time.Duration, bool) {
+	if accountID == 0 {
+		return 0, false
 	}
+	rep := ""
+	if len(reported) > 0 {
+		rep = reported[0]
+	}
+
+	// 1. 尝试从上游获取真实额度（优先命中缓存，无缓存走 singleflight qpEbW）
+	quota, err := getOrFetchAccountQuota(context.Background(), accountID)
+
+	// 情况 A: 额度查询成功且未耗尽 -> 集群瞬时容量/负载降级 (Capacity Shed)
+	if err == nil && quota.Budget > 0 && !quota.Exhausted {
+		shedCount := recordTransientShed(accountID, mc.Upstream)
+		if shedCount >= 3 {
+			logf("[strict_model] 账号 #%d 在 %s 连续触发 %d 次瞬时降级（额度仍有 %.1f%%），熔断触发降级冷却 10 分钟",
+				accountID, mc.Upstream, shedCount, quota.Ratio*100)
+			cooldown := 10 * time.Minute
+			downgradeMu.Lock()
+			downgradeUntil[downgradeKey{accountID, mc.Upstream}] = quotaNow().Add(cooldown)
+			downgradeMu.Unlock()
+			return cooldown, false
+		}
+
+		logf("[strict_model] 账号 #%d 在 %s 被降级成 %s，但上游额度充裕（剩余 %d/%d，%.1f%%），判定为集群瞬时负载，豁免长期冷却",
+			accountID, mc.Upstream, rep, quota.Remaining, quota.Budget, quota.Ratio*100)
+		return 15 * time.Second, true
+	}
+
+	// 情况 B: 额度真实耗尽，或检测失败（走安全 fallback / 配置的冷却）
+	var cooldown time.Duration
+	if quota.Exhausted && !quota.ResetAt.IsZero() {
+		until := quota.ResetAt.Sub(quotaNow()) + 15*time.Second // +15s jitter
+		if until > 0 && until < 7*24*time.Hour {
+			cooldown = until
+		} else if until <= 0 {
+			cooldown = 30 * time.Second
+		}
+	} else {
+		mins := rtCfg().StrictModelCooldownMin
+		if mins <= 0 {
+			return 0, false
+		}
+		cooldown = time.Duration(mins) * time.Minute
+	}
+
 	downgradeMu.Lock()
-	downgradeUntil[downgradeKey{accountID, mc.Upstream}] = time.Now().Add(time.Duration(mins) * time.Minute)
+	downgradeUntil[downgradeKey{accountID, mc.Upstream}] = quotaNow().Add(cooldown)
 	downgradeMu.Unlock()
+	logf("[strict_model] 账号 #%d 在 %s 额度耗尽（或检测失败），冷却 %s", accountID, mc.Upstream, cooldown.Round(time.Second))
+	return cooldown, false
 }
 
 // coolingAccounts 返回正在为 mc 冷却的号，以及其中最早那个还要多久解冻。顺手清掉过期项。
 func coolingAccounts(mc ModelConfig) (map[int64]bool, time.Duration) {
 	out := map[int64]bool{}
 	var soonest time.Duration
-	now := time.Now()
+	now := quotaNow()
 	downgradeMu.Lock()
 	defer downgradeMu.Unlock()
 	for k, until := range downgradeUntil {
@@ -99,7 +150,18 @@ func pickAccountForModel(mc ModelConfig, exclude map[int64]bool) (*CookieAccount
 		return a, skip, nil
 	}
 	if len(skip) > 0 && hasCookie() {
+		if soonest == 0 && len(exclude) > 0 {
+			// 本次请求排除了号但未进入长期冷却（瞬时容量降级），给一个短重试等待
+			soonest = 15 * time.Second
+		}
 		return nil, skip, &ModelDowngradedError{Requested: mc.Upstream, RetryAfter: soonest}
+	}
+	if modelNeedsLogin(mc) && !hasCookie() {
+		total, _ := accountCount()
+		if total > 0 {
+			return nil, skip, fmt.Errorf("all %d cookie accounts in pool are disabled or expired; please check and update cookies in the Cookie Pool panel", total)
+		}
+		return nil, skip, fmt.Errorf("%s requires a Google account cookie, but no cookies are configured in the Cookie Pool", mc.Upstream)
 	}
 	return nil, skip, nil
 }
@@ -111,9 +173,16 @@ func retryOnAnotherAccount(res *StreamResult, err error, mc ModelConfig, exclude
 	if !errors.As(err, &mde) || mde.AccountID == 0 {
 		return false
 	}
-	markDowngraded(mde.AccountID, mc)
+	retryAfter, isTransient := markDowngraded(mde.AccountID, mc, mde.Reported)
+	mde.Transient = isTransient
+	mde.RetryAfter = retryAfter
+	if isTransient {
+		if q, ok := getCachedAccountQuota(mde.AccountID); ok {
+			mde.QuotaRatio = q.Ratio
+		}
+	}
 	exclude[mde.AccountID] = true
-	logf("[strict_model] 账号 #%d 在 %s 上被降级成 %s", mde.AccountID, mc.Upstream, mde.Reported)
+	logf("[strict_model] 账号 #%d 在 %s 上被降级成 %s (transient=%v)", mde.AccountID, mc.Upstream, mde.Reported, isTransient)
 	return res == nil || (res.Emitted == "" && res.EmittedReasoning == "")
 }
 
