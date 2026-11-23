@@ -40,12 +40,11 @@ func hasToolResult(messages []map[string]interface{}) bool {
 	return false
 }
 
-func toolReplyRecoveryMode(messages []map[string]interface{}, tools []map[string]interface{}, choice interface{}) toolRecoveryMode {
+func toolReplyHasFunction(tools []map[string]interface{}, choice interface{}) bool {
 	mode, forced := parseToolChoice(choice)
 	if mode == "none" {
-		return toolRecoveryDisabled
+		return false
 	}
-	available := false
 	for _, tool := range tools {
 		if getStr(tool, "type") != "function" {
 			continue
@@ -56,11 +55,14 @@ func toolReplyRecoveryMode(messages []map[string]interface{}, tools []map[string
 		}
 		name := getStr(fn, "name")
 		if name != "" && (forced == "" || forced == name) {
-			available = true
-			break
+			return true
 		}
 	}
-	if !available {
+	return false
+}
+
+func toolReplyRecoveryMode(messages []map[string]interface{}, tools []map[string]interface{}, choice interface{}) toolRecoveryMode {
+	if !toolReplyHasFunction(tools, choice) {
 		return toolRecoveryDisabled
 	}
 	// Responses clients may send only result text, with no structured status.
@@ -107,14 +109,27 @@ func repeatsCompletedTool(messages []map[string]interface{}, calls []ToolCall) b
 	if len(calls) == 0 {
 		return false
 	}
-	// Eligibility already requires that every call has a result.
+	pending := make(map[string]ToolCall)
 	var seen []ToolCall
 	for _, message := range messages {
 		switch getStr(message, "role") {
 		case "user":
+			clear(pending)
 			seen = seen[:0]
 		case "assistant":
-			seen = append(seen, conversationToolCalls(message["tool_calls"])...)
+			for _, call := range conversationToolCalls(message["tool_calls"]) {
+				if call.ID != "" {
+					pending[call.ID] = call
+				}
+			}
+		case "tool":
+			id := getStr(message, "tool_call_id")
+			if call, ok := pending[id]; ok {
+				if name := getStr(message, "name"); name == "" || name == call.Function.Name {
+					seen = append(seen, call)
+				}
+				delete(pending, id)
+			}
 		}
 	}
 	for _, call := range calls {

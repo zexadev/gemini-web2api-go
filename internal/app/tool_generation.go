@@ -16,11 +16,19 @@ const toolProtocolCorrection = "[Tool protocol correction]: The previous candida
 	"Respect actual client permission requirements, external budgets and returned errors; if one truly blocks action, " +
 	"state that exact constraint accurately. Never invent remaining counts, execution or sources."
 
+const toolFormatCorrection = "[Tool format correction]: The external Agent could not decode the previous candidate reply. " +
+	"Regenerate the next reply for the same request. No calls from the rejected reply were executed. " +
+	"If a tool is needed, emit a complete tool_call fence containing one valid JSON object with the allowed name and its arguments. " +
+	"Escape newlines, quotes and backslashes in JSON strings, and close both the JSON object and the fence. " +
+	"Prefer a smaller valid step if the chosen tool supports it. Respect the existing client constraints and tool results."
+
 type toolReplySource func(prompt string, onDelta func(string), retry bool) (*StreamResult, error)
 
 type toolReplyOptions struct {
 	inlineOnly         bool
-	continueCorrection func(string) (*StreamResult, error)
+	initialAttachment  bool
+	recoverMalformed   bool
+	continueCorrection func(string) (*StreamResult, error) // nil result and error mean no usable head.
 }
 
 const toolTranscriptHeader = "[External Agent transcript serialization]: You are writing the next response record for a separate Agent host. " +
@@ -48,15 +56,14 @@ func (*ToolProtocolError) Error() string {
 		"no external tool quota or permission denial was verified"
 }
 
-// generateToolReply repairs at most one unexposed capability disclaimer. After
-// tool results the claim can occur anywhere, so publish only the selected reply.
+// generateToolReply allows one correction before publishing a candidate.
 func generateToolReply(ctx context.Context, prompt string, messages []map[string]interface{}, tools []map[string]interface{}, choice interface{},
 	onDelta func(string), opt toolReplyOptions, generate toolReplySource) (string, []ToolCall, *StreamResult, error) {
 	var gate *toolRecoveryGate
 	mode := toolReplyRecoveryMode(messages, tools, choice)
 	if mode != toolRecoveryDisabled {
 		wrapped := toolTranscriptPrompt(prompt)
-		if budget := rtCfg().MaxPromptBytes; opt.inlineOnly && budget > 0 && len(wrapped) > budget {
+		if budget := rtCfg().MaxPromptBytes; opt.inlineOnly && !opt.initialAttachment && budget > 0 && len(wrapped) > budget {
 			if !hasToolResult(messages) {
 				return "", nil, nil, &PromptTooLongError{Bytes: len(wrapped), Budget: budget, HasCookie: hasCookie()}
 			}
@@ -67,9 +74,9 @@ func generateToolReply(ctx context.Context, prompt string, messages []map[string
 		}
 	}
 	switch {
-	case mode == toolRecoveryAfterResults:
-		// StreamResult already retains the full candidate. Keep SSE alive at
-		// the handler, but do not commit text that may need correction.
+	case opt.recoverMalformed || mode == toolRecoveryAfterResults:
+		// A malformed fence or a late capability claim can follow prose.
+		// The handler keeps SSE alive while StreamResult holds the candidate.
 		onDelta = nil
 	case mode == toolRecoveryOpening && onDelta != nil:
 		gate = newToolRecoveryGate(onDelta)
@@ -87,45 +94,31 @@ func generateToolReply(ctx context.Context, prompt string, messages []map[string
 		return text, nil, nil
 	}
 	text, calls, err := parse(res)
-	if err != nil {
+	_, malformed := err.(*ToolCallParseError)
+	if err != nil && !(opt.recoverMalformed && malformed && mode != toolRecoveryDisabled) {
 		return "", nil, res, err
 	}
 	emitted := gate != nil && gate.Released()
-	if mode.shouldRecover(text, calls, emitted) {
+	if malformed || mode.shouldRecover(text, calls, emitted) {
 		if err := ctx.Err(); err != nil {
 			return "", nil, res, err
 		}
-		// Use full original history in a new upstream conversation. The hidden
-		// candidate and this adapter-only correction are not client history.
-		retryPrompt, _ := messagesToPrompt(messages, tools, choice)
-		retryPrompt = toolTranscriptPrompt(retryPrompt) + "\n\n" + toolProtocolCorrection
-		continueUpstream := false
-		if budget := rtCfg().MaxPromptBytes; opt.inlineOnly && budget > 0 && len(retryPrompt) > budget {
-			continueUpstream = hasToolResult(messages) && opt.continueCorrection != nil && len(toolProtocolCorrection) <= budget
-			if !continueUpstream {
-				return "", nil, res, &PromptTooLongError{Bytes: len(retryPrompt), Budget: budget, HasCookie: res.AccountID > 0}
-			}
-		}
-		logf("[tools] recovering an unexposed capability disclaimer once (tools=%d)", len(tools))
 		if gate != nil {
 			gate.Discard()
 		}
-		firstMs := res.TotalMs
-		if continueUpstream {
-			res, err = opt.continueCorrection(toolProtocolCorrection)
-		} else {
-			res, err = generate(retryPrompt, onDelta, true)
-		}
-		if res != nil {
-			res.TotalMs += firstMs
-			res.TTFBMs += firstMs
-		}
+		rejected := res
+		res, err = retryToolReply(messages, tools, choice, opt, generate, onDelta, malformed, rejected)
 		if err != nil {
 			return "", nil, res, err
 		}
+		res.TotalMs += rejected.TotalMs
+		res.TTFBMs += rejected.TotalMs
 		text, calls, err = parse(res)
 		if err != nil {
 			return "", nil, res, err
+		}
+		if malformed && !validToolFormatCorrection(messages, tools, choice, calls) {
+			return "", nil, res, &ToolCallParseError{}
 		}
 		if mode.shouldRecover(text, calls, gate != nil && gate.Released()) || (mode == toolRecoveryAfterResults && repeatsCompletedTool(messages, calls)) {
 			return "", nil, res, &ToolProtocolError{}
@@ -138,4 +131,52 @@ func generateToolReply(ctx context.Context, prompt string, messages []map[string
 		gate.Flush()
 	}
 	return text, calls, res, nil
+}
+
+func retryToolReply(messages, tools []map[string]interface{}, choice interface{}, opt toolReplyOptions,
+	generate toolReplySource, onDelta func(string), malformed bool, rejected *StreamResult) (*StreamResult, error) {
+	budget := rtCfg().MaxPromptBytes
+	correction := toolProtocolCorrection
+	if malformed {
+		correction = toolFormatCorrection + " " + toolChoiceInstruction(choice)
+	}
+	canContinue := opt.continueCorrection != nil && (budget <= 0 || len(correction) <= budget)
+	// Prefer a short correction to retransmitting a potentially large transcript.
+	if malformed && canContinue {
+		if res, err := opt.continueCorrection(correction); res != nil || err != nil {
+			return res, err
+		}
+	}
+	prompt, _ := messagesToPrompt(messages, tools, choice)
+	retryPrompt := toolTranscriptPrompt(prompt) + "\n\n" + correction
+	if opt.inlineOnly && budget > 0 && len(retryPrompt) > budget {
+		if malformed {
+			return rejected, &ToolCallParseError{}
+		}
+		if canContinue && hasToolResult(messages) {
+			if res, err := opt.continueCorrection(correction); res != nil || err != nil {
+				return res, err
+			}
+		}
+		return rejected, &PromptTooLongError{Bytes: len(retryPrompt), Budget: budget, HasCookie: rejected.AccountID > 0}
+	}
+	logf("[tools] requesting one correction with the full transcript (malformed=%t tools=%d)", malformed, len(tools))
+	return generate(retryPrompt, onDelta, true)
+}
+
+func validToolFormatCorrection(messages, tools []map[string]interface{}, choice interface{}, calls []ToolCall) bool {
+	mode, _ := parseToolChoice(choice)
+	if len(calls) == 0 {
+		return mode != "required"
+	}
+	allowed := make(map[string]bool)
+	for _, tool := range promptToolDefinitions(tools, choice) {
+		allowed[getStr(tool, "name")] = true
+	}
+	for _, call := range calls {
+		if !allowed[call.Function.Name] {
+			return false
+		}
+	}
+	return !repeatsCompletedTool(messages, calls)
 }

@@ -14,7 +14,7 @@ import (
 type conversationOptions struct {
 	requestScope     string
 	normalizeToolIDs bool            // Gemini permits clients to omit call/result IDs.
-	recoverToolReply context.Context // Responses may regenerate an uncommitted capability disclaimer.
+	recoverToolReply context.Context // Responses may regenerate an uncommitted tool reply.
 }
 
 // conversationRequestScope separates local continuation state. prompt_cache_key

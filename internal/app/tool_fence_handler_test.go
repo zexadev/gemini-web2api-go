@@ -24,6 +24,7 @@ func stubFenceHandlerReply(t *testing.T, reply string) *int {
 	runConversationTurn = func(_ string, _ ModelConfig, st *convState, onDelta, _ func(string)) (*StreamResult, error) {
 		(*calls)++
 		st.cid = "fence-handler-conversation"
+		st.rid = "fence-handler-reply"
 		st.turn++
 		if onDelta != nil {
 			// Split the opening marker, JSON, and nested markdown across reads.
@@ -41,7 +42,7 @@ func stubFenceHandlerReply(t *testing.T, reply string) *int {
 	return calls
 }
 
-func fenceHandlerRequest(t *testing.T, responses, stream bool) *httptest.ResponseRecorder {
+func fenceHandlerRequest(t *testing.T, responses, stream bool, input ...interface{}) *httptest.ResponseRecorder {
 	t.Helper()
 	req := map[string]interface{}{
 		"model": "gemini-3.5-flash-lite", "stream": stream,
@@ -54,7 +55,10 @@ func fenceHandlerRequest(t *testing.T, responses, stream bool) *httptest.Respons
 	handler := http.HandlerFunc(handleChatCompletions)
 	if responses {
 		path, handler = "/v1/responses", handleResponses
-		req["input"] = []interface{}{map[string]interface{}{"role": "user", "content": "Create the requested document."}}
+		if len(input) == 0 {
+			input = []interface{}{map[string]interface{}{"role": "user", "content": "Create the requested document."}}
+		}
+		req["input"] = input
 		req["tools"] = []interface{}{map[string]interface{}{
 			"type": "function", "name": function["name"], "parameters": function["parameters"],
 		}}
@@ -124,13 +128,17 @@ func TestToolFenceHandlersRejectMalformedRepliesAtomically(t *testing.T) {
 					body := w.Body.String()
 					wantStatus := http.StatusBadGateway
 					if stream {
-						wantStatus = http.StatusOK // A permitted preamble has already opened SSE.
+						wantStatus = http.StatusOK // The stream opens before generation finishes.
 					}
 					if w.Code != wantStatus {
 						t.Fatalf("status=%d, want %d: %s", w.Code, wantStatus, body)
 					}
-					if *calls != 1 {
-						t.Fatalf("malformed output must not trigger another exchange: %d", *calls)
+					wantCalls, wantText := 1, "Checking document."
+					if responses {
+						wantCalls, wantText = 2, ""
+					}
+					if *calls != wantCalls {
+						t.Fatalf("upstream exchanges=%d, want %d", *calls, wantCalls)
 					}
 					for _, leaked := range []string{"LEAKED_SUFFIX", "mermaid", "tool_calls", "function_call", "response.completed"} {
 						if strings.Contains(body, leaked) {
@@ -168,8 +176,8 @@ func TestToolFenceHandlersRejectMalformedRepliesAtomically(t *testing.T) {
 					if !failed {
 						t.Fatalf("missing explicit failure: %s", body)
 					}
-					if stream && strings.TrimSpace(streamedText.String()) != "Checking document." {
-						t.Fatalf("stream must preserve only the ordinary preamble, got %q", streamedText.String())
+					if stream && strings.TrimSpace(streamedText.String()) != wantText {
+						t.Fatalf("streamed text=%q, want %q", streamedText.String(), wantText)
 					}
 					convMu.Lock()
 					stored := len(convStore)
@@ -181,6 +189,95 @@ func TestToolFenceHandlersRejectMalformedRepliesAtomically(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestResponsesHandlerRepairsMalformedToolCallAndReplaysResult(t *testing.T) {
+	resetConversationTestState(t)
+	rtMu.Lock()
+	rtVal.MultiTurn = true
+	rtMu.Unlock()
+	const original = "Create the requested document."
+	const result = "Saved repaired.md."
+	var attempts int
+	stubConversationTestTurn(t, func(prompt string, _ ModelConfig, st *convState) (*StreamResult, error) {
+		attempts++
+		var reply string
+		switch attempts {
+		case 1:
+			if st.turn != 0 || !strings.Contains(prompt, original) {
+				t.Fatal("expected a fresh request with the original user message")
+			}
+			st.cid, st.rid = "fence-handler-conversation", "malformed-head"
+			reply = "Discard this preamble.\n```tool_call\n{\"name\":\"write_file\",\"arguments\":{\"path\":\"discard.md\"}}\n```\n" +
+				"```tool_call\n{\"name\":\"write_file\",\"arguments\":{\"content\":\"LEAKED_SUFFIX"
+		case 2:
+			if st.turn != 1 || st.cid != "fence-handler-conversation" || st.rid != "malformed-head" ||
+				!strings.Contains(prompt, toolFormatCorrection) || strings.Contains(prompt, original) {
+				t.Fatal("expected a short format correction against the first upstream reply")
+			}
+			st.rid = "corrected-head"
+			reply = "```tool_call\n{\"name\":\"write_file\",\"arguments\":{\"path\":\"repaired.md\"}}\n```"
+		case 3:
+			if st.turn != 2 || st.cid != "fence-handler-conversation" || st.rid != "corrected-head" ||
+				!strings.Contains(prompt, "[Tool result for write_file]: "+result) || strings.Contains(prompt, original) {
+				t.Fatal("expected the tool result to continue the corrected upstream head")
+			}
+			st.rid = "final-head"
+			reply = result
+		default:
+			t.Fatalf("unexpected upstream exchange %d", attempts)
+		}
+		st.turn++
+		return &StreamResult{Raw: conversationTestRaw(t, reply)}, nil
+	})
+
+	user := map[string]interface{}{"role": "user", "content": original}
+	w := fenceHandlerRequest(t, true, true, user)
+	body := w.Body.String()
+	if w.Code != http.StatusOK || attempts != 2 || strings.Contains(body, "response.failed") ||
+		strings.Contains(body, "Discard this preamble.") || strings.Contains(body, "discard.md") || strings.Contains(body, "LEAKED_SUFFIX") {
+		t.Fatalf("expected a clean recovered stream after two exchanges, status=%d attempts=%d body=%s", w.Code, attempts, body)
+	}
+	var callEvent, function map[string]interface{}
+	for _, event := range fenceHandlerObjects(t, body, true) {
+		switch getStr(event, "type") {
+		case "response.function_call_arguments.done":
+			if callEvent != nil {
+				t.Fatal("the corrected function call was published more than once")
+			}
+			callEvent = event
+		case "response.completed":
+			response, _ := event["response"].(map[string]interface{})
+			output, _ := response["output"].([]interface{})
+			if len(output) != 1 || getStr(response, "status") != "completed" {
+				t.Fatalf("expected a single completed function call, got %#v", response)
+			}
+			function, _ = output[0].(map[string]interface{})
+		}
+	}
+	callID := getStr(function, "call_id")
+	if getStr(function, "type") != "function_call" || getStr(function, "name") != "write_file" ||
+		getStr(function, "arguments") != "{\"path\":\"repaired.md\"}" || callID == "" ||
+		getStr(callEvent, "call_id") != callID || getStr(callEvent, "arguments") != getStr(function, "arguments") {
+		t.Fatalf("expected matching structured call in SSE and terminal output, call=%#v function=%#v", callEvent, function)
+	}
+
+	w = fenceHandlerRequest(t, true, true, user, function, map[string]interface{}{
+		"type": "function_call_output", "call_id": callID, "output": result,
+	})
+	body = w.Body.String()
+	if w.Code != http.StatusOK || attempts != 3 || strings.Contains(body, "response.failed") || strings.Contains(body, "function_call") {
+		t.Fatalf("tool result did not settle the turn, status=%d attempts=%d body=%s", w.Code, attempts, body)
+	}
+	for _, event := range fenceHandlerObjects(t, body, true) {
+		if getStr(event, "type") == "response.completed" {
+			response, _ := event["response"].(map[string]interface{})
+			if getStr(response, "status") == "completed" && strings.Contains(body, result) {
+				return
+			}
+		}
+	}
+	t.Fatalf("missing completed tool result turn: %s", body)
 }
 
 func TestToolFenceHandlersPreserveValidNestedMarkdownCalls(t *testing.T) {

@@ -616,10 +616,10 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 		text, toolCalls, res, err = callGeminiConv(messages, modelCfg, tools, req["tool_choice"], onDelta, nil, conversationOptions{
 			requestScope: conversationRequestScope(r, getStr(req, "prompt_cache_key"), getStr(req, "user")), recoverToolReply: r.Context(),
 		})
-	} else if modelCfg.Tool == 0 && len(images) == 0 && canRecoverToolReply(messages, tools, req["tool_choice"]) {
+	} else if modelCfg.Tool == 0 && len(images) == 0 && toolReplyHasFunction(tools, req["tool_choice"]) {
 		// Single-turn generation owns its prompt budget and can upload context
 		// as an attachment. Do not impose the inline conversation limit here.
-		text, toolCalls, res, err = generateToolReply(r.Context(), prompt, messages, tools, req["tool_choice"], onDelta, toolReplyOptions{},
+		text, toolCalls, res, err = generateToolReply(r.Context(), prompt, messages, tools, req["tool_choice"], onDelta, toolReplyOptions{recoverMalformed: true},
 			func(p string, delta func(string), _ bool) (*StreamResult, error) {
 				return streamGenerateWithFiles(p, latest, modelCfg, nil, delta, nil)
 			})

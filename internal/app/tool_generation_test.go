@@ -107,6 +107,27 @@ func TestGenerateToolReplyPreservesRealToolLimit(t *testing.T) {
 	}
 }
 
+func TestGenerateToolReplyDoesNotCorrectMalformedReplyWhenRecoveryIsDisabled(t *testing.T) {
+	for name, messages := range map[string][]map[string]interface{}{
+		"explicit restriction": {{"role": "user", "content": "Do not use any tools."}},
+		"tool denial":          recoveryResultHistory("Error: the host denied the call because the tool budget is exhausted"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			attempts := 0
+			_, calls, _, err := generateToolReply(context.Background(), "initial", messages, recoveryTestTools(), "auto",
+				func(string) { t.Fatal("the malformed reply must not be published") }, toolReplyOptions{recoverMalformed: true},
+				func(_ string, _ func(string), _ bool) (*StreamResult, error) {
+					attempts++
+					return &StreamResult{Raw: conversationTestRaw(t, "```tool_call\n{\"name\":\"web_search\"")}, nil
+				})
+			var malformed *ToolCallParseError
+			if !errors.As(err, &malformed) || attempts != 1 || len(calls) != 0 {
+				t.Fatalf("expected one rejected attempt, attempts=%d calls=%v err=%v", attempts, calls, err)
+			}
+		})
+	}
+}
+
 func TestGenerateToolReplyRetriesLateDisclaimerWithToolHistory(t *testing.T) {
 	for _, repeatedCall := range []bool{false, true} {
 		messages := recoveryResultHistory("HTTP 200: real tool result")
@@ -220,6 +241,39 @@ func TestGenerateToolReplyLeavesAttachmentBudgetToSource(t *testing.T) {
 	}
 }
 
+func TestConversationOversizedFirstToolTurnSelectsLogin(t *testing.T) {
+	resetConversationTestState(t)
+	const budget = 4000
+	withBudget(t, budget)
+	accountID, err := accountAdd("context-file-test", "SAPISID=test; __Secure-1PSID=test", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = accountDelete(accountID) })
+	old := runConversationTurn
+	t.Cleanup(func() { runConversationTurn = old })
+	const latest = "Check the prerequisites."
+	runConversationTurn = func(prompt string, _ ModelConfig, state *convState, _, _ func(string)) (*StreamResult, error) {
+		if !state.isLogin || state.turn != 0 || state.latest != latest {
+			t.Fatal("an oversized first turn requires a logged-in conversation and the latest user message")
+		}
+		if len(prompt) <= budget || !strings.Contains(prompt, toolTranscriptHeader) || !strings.Contains(prompt, latest) {
+			t.Fatal("the complete tool transcript must reach the attachment-capable source")
+		}
+		return &StreamResult{Raw: conversationTestRaw(t, "Ready.")}, nil
+	}
+	messages := []map[string]interface{}{
+		{"role": "user", "content": strings.Repeat("context ", budget)},
+		{"role": "assistant", "content": "Understood."},
+		{"role": "user", "content": latest},
+	}
+	text, _, _, err := callGeminiConv(messages, Models["gemini-3.5-flash-lite"], recoveryTestTools(), "auto", nil, nil,
+		conversationOptions{recoverToolReply: context.Background()})
+	if err != nil || text != "Ready." {
+		t.Fatalf("oversized first tool turn: text=%q err=%v", text, err)
+	}
+}
+
 func TestConversationRecoveryPublishesOnlyCorrectedHead(t *testing.T) {
 	resetConversationTestState(t)
 	old := runConversationTurn
@@ -290,7 +344,9 @@ func TestResponsesRecoveryKeepsRejectedTextOutOfSSE(t *testing.T) {
 			text = "```tool_call\n{\"name\":\"web_search\",\"arguments\":{\"query\":\"current sources\"}}\n```"
 		}
 		state.cid, state.turn = "recovered-handler", state.turn+1
-		delta(text)
+		if delta != nil {
+			t.Fatal("Responses tool candidates must be validated before streaming")
+		}
 		return &StreamResult{Raw: conversationTestRaw(t, text)}, nil
 	}
 	r := httptest.NewRequest("POST", "/v1/responses", bytes.NewBufferString(`{

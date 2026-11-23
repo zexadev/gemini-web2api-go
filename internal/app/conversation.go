@@ -23,6 +23,7 @@ import (
 type convState struct {
 	cid, rid, rcid, tok26 string
 	turn                  int    // 会话内轮次索引，填 inner[17]，逐轮 +1
+	latest                string // fresh turn's latest user request for context-file fallback
 	cookie                string // 会话绑定 cookie：登录号的 cookie，或匿名 /app 拿的 session
 	sapisid               string // 登录态算 SAPISIDHASH 用；匿名为空
 	isLogin               bool
@@ -216,8 +217,34 @@ func getAnonSession(proxyURL string) (string, error) {
 	return strings.Join(pairs, "; "), nil
 }
 
+// conversationXSRF 在续接的登录票据失效后，尝试使用同一身份已轮转的票据。
+func conversationXSRF(conv *convState, proxy Proxy, fetch func(string, int, string) (string, error)) (string, error) {
+	token, err := fetch(conv.cookie, conv.authuser, proxy.URL)
+	if conv.turn == 0 || conv.accountID <= 0 || !xsrfErrBlamesCookie(err) ||
+		proxy.ID != conv.proxyID || proxy.URL != conv.proxyURL {
+		return token, err
+	}
+	if extractSAPISID(conv.cookie) == "" || cookieValue(conv.cookie, "__Secure-1PSID") == "" {
+		return token, err
+	}
+	account := accountByID(conv.accountID)
+	if account == nil || account.Status != "enabled" || account.AuthUser != conv.authuser ||
+		(account.ProxyID > 0 && account.ProxyID != proxy.ID) ||
+		account.Cookie == "" || account.Cookie == conv.cookie || cookieIdentity(account.Cookie) != cookieIdentity(conv.cookie) {
+		return token, err
+	}
+
+	token, err = fetch(account.Cookie, conv.authuser, proxy.URL)
+	if err == nil {
+		conv.cookie = account.Cookie
+		conv.sapisid = extractSAPISID(account.Cookie)
+		logf("[conv] 账号 #%d 使用轮转后的登录态续接", conv.accountID)
+	}
+	return token, err
+}
+
 // streamGenerateConv 发一路会话的一轮。turn==0 是首轮（建会话），>0 是续接（只发新消息）。
-// 整条会话绑定 conv.cookie / conv.proxyID，中途不换号不换出口。成功后回填 conv 的
+// 整条会话绑定同一个账号和出口。成功后回填 conv 的
 // cid/rid/rcid/tok26 和 turn+1，供下一轮续接。
 func streamGenerateConv(prompt string, mc ModelConfig, conv *convState,
 	onDelta, onReasoning func(string)) (*StreamResult, error) {
@@ -247,7 +274,7 @@ func streamGenerateConv(prompt string, mc ModelConfig, conv *convState,
 	// 登录态每轮要带 at（XSRF）；匿名不要。
 	xsrf := ""
 	if conv.isLogin && conv.cookie != "" {
-		if tok, err := getXSRF(conv.cookie, conv.authuser, proxyURL); err == nil {
+		if tok, err := conversationXSRF(conv, p, getXSRF); err == nil {
 			xsrf = tok
 		} else {
 			return &StreamResult{ProxyID: p.ID, ProxyName: p.Name, AccountID: conv.accountID},
@@ -255,8 +282,53 @@ func streamGenerateConv(prompt string, mc ModelConfig, conv *convState,
 		}
 	}
 
+	// A fresh native conversation used to bypass the single-turn prompt budget.
+	// Large transcripts then stayed inline until the HTTP client's total timeout
+	// canceled StreamGenerate. Reuse the established context-file path while the
+	// account and egress are already selected. Continuations only contain the new
+	// turn, so an over-budget continuation is rejected explicitly.
+	var files []fileRef
+	budget := rtCfg().MaxPromptBytes
+	if budget > 0 && len(prompt) > budget {
+		if conv.turn == 0 && conv.isLogin && conv.cookie != "" {
+			preparedPrompt, f, used, ferr := prepareContextFile(prompt, conv.latest, budget, conv.cookie, conv.authuser, proxyURL)
+			if ferr != nil {
+				return &StreamResult{ProxyID: p.ID, ProxyName: p.Name, AccountID: conv.accountID}, ferr
+			}
+			if used {
+				prompt = preparedPrompt
+				files = f
+			}
+		}
+		if len(prompt) > budget {
+			return &StreamResult{ProxyID: p.ID, ProxyName: p.Name, AccountID: conv.accountID}, &PromptTooLongError{
+				Bytes: len(prompt), Budget: budget, HasCookie: conv.isLogin && conv.cookie != "",
+			}
+		}
+	}
+
 	inner := make([]interface{}, innerSlots)
-	inner[0] = []interface{}{prompt, 0, nil, nil, nil, nil, 0}
+	if len(files) > 0 {
+		refs := make([]interface{}, 0, len(files))
+		for _, f := range files {
+			kind := f.Kind
+			if kind == 0 {
+				kind = 3
+			}
+			mime := f.Mime
+			if mime == "" {
+				mime = "text/plain"
+			}
+			refs = append(refs, []interface{}{
+				[]interface{}{f.Ref, kind, nil, mime}, f.Name,
+				nil, nil, nil, nil, nil, nil,
+				[]interface{}{0},
+			})
+		}
+		inner[0] = []interface{}{prompt, 0, nil, refs, nil, nil, 0}
+	} else {
+		inner[0] = []interface{}{prompt, 0, nil, nil, nil, nil, 0}
+	}
 	inner[1] = []interface{}{"en"}
 	if conv.turn == 0 {
 		inner[2] = []interface{}{"", "", "", nil, nil, nil, nil, nil, nil, ""}
@@ -450,6 +522,7 @@ func callGeminiConv(messages []map[string]interface{}, mc ModelConfig,
 	fresh := conv == nil
 
 	var prompt string
+	latest := latestUserMessage(messages)
 	if fresh {
 		// 首轮发送工具定义和完整协议，续接只补短提醒，定义留在上游历史。
 		prompt, _ = messagesToPrompt(messages, tools, toolChoice)
@@ -478,11 +551,12 @@ func callGeminiConv(messages []map[string]interface{}, mc ModelConfig,
 		for try := 0; try < maxCookieTries; try++ {
 			if fresh && !retry {
 				conv = &convState{}
+				conv.latest = latest
 				// 有 cookie 池就用登录号（能力更全），否则匿名（首轮就地拿 session cookie）。
-				// #20 匿名优先：模型不需要登录态时不占号（多轮已被 gate 限成无图无工具，附件
-				// 恒无，所以第二个参数传 false）。必须在调用前短路：挑号会更新
-				// last_used_at，调了不用等于白占一轮。
-				if !anonFirstEligible(mc, false) {
+				// 超长首轮需要登录态才能引用历史附件。
+				budget := rtCfg().MaxPromptBytes
+				needsContextFile := budget > 0 && len(p) > budget
+				if !anonFirstEligible(mc, needsContextFile) {
 					a, _, perr := pickAccountForModel(mc, exclude)
 					if perr != nil {
 						var last *ModelDowngradedError
@@ -514,13 +588,16 @@ func callGeminiConv(messages []map[string]interface{}, mc ModelConfig,
 	var toolCalls []ToolCall
 	var res *StreamResult
 	var err error
-	if opt.recoverToolReply != nil && canRecoverToolReply(messages, tools, toolChoice) {
+	if opt.recoverToolReply != nil && toolReplyHasFunction(tools, toolChoice) {
 		replyOpts := toolReplyOptions{
-			inlineOnly: true,
+			inlineOnly:        true,
+			initialAttachment: fresh,
+			recoverMalformed:  true,
 			continueCorrection: func(correction string) (*StreamResult, error) {
 				if conv.cid == "" || conv.rid == "" {
-					return nil, fmt.Errorf("cannot correct oversized tool history: no upstream continuation head")
+					return nil, nil
 				}
+				logf("[tools] requesting one correction on the upstream conversation")
 				return runConversationTurn(correction, mc, conv, nil, nil)
 			},
 		}
@@ -549,6 +626,7 @@ func callGeminiConv(messages []map[string]interface{}, mc ModelConfig,
 	// head is published; tool-only replies must remain distinguishable.
 	keys := convPrefixKeys(conversationMessagesWithReply(messages, text, toolCalls), scope, opt.normalizeToolIDs)
 	if len(keys) > 0 {
+		conv.latest = ""
 		convPut(keys[len(keys)-1], conv)
 	}
 	return text, toolCalls, res, nil
