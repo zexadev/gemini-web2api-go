@@ -1322,7 +1322,10 @@ function parseCookieInput(text) {
     return { error: LANG === 'en' ? 'Unrecognized JSON shape' : '认不出这段 JSON 的结构' };
   }
 
-  if (/^curl\s/i.test(s)) {
+  // Windows 上浏览器给的是 cmd 版：Firefox 以 curl.exe 开头，引号和换行都用 ^ 转义（^" / 行尾 ^）。
+  // 先还原成普通引号再取 cookie；只在认出 cmd 转义时才去 ^，POSIX 版的值里可能真有 ^。
+  if (/^curl(\.exe)?\s/i.test(s)) {
+    if (/\^"|\^\r?\n/.test(s)) s = s.replace(/\^\r?\n/g, ' ').replace(/\^(.)/g, '$1');
     const m = s.match(/(?:-b|--cookie)\s+(['"])([\s\S]*?)\1/) ||
               s.match(/-H\s+(['"])cookie:\s*([\s\S]*?)\1/i);
     if (!m) return { error: LANG === 'en' ? 'No cookie found in this cURL command' : '这段 cURL 里没找到 cookie' };
