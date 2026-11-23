@@ -359,3 +359,30 @@ func TestStrictModel_GenuineExhaustion_DynamicResetTime(t *testing.T) {
 	}
 }
 
+func TestPickAccountForModel_AllAccountsDisabledOrExpired_ReturnsClearError(t *testing.T) {
+	setStrictModel(t, true)
+	resetDowngrades(t)
+
+	neon := Models["gemini-4-neon"]
+	acctID := addTestAccount(t, "disabled_acct")
+
+	// Disable the account (simulating fail_count >= 3)
+	if err := accountSetStatus(acctID, "disabled"); err != nil {
+		t.Fatalf("disable account failed: %v", err)
+	}
+
+	// pickAccountForModel should return an explicit error, NOT fall back to anonymous (nil, nil)
+	a, _, err := pickAccountForModel(neon, nil)
+	if a != nil {
+		t.Fatalf("expected no account picked, got %v", a)
+	}
+	if err == nil {
+		t.Fatal("expected explicit error when all accounts are disabled, got nil")
+	}
+	expectedMsg := "disabled or expired"
+	if !strings.Contains(err.Error(), expectedMsg) {
+		t.Fatalf("expected error to contain %q, got %q", expectedMsg, err.Error())
+	}
+}
+
+

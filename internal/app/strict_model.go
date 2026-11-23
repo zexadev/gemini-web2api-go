@@ -156,6 +156,13 @@ func pickAccountForModel(mc ModelConfig, exclude map[int64]bool) (*CookieAccount
 		}
 		return nil, skip, &ModelDowngradedError{Requested: mc.Upstream, RetryAfter: soonest}
 	}
+	if modelNeedsLogin(mc) && !hasCookie() {
+		total, _ := accountCount()
+		if total > 0 {
+			return nil, skip, fmt.Errorf("all %d cookie accounts in pool are disabled or expired; please check and update cookies in the Cookie Pool panel", total)
+		}
+		return nil, skip, fmt.Errorf("%s requires a Google account cookie, but no cookies are configured in the Cookie Pool", mc.Upstream)
+	}
 	return nil, skip, nil
 }
 
