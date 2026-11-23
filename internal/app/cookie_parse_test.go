@@ -50,6 +50,52 @@ func TestNormalizeCookieForms(t *testing.T) {
 	}
 }
 
+// 浏览器扩展（Cookie-Editor / EditThisCookie）和 Playwright 导出的 JSON 要能直接入池。
+// 判据：只留浏览器真会发给 gemini.google.com 的项，同名时更具体的 domain 胜出，顺序照导出。
+func TestNormalizeCookieExportArrays(t *testing.T) {
+	arr := `[
+	  {"domain":".google.com","name":"SID","value":"a","path":"/","secure":false},
+	  {"domain":".google.com","name":"SAPISID","value":"e","httpOnly":false},
+	  {"domain":"accounts.google.com","name":"OSID","value":"wrong"},
+	  {"domain":"gemini.google.com","hostOnly":true,"name":"OSID","value":"right"},
+	  {"domain":".youtube.com","name":"VISITOR_INFO1_LIVE","value":"yt"},
+	  {"domain":".google.com","name":"__Secure-1PSID","value":"f"},
+	  {"domain":".google.com","name":"EMPTY","value":""},
+	  {"name":"NID","value":"z"}
+	]`
+	want := "SID=a; SAPISID=e; OSID=right; __Secure-1PSID=f; NID=z"
+
+	cases := []struct{ name, in string }{
+		{"扩展导出的数组", arr},
+		{"Playwright storageState", `{"cookies":` + arr + `,"origins":[]}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := normalizeCookie(c.in, "test")
+			if !ok {
+				t.Fatal("解析失败")
+			}
+			if got != want {
+				t.Errorf("得到 %q\n期望 %q", got, want)
+			}
+		})
+	}
+
+	// .google.com 的 OSID 在前、gemini.google.com 的在后：后者更具体，仍应胜出，但位置不变
+	got, ok := normalizeCookie(`[{"domain":".google.com","name":"OSID","value":"a"},
+		{"domain":".google.com","name":"SID","value":"s"},
+		{"domain":"gemini.google.com","name":"OSID","value":"b"}]`, "test")
+	if !ok || got != "OSID=b; SID=s" {
+		t.Errorf("同名覆盖不对：%q", got)
+	}
+
+	for _, bad := range []string{`[]`, `[{"domain":".youtube.com","name":"X","value":"y"}]`, `[1,2]`} {
+		if _, ok := normalizeCookie(bad, "test"); ok {
+			t.Errorf("%s 不该解析成功", bad)
+		}
+	}
+}
+
 // 空模板必须被拦下来。字段名 "SAPISID" 在空模板里也是存在的，
 // 所以判据只能是"有没有非空值"，不能是"字符串里出没出现过 SAPISID"。
 func TestAccountAddRejectsBlankTemplate(t *testing.T) {

@@ -261,3 +261,55 @@ func handleAdminCookieItem(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 405, map[string]string{"error": "method not allowed"})
 	}
 }
+
+// handleAdminCookieSync — POST /admin/api/cookies/sync，给浏览器扩展定时推 cookie。
+//
+// body: {"label":"me@gmail.com","authuser":0,"cookie":<串或扩展导出的 JSON 数组>}
+// cookie 字段可以是字符串，也可以直接是 JSON 数组/对象（扩展里省得再 stringify 一层）。
+// 鉴权跟其它 admin 接口一样，扩展用 Authorization: Bearer <admin_token>。
+func handleAdminCookieSync(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, 405, map[string]string{"error": "method not allowed"})
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeJSON(w, 400, map[string]string{"error": "bad body"})
+		return
+	}
+	var p struct {
+		Label    string          `json:"label"`
+		AuthUser int             `json:"authuser"`
+		Cookie   json.RawMessage `json:"cookie"`
+	}
+	if err := json.Unmarshal(body, &p); err != nil {
+		writeJSON(w, 400, map[string]string{"error": "bad json"})
+		return
+	}
+	cookie := strings.TrimSpace(string(p.Cookie))
+	var s string
+	if json.Unmarshal(p.Cookie, &s) == nil {
+		cookie = s
+	}
+	if cookie == "" || cookie == "null" {
+		writeJSON(w, 400, map[string]string{"error": "cookie 不能为空"})
+		return
+	}
+	res, err := accountSync(p.Label, p.AuthUser, cookie)
+	if err != nil {
+		writeJSON(w, 400, map[string]interface{}{"success": false, "error": err.Error()})
+		return
+	}
+	msg := map[string]string{
+		"added":     "已新建账号 #%d",
+		"updated":   "已更新账号 #%d",
+		"unchanged": "账号 #%d 的 cookie 没有变化",
+	}[res.Action]
+	if res.Action != "unchanged" {
+		logf("[cookies] 扩展同步：账号 #%d %s label=%q authuser=%d", res.ID, res.Action, strings.TrimSpace(p.Label), p.AuthUser)
+	}
+	writeJSON(w, 200, map[string]interface{}{
+		"success": true, "id": res.ID, "action": res.Action,
+		"message": fmt.Sprintf(msg, res.ID),
+	})
+}
