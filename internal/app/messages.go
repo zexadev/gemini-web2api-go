@@ -4,9 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"regexp"
 	"slices"
 	"strings"
@@ -71,46 +69,17 @@ func buildPrompt(messages []map[string]interface{}, tools []map[string]interface
 	var parts []string
 
 	toolsInjected := false
-	mode, forced := parseToolChoice(toolChoice)
+	mode, _ := parseToolChoice(toolChoice)
 	if len(tools) > 0 && mode != "none" {
-		var defs []map[string]interface{}
-		for _, tool := range tools {
-			fn := tool
-			if t, ok := tool["type"].(string); ok && t == "function" {
-				if f, ok := tool["function"].(map[string]interface{}); ok {
-					fn = f
-				}
-			}
-			name := getStr(fn, "name")
-			if forced != "" && name != forced {
-				continue // 指定了函数名，其余不进 prompt
-			}
-			defs = append(defs, map[string]interface{}{
-				"name":        name,
-				"description": getStr(fn, "description"),
-				"parameters":  fn["parameters"],
-			})
-		}
+		defs := promptToolDefinitions(tools, toolChoice)
 		if len(defs) > 0 {
 			defsJSON, _ := json.MarshalIndent(defs, "", "  ")
-			rule := "Only use tool_call blocks when needed."
-			switch {
-			case forced != "":
-				rule = fmt.Sprintf(
-					"You MUST call the tool %q. Reply with the tool_call block and nothing "+
-						"else — do not answer the question yourself, even if you know the answer.",
-					forced)
-			case mode == "required":
-				rule = "You MUST call one of the tools above. Reply with the tool_call block " +
-					"and nothing else — do not answer the question yourself, even if you " +
-					"know the answer."
-			}
 			parts = append(parts, fmt.Sprintf(
 				"[System instruction]: You have access to tools. "+
 					"To call a tool, respond with:\n"+
 					"```tool_call\n{\"name\": \"func_name\", \"arguments\": {...}}\n```\n"+
 					"%s\n\n"+
-					"Available tools:\n%s", rule, string(defsJSON),
+					"Available tools:\n%s", toolChoiceInstruction(toolChoice), string(defsJSON),
 			))
 			toolsInjected = true
 		}
@@ -169,10 +138,12 @@ func buildPrompt(messages []map[string]interface{}, tools []map[string]interface
 	// 动态生成 schema。
 	if toolsInjected {
 		parts = append(parts,
-			"[System instruction — highest priority]: To run a command or read a file you MUST "+
+			toolExecutionBridge+"\n"+
+				"[System instruction — highest priority]: To use a listed tool (including web search, "+
+				"browsing, external APIs, commands or files) you MUST "+
 				"output a ```tool_call``` block — this is the ONLY execution channel. A "+
 				"```powershell/```bash/```cmd/```python code block is NOT executed, it is only shown "+
-				"to the user; never use one to run anything, and never claim you lack tools.\n"+
+				"to the user; never use one to run anything.\n"+
 				"Act, do not explain: when the request needs a tool, your reply is ONE ```tool_call``` "+
 				"block and nothing else — do not list the commands you 'would' run, do not output more "+
 				"than one tool_call, do not add prose. If several steps are needed, do the FIRST one "+
@@ -185,7 +156,8 @@ func buildPrompt(messages []map[string]interface{}, tools []map[string]interface
 				"README.md\", you reply with exactly one block and nothing else:\n"+
 				"```tool_call\n{\"name\": \"run_command\", \"arguments\": {\"command\": \"ls -la\"}}\n```\n"+
 				"(In your block use one of the real tool names listed above with its own arguments.) "+
-				"When the request needs a tool, emit the tool_call block now.")
+				"When the request needs a tool, emit the tool_call block now.\n"+
+				toolChoiceInstruction(toolChoice))
 	}
 
 	var nonEmpty []string
@@ -195,6 +167,75 @@ func buildPrompt(messages []map[string]interface{}, tools []map[string]interface
 		}
 	}
 	return strings.Join(nonEmpty, "\n\n")
+}
+
+// The model sees a Gemini Web conversation, while the caller owns execution.
+// Distinguish those environments so a missing native browser/tool channel is
+// not mistaken for a denial from the Agent host.
+const toolExecutionBridge = "[Tool execution bridge]: The listed tools are provided and executed by the external Agent client, " +
+	"not by the Gemini website. When a tool is needed, your next response is an ordinary text data message " +
+	"for an external runner. A tool_call block is response text, not a Gemini native tool invocation. " +
+	"Writing this request does not consume Gemini native tool calls. Native Gemini tool counters and " +
+	"availability do not describe the external client tools. Serialize the needed tool name and arguments " +
+	"in a tool_call block; the client handles execution, " +
+	"permission checks and returns the result in the next turn. Gemini's own browser, local filesystem and " +
+	"session permissions do not determine whether these external tools are available. For current information, " +
+	"use a relevant listed search, browsing or network tool instead of assuming live access is disabled. " +
+	"Do not infer missing external tools from Gemini website limitations. Respect explicit client permission requirements, " +
+	"external tool budgets and returned tool errors; never invent remaining tool counts, approval, execution or search results."
+
+func promptToolDefinitions(tools []map[string]interface{}, choice interface{}) []map[string]interface{} {
+	mode, forced := parseToolChoice(choice)
+	if mode == "none" {
+		return nil
+	}
+	var defs []map[string]interface{}
+	for _, tool := range tools {
+		fn := tool
+		if f, ok := tool["function"].(map[string]interface{}); ok && getStr(tool, "type") == "function" {
+			fn = f
+		}
+		name := getStr(fn, "name")
+		if name == "" || (forced != "" && name != forced) {
+			continue
+		}
+		defs = append(defs, map[string]interface{}{
+			"name": name, "description": getStr(fn, "description"), "parameters": fn["parameters"],
+		})
+	}
+	return defs
+}
+
+func toolChoiceInstruction(choice interface{}) string {
+	mode, forced := parseToolChoice(choice)
+	switch {
+	case forced != "":
+		return fmt.Sprintf("You MUST call the tool %q. Reply with the tool_call block and nothing "+
+			"else — do not answer the question yourself, even if you know the answer.", forced)
+	case mode == "required":
+		return "You MUST call one of the tools above. Reply with the tool_call block " +
+			"and nothing else — do not answer the question yourself, even if you know the answer."
+	default:
+		return "Only use tool_call blocks when needed. Once the request is complete, give the final answer."
+	}
+}
+
+// Continuations retain schemas in upstream history. Repeat only the execution
+// bridge, allowed names and current policy after new messages, not old context.
+func toolContinuationReminder(tools []map[string]interface{}, choice interface{}) string {
+	defs := promptToolDefinitions(tools, choice)
+	if len(defs) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(defs))
+	for _, def := range defs {
+		names = append(names, getStr(def, "name"))
+	}
+	encoded, _ := json.Marshal(names)
+	return toolExecutionBridge + "\n[Tool protocol reminder]: Use the schemas already supplied in this conversation. " +
+		"Allowed tool names: " + string(encoded) + ". To request a tool, emit ONE ```tool_call``` block " +
+		"containing {\"name\":\"an allowed tool name\",\"arguments\":{...}} and wait for its result. " +
+		"Do not repeat a successful action or claim it ran before receiving its result. " + toolChoiceInstruction(choice)
 }
 
 func contentToString(content interface{}) string {
@@ -323,7 +364,7 @@ func (g *toolFenceGate) Push(delta string) {
 	g.buf += delta
 	for {
 		if g.inFence {
-			_, next, ok := toolFenceEnd(g.buf, false)
+			_, next, ok := toolFenceEnd(g.buf)
 			if !ok {
 				return // 围栏还没闭合，整段扣住
 			}
@@ -364,47 +405,39 @@ func partialPrefixLen(s, marker string) int {
 // toolFenceEnd 在开围栏之后的文本 s 里找闭合围栏：body 是围栏体的长度，next 是
 // 闭合围栏之后的位置。ok=false 表示还判定不了（流式时等下一帧）或者没闭合。
 //
-// 闭合判据：先按 JSON 解析出围栏体里的一个完整值，它后面的第一个 ``` 才是闭合围栏。
+// 闭合判据：完整 JSON 对象带有工具名，紧随其后的 ``` 才是闭合围栏。
 // 不能直接找第一个 ```：写代码类工具的参数里常带 markdown 代码块，JSON 字符串里的
 // ``` 是原样出现的，按第一个算会把调用截成半截 JSON，后半截漏给客户端。
 //
-// JSON 写坏了（语法错）退回「第一个 ```」。JSON 没写完：流式时等，final 时同样退回
-// 第一个 ```。JSON 语法错在出错的那个字符到达时就能判定，所以流式和 final 对同一份
-// 文本给出同一个闭合位置，闸门已发的内容始终是最终文本的前缀。
-func toolFenceEnd(s string, final bool) (body, next int, ok bool) {
-	from := 0
+// JSON 写坏、未写完或闭围栏缺失时都不猜测边界。流式闸门继续扣住，最终解析报错，
+// 避免把参数里的代码块当成闭围栏、丢掉调用头后将剩余参数泄漏为正文。
+func toolFenceEnd(s string) (body, next int, ok bool) {
 	dec := json.NewDecoder(strings.NewReader(s))
-	var v json.RawMessage
-	err := dec.Decode(&v)
-	switch {
-	case err == nil:
-		off := int(dec.InputOffset())
-		rest := strings.TrimLeft(s[off:], " \t\r\n")
-		if strings.HasPrefix(rest, toolFenceClose) {
-			body = len(s) - len(rest)
-			return body, body + len(toolFenceClose), true
-		}
-		if !final && strings.HasPrefix(toolFenceClose, rest) {
-			return 0, 0, false
-		}
-		from = off
-	case errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF):
-		if !final {
-			return 0, 0, false
-		}
-	}
-	j := strings.Index(s[from:], toolFenceClose)
-	if j < 0 {
+	var raw map[string]interface{}
+	if err := dec.Decode(&raw); err != nil || toolCallName(raw) == "" {
 		return 0, 0, false
 	}
-	return from + j, from + j + len(toolFenceClose), true
+	rest := strings.TrimLeft(s[int(dec.InputOffset()):], " \t\r\n")
+	if !strings.HasPrefix(rest, toolFenceClose) {
+		return 0, 0, false
+	}
+	body = len(s) - len(rest)
+	return body, body + len(toolFenceClose), true
+}
+
+// ToolCallParseError indicates an upstream tool block that cannot be executed.
+// Do not include the raw block: arguments may contain private file contents.
+type ToolCallParseError struct{}
+
+func (*ToolCallParseError) Error() string {
+	return "upstream returned a malformed or incomplete tool_call block"
 }
 
 // parseToolCalls extracts ```tool_call``` blocks. Returns clean text + tool_calls.
 //
 // 围栏内不强求前后换行——模型有时吐 ```tool_call\n{...}\n```、有时一行内；内容交给
-// JSON 解析。闭合位置见 toolFenceEnd。解析不出的围栏也从正文里去掉，未闭合的原样留下。
-func parseToolCalls(text string) (string, []ToolCall) {
+// JSON 解析。任一围栏无效则整轮失败，不返回部分调用，也不把残缺参数作为正文。
+func parseToolCalls(text string) (string, []ToolCall, error) {
 	var toolCalls []ToolCall
 	var clean strings.Builder
 	rest := text
@@ -414,19 +447,19 @@ func parseToolCalls(text string) (string, []ToolCall) {
 			break
 		}
 		after := rest[i+len(toolFenceOpen):]
-		body, next, ok := toolFenceEnd(after, true)
+		body, next, ok := toolFenceEnd(after)
 		if !ok {
-			break
+			return "", nil, &ToolCallParseError{}
 		}
 		clean.WriteString(rest[:i])
 		rest = after[next:]
 		var raw map[string]interface{}
 		if err := json.Unmarshal([]byte(strings.TrimSpace(after[:body])), &raw); err != nil || raw == nil {
-			continue
+			return "", nil, &ToolCallParseError{}
 		}
 		name := toolCallName(raw)
 		if name == "" {
-			continue
+			return "", nil, &ToolCallParseError{}
 		}
 		toolCalls = append(toolCalls, ToolCall{
 			ID:   "call_" + randHex(8),
@@ -438,7 +471,7 @@ func parseToolCalls(text string) (string, []ToolCall) {
 		})
 	}
 	clean.WriteString(rest)
-	return strings.TrimSpace(clean.String()), toolCalls
+	return strings.TrimSpace(clean.String()), toolCalls, nil
 }
 
 // toolCallNameKeys 是模型写工具名时用过的键。
@@ -522,9 +555,15 @@ func parseToolChoice(tc interface{}) (string, string) {
 			return v, ""
 		}
 	case map[string]interface{}:
-		// {"type":"function","function":{"name":"..."}}
+		// Chat Completions: {"type":"function","function":{"name":"..."}}
 		if f, ok := v["function"].(map[string]interface{}); ok {
 			if n := getStr(f, "name"); n != "" {
+				return "required", n
+			}
+		}
+		// Responses: {"type":"function","name":"..."}
+		if getStr(v, "type") == "function" {
+			if n := getStr(v, "name"); n != "" {
 				return "required", n
 			}
 		}

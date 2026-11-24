@@ -227,9 +227,9 @@ func stubGeminiStream(t *testing.T, reasoning string, deltas []string, err error
 		}
 		text, calls := full, []ToolCall(nil)
 		if len(g.tools) > 0 {
-			text, calls = parseToolCalls(full)
+			text, calls, err = parseToolCalls(full)
 		}
-		return text, calls, res, nil
+		return text, calls, res, err
 	}
 	t.Cleanup(func() { runGeminiCall = saved })
 }
