@@ -59,6 +59,24 @@ func TestLogRingBuffer_MetaParsing(t *testing.T) {
 			wantMessage: "prompt 112540 字节超过 20000，已转成附件 message.txt",
 		},
 		{
+			input:       "[conv] 新会话，首轮发 1500 字节（tools=0）",
+			wantSource:  "conv",
+			wantLevel:   "INFO", // 字节数里的 500 不是状态码
+			wantMessage: "新会话，首轮发 1500 字节（tools=0）",
+		},
+		{
+			input:       "[cookie] 账号 #401 已加入",
+			wantSource:  "cookie",
+			wantLevel:   "INFO", // #401 是账号编号
+			wantMessage: "账号 #401 已加入",
+		},
+		{
+			input:       "[autodel] 删会话 c_1 返回 HTTP 502: bad gateway",
+			wantSource:  "autodel",
+			wantLevel:   "ERROR",
+			wantMessage: "删会话 c_1 返回 HTTP 502: bad gateway",
+		},
+		{
 			input:       "Ordinary server message without tag",
 			wantSource:  "general",
 			wantLevel:   "INFO",
@@ -152,5 +170,19 @@ func TestHandleAdminLogs_JSONAndText(t *testing.T) {
 	}
 	if !strings.Contains(bodyStr, "[cookie] Refresh failed with 502") {
 		t.Errorf("expected plain text to contain cookie log, got:\n%s", bodyStr)
+	}
+}
+
+// tail 超过容量时给满容量，而不是悄悄退回默认的 100。
+func TestLogRingBuffer_TailClampsToCapacity(t *testing.T) {
+	buf := newLogRingBuffer(300)
+	for i := 0; i < 300; i++ {
+		buf.Add(time.Now(), "[x] m", "[00:00:00] [x] m")
+	}
+	if n := len(buf.Query(LogFilter{Tail: 5000})); n != 300 {
+		t.Fatalf("tail=5000 应返回全部 300 条，得到 %d", n)
+	}
+	if n := len(buf.Query(LogFilter{})); n != 100 {
+		t.Fatalf("不传 tail 默认 100 条，得到 %d", n)
 	}
 }

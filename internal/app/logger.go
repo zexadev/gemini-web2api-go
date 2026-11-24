@@ -42,6 +42,13 @@ func newLogRingBuffer(capacity int) *LogRingBuffer {
 
 var tagRegexp = regexp.MustCompile(`^\[([a-zA-Z0-9_\-]+)\]\s*(.*)$`)
 
+// 状态码只认独立的数字：消息里常有字节数、账号编号（"发 1500 字节"、"账号 #401"），
+// 按子串匹配会把它们判成错误。前后不能紧挨数字，也不能是 # 后面的编号。
+var (
+	logHTTPErrRe = regexp.MustCompile(`(^|[^0-9#])(401|403|5\d\d)([^0-9]|$)`)
+	log429Re     = regexp.MustCompile(`(^|[^0-9#])429([^0-9]|$)`)
+)
+
 // parseLogMeta classifies source and level from the message string.
 func parseLogMeta(msg string) (source, level, cleanMsg string) {
 	cleanMsg = strings.TrimSpace(msg)
@@ -62,14 +69,12 @@ func parseLogMeta(msg string) (source, level, cleanMsg string) {
 		strings.Contains(lower, "fail") ||
 		strings.Contains(lower, "失败") ||
 		strings.Contains(lower, "被风控") ||
-		strings.Contains(cleanMsg, "502") ||
-		strings.Contains(cleanMsg, "500") ||
-		strings.Contains(cleanMsg, "401") ||
+		logHTTPErrRe.MatchString(cleanMsg) ||
 		strings.Contains(lower, "panic") ||
 		strings.Contains(lower, "拒绝") {
 		level = "ERROR"
 	} else if strings.Contains(lower, "warn") ||
-		strings.Contains(lower, "429") ||
+		log429Re.MatchString(cleanMsg) ||
 		strings.Contains(lower, "限流") ||
 		strings.Contains(lower, "retry") ||
 		strings.Contains(lower, "重试") ||
@@ -122,8 +127,11 @@ func (b *LogRingBuffer) Query(f LogFilter) []LogEntry {
 	defer b.mu.RUnlock()
 
 	tail := f.Tail
-	if tail <= 0 || tail > b.capacity {
+	if tail <= 0 {
 		tail = 100
+	}
+	if tail > b.capacity {
+		tail = b.capacity
 	}
 
 	sourceFilter := strings.ToLower(strings.TrimSpace(f.Source))
