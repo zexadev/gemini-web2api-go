@@ -595,6 +595,52 @@ const pages = {
     `;
   },
 
+  logs: async () => {
+    return `
+      <div class="panel page-fill">
+        <h2>系统日志
+          <span class="controls">
+            <select id="logSource">
+              <option value="">全部模块</option>
+              <option value="cookie">Cookie 账号 (Cookie)</option>
+              <option value="rotate">会话保活 (Rotate)</option>
+              <option value="context">上下文附件 (Context)</option>
+              <option value="bl">版本与指纹 (Protocol / BL)</option>
+              <option value="proxy">代理池 (Proxy)</option>
+              <option value="general">其他通用 (General)</option>
+            </select>
+            <select id="logLevel">
+              <option value="">全部级别</option>
+              <option value="ERROR">错误 (ERROR)</option>
+              <option value="WARN">警告 (WARN)</option>
+              <option value="INFO">信息 (INFO)</option>
+            </select>
+            <select id="logTail">
+              <option value="50">最新 50 行</option>
+              <option value="100" selected>最新 100 行</option>
+              <option value="250">最新 250 行</option>
+              <option value="500">最新 500 行</option>
+            </select>
+            <input type="text" id="logSearch" placeholder="搜索关键词..." style="width:130px;padding:6px 10px;">
+            <label style="display:inline-flex;align-items:center;gap:4px;font-size:12.5px;color:var(--text);cursor:pointer;">
+              <input type="checkbox" id="logAutoRefresh" checked> 自动刷新 (2s)
+            </label>
+            <button onclick="loadLogs()">刷新</button>
+            <button class="btn muted" onclick="copyLogText()">复制日志</button>
+            <button class="btn muted" onclick="clearLogBuffer()">清空缓冲</button>
+          </span>
+        </h2>
+        <div id="logStatsBanner" style="font-size:12px;color:var(--muted);margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;">
+          <span id="logSummaryText">正在加载日志...</span>
+          <span style="font-family:var(--mono);">REST API: <code>GET /admin/api/logs?format=text&tail=100</code></span>
+        </div>
+        <div id="logContainer" style="background:#13151a;color:#e2e8f0;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px;line-height:1.6;border-radius:10px;padding:12px 14px;flex:1;min-height:0;overflow-y:auto;box-shadow:inset 0 1px 3px rgba(0,0,0,0.5);">
+          <div class="empty" style="color:#64748b;">正在加载日志...</div>
+        </div>
+      </div>
+    `;
+  },
+
   proxies: async () => {
     const data = await api('api/proxies');
     return `
@@ -1840,6 +1886,129 @@ async function switchPage(name, force = false) {
   if (name === 'settings') {
     await loadRtCfg();
   }
+  if (name === 'logs') {
+    document.getElementById('logSource').onchange = () => loadLogs();
+    document.getElementById('logLevel').onchange = () => loadLogs();
+    document.getElementById('logTail').onchange = () => loadLogs();
+    document.getElementById('logSearch').oninput = () => {
+      clearTimeout(window.logSearchDebounce);
+      window.logSearchDebounce = setTimeout(() => loadLogs(), 300);
+    };
+    await loadLogs();
+    if (window.logTimer) clearInterval(window.logTimer);
+    window.logTimer = setInterval(() => {
+      if (currentPage === 'logs') {
+        const auto = document.getElementById('logAutoRefresh');
+        if (auto && auto.checked) {
+          loadLogs(true);
+        }
+      } else {
+        clearInterval(window.logTimer);
+      }
+    }, 2000);
+  }
+}
+
+async function loadLogs(isBackground = false) {
+  const box = document.getElementById('logContainer');
+  if (!box) return;
+  const source = document.getElementById('logSource')?.value || '';
+  const level = document.getElementById('logLevel')?.value || '';
+  const tail = document.getElementById('logTail')?.value || '100';
+  const q = document.getElementById('logSearch')?.value || '';
+
+  const params = new URLSearchParams();
+  if (tail) params.set('tail', tail);
+  if (source) params.set('source', source);
+  if (level) params.set('level', level);
+  if (q) params.set('q', q);
+
+  try {
+    const res = await api('api/logs?' + params.toString());
+    const items = res.items || [];
+    const summary = document.getElementById('logSummaryText');
+    if (summary) {
+      summary.textContent = LANG === 'en'
+        ? `Showing ${items.length} entries (Total: ${res.total || items.length})`
+        : `显示 ${items.length} 条记录 (总计 ${res.total || items.length} 条)`;
+    }
+
+    if (items.length === 0) {
+      box.innerHTML = `<div class="empty" style="color:#64748b;">${t('暂无匹配的日志记录')}</div>`;
+      return;
+    }
+
+    const wasAtBottom = box.scrollHeight - box.scrollTop <= box.clientHeight + 40;
+
+    box.innerHTML = items.map(item => {
+      let tagBg = '#1e293b';
+      let tagFg = '#94a3b8';
+      if (item.source === 'cookie' || item.source === 'rotate') { tagBg = '#4c1d95'; tagFg = '#ddd6fe'; }
+      else if (item.source === 'context') { tagBg = '#064e3b'; tagFg = '#a7f3d0'; }
+      else if (item.source === 'bl') { tagBg = '#701a75'; tagFg = '#fbcfe8'; }
+      else if (item.source === 'proxy') { tagBg = '#78350f'; tagFg = '#fde68a'; }
+      else if (item.source === 'db') { tagBg = '#0f766e'; tagFg = '#99f6e4'; }
+
+      let levelBadge = '';
+      let msgColor = '#cbd5e1';
+      if (item.level === 'ERROR') {
+        levelBadge = '<span style="background:#7f1d1d;color:#fecaca;padding:1px 6px;border-radius:4px;font-weight:600;font-size:11px;margin-right:6px">ERROR</span>';
+        msgColor = '#fca5a5';
+      } else if (item.level === 'WARN') {
+        levelBadge = '<span style="background:#78350f;color:#fef08a;padding:1px 6px;border-radius:4px;font-weight:600;font-size:11px;margin-right:6px">WARN</span>';
+        msgColor = '#fde047';
+      }
+
+      return `<div style="padding:2px 0;display:flex;gap:8px;align-items:flex-start;">
+        <span style="color:#64748b;white-space:nowrap;">[${escapeHtml(item.time)}]</span>
+        <span style="background:${tagBg};color:${tagFg};padding:1px 6px;border-radius:4px;font-size:11px;white-space:nowrap;">[${escapeHtml(item.source)}]</span>
+        ${levelBadge}
+        <span style="color:${msgColor};overflow-wrap:anywhere;flex:1;">${escapeHtml(item.message)}</span>
+      </div>`;
+    }).join('');
+
+    if (wasAtBottom || !isBackground) {
+      box.scrollTop = box.scrollHeight;
+    }
+  } catch (e) {
+    if (!isBackground) {
+      box.innerHTML = `<div class="err">${t('加载日志失败：')}${escapeHtml(e.message)}</div>`;
+    }
+  }
+}
+
+async function copyLogText() {
+  const source = document.getElementById('logSource')?.value || '';
+  const level = document.getElementById('logLevel')?.value || '';
+  const tail = document.getElementById('logTail')?.value || '100';
+  const q = document.getElementById('logSearch')?.value || '';
+
+  const params = new URLSearchParams({ format: 'text' });
+  if (tail) params.set('tail', tail);
+  if (source) params.set('source', source);
+  if (level) params.set('level', level);
+  if (q) params.set('q', q);
+
+  try {
+    const res = await fetch('api/logs?' + params.toString());
+    const text = await res.text();
+    await copyText(text);
+  } catch (e) {
+    flash('复制失败: ' + e.message);
+  }
+}
+
+async function clearLogBuffer() {
+  const ok = await modalConfirm({
+    title: '清空日志缓冲',
+    desc: '确定要清空内存中的系统日志吗？这不会影响服务运行。',
+    confirmText: '清空',
+    danger: true,
+  });
+  if (!ok) return;
+  await api('api/logs', { method: 'DELETE' });
+  flash('日志缓冲已清空');
+  await loadLogs();
 }
 
 // 主动重新拉当前页的数据（「刷新」按钮、增删改之后回填）
@@ -1849,6 +2018,7 @@ function refreshPage() { return switchPage(currentPage, true); }
 const ICONS = {
   dashboard: '<path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/>',
   requests: '<path d="M7 5h14v2H7V5zm0 6h14v2H7v-2zm0 6h14v2H7v-2zM3 4.5a1.5 1.5 0 113 0 1.5 1.5 0 01-3 0zm0 6a1.5 1.5 0 113 0 1.5 1.5 0 01-3 0zm0 6a1.5 1.5 0 113 0 1.5 1.5 0 01-3 0z"/>',
+  logs: '<path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/>',
   proxies: '<path d="M12 2a2.5 2.5 0 011 4.79V9h4a2 2 0 012 2v1.21a2.5 2.5 0 11-2 0V11h-4v1.21a2.5 2.5 0 11-2 0V11H7v1.21a2.5 2.5 0 11-2 0V11a2 2 0 012-2h4V6.79A2.5 2.5 0 0112 2z"/>',
   settings: '<path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/>',
   cookies: '<path d="M12 2a10 10 0 100 20 10 10 0 000-20zm-1 4a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zm7 3a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zM8 13a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zm6 4a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0z"/>',
@@ -1861,13 +2031,14 @@ const ICONS = {
 const NAV = [
   ['dashboard', '概览'],
   ['requests', '请求记录'],
+  ['logs', '系统日志'],
   ['proxies', '代理池'],
   ['cookies', 'Cookie 池'],
   ['settings', '设置'],
   ['about', '关于'],
 ];
 const PAGE_TITLES = {
-  dashboard: '概览', requests: '请求记录', proxies: '代理池', cookies: 'Cookie 池', settings: '设置',
+  dashboard: '概览', requests: '请求记录', logs: '系统日志', proxies: '代理池', cookies: 'Cookie 池', settings: '设置',
   about: '关于',
 };
 
@@ -2166,6 +2337,33 @@ const I18N_EN = {
   'gemini-web2api 管理面板': 'gemini-web2api Admin Panel',
   '概览': 'Overview',
   '请求记录': 'Requests',
+  '系统日志': 'System Logs',
+  '日志': 'Logs',
+  '全部模块': 'All Subsystems',
+  'Cookie 账号 (Cookie)': 'Cookie Accounts',
+  '会话保活 (Rotate)': 'Session Keepalive',
+  '上下文附件 (Context)': 'Context & Files',
+  '版本与指纹 (Protocol / BL)': 'Protocol & BL',
+  '代理池 (Proxy)': 'Proxy Pool',
+  '其他通用 (General)': 'General',
+  '全部级别': 'All Levels',
+  '错误 (ERROR)': 'Errors (ERROR)',
+  '警告 (WARN)': 'Warnings (WARN)',
+  '信息 (INFO)': 'Info (INFO)',
+  '最新 50 行': 'Latest 50 lines',
+  '最新 100 行': 'Latest 100 lines',
+  '最新 250 行': 'Latest 250 lines',
+  '最新 500 行': 'Latest 500 lines',
+  '搜索关键词...': 'Search keywords...',
+  '自动刷新 (2s)': 'Auto refresh (2s)',
+  '复制日志': 'Copy logs',
+  '清空缓冲': 'Clear buffer',
+  '清空日志缓冲': 'Clear log buffer',
+  '确定要清空内存中的系统日志吗？这不会影响服务运行。': 'Are you sure you want to clear in-memory system logs? This will not affect running services.',
+  '清空': 'Clear',
+  '日志缓冲已清空': 'Log buffer cleared',
+  '暂无匹配的日志记录': 'No matching log entries',
+  '正在加载日志...': 'Loading logs...',
   '代理池': 'Proxy Pool',
   'Cookie 池': 'Cookie Pool',
   '设置': 'Settings',

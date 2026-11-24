@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"sort"
@@ -725,4 +726,61 @@ func errorBreakdown(since int64) []map[string]interface{} {
 		return out[i]["count"].(int) > out[j]["count"].(int)
 	})
 	return out
+}
+
+// handleAdminLogs — GET /admin/api/logs (or DELETE /admin/api/logs)
+// Query parameters:
+//   tail: number of log entries (default 100, max 1000)
+//   since_id: return entries with ID > since_id
+//   source: filter by subsystem (e.g. rotate, cookie, bl, db)
+//   level: filter by level (INFO, WARN, ERROR)
+//   q: search keyword
+//   format: "text" (returns plain text logs) or "json" (default, structured JSON)
+func handleAdminLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "DELETE" {
+		globalLogBuffer.Clear()
+		writeJSON(w, 200, map[string]bool{"ok": true})
+		return
+	}
+	if r.Method != "GET" {
+		writeJSON(w, 405, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	tail := 100
+	if v := r.URL.Query().Get("tail"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			tail = n
+		}
+	}
+	var sinceID int64
+	if v := r.URL.Query().Get("since_id"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			sinceID = n
+		}
+	}
+
+	filter := LogFilter{
+		Tail:    tail,
+		SinceID: sinceID,
+		Source:  r.URL.Query().Get("source"),
+		Level:   r.URL.Query().Get("level"),
+		Query:   r.URL.Query().Get("q"),
+	}
+
+	entries := globalLogBuffer.Query(filter)
+
+	if r.URL.Query().Get("format") == "text" {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(200)
+		for _, e := range entries {
+			fmt.Fprintln(w, e.Raw)
+		}
+		return
+	}
+
+	writeJSON(w, 200, map[string]interface{}{
+		"total": len(entries),
+		"items": entries,
+	})
 }
