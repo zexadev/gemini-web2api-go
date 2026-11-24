@@ -165,6 +165,14 @@ func callGemini(prompt, latest string, mc ModelConfig, tools []map[string]interf
 		text = appendArtifactMarkdown(text, res.Artifacts)
 		return text, nil, res, nil
 	}
+	// 文本模型被上游切去生图 / 音乐（#105）：产物照样附在正文后面。
+	if len(res.Artifacts) > 0 {
+		var toolCalls []ToolCall
+		if len(tools) > 0 {
+			text, toolCalls = parseToolCalls(text)
+		}
+		return appendArtifactMarkdown(text, res.Artifacts), toolCalls, res, nil
+	}
 	if text == "" {
 		// 上游拒绝时只回一个结束帧、没有内容帧（实测被拒时 raw 仅 216
 		// 字节）。这种情况必须报错：以前会当成空回复返回 200 + content:null，

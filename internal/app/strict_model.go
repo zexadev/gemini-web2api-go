@@ -169,6 +169,10 @@ func modelDowngraded(mc ModelConfig, reported string) bool {
 	if want == "" || got == "" {
 		return false
 	}
+	// 上游切到了生图 / 音乐后端：不是额度降级，换号只会重复生成（#105）
+	if reportedMediaTool(reported) != 0 {
+		return false
+	}
 	if got == want || strings.HasPrefix(got, want+" ") {
 		return false
 	}

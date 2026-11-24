@@ -214,3 +214,36 @@ func TestEveryChatModelHasUpstream(t *testing.T) {
 		}
 	}
 }
+
+// 文本模型被上游切去生图 / 音乐时回报的是媒体后端名，不算降级，不能换号重发（#105）。
+func TestModelDowngradedIgnoresMediaBackend(t *testing.T) {
+	h := Models["gemini-4-hydrogen"]
+	if h.Upstream == "" {
+		t.Skip("gemini-4-hydrogen 没登记 Upstream")
+	}
+	for _, name := range []string{"Nano Banana 2", "Nano Banana 2.1", "Lyria 3"} {
+		if modelDowngraded(h, name) {
+			t.Errorf("%q 是媒体后端，不该判降级", name)
+		}
+	}
+	if !modelDowngraded(h, "3.5 Flash-Lite") {
+		t.Error("Flash-Lite 仍应判降级")
+	}
+	setStrictModel(t, true)
+	line := strings.Replace(downgradedLine, "3.5 Flash-Lite", "Nano Banana 2.1", 1)
+	if err := strictLineCheck(h, func() int64 { return 7 })(line); err != nil {
+		t.Fatalf("回报 Nano Banana 不该中断：%v", err)
+	}
+}
+
+func TestReportedMediaTool(t *testing.T) {
+	cases := map[string]int{
+		"Nano Banana 2": toolImage, "Nano Banana 2.1": toolImage, "nano-banana": toolImage,
+		"Lyria 3": toolMusic, "4 Hydrogen": 0, "3.5 Flash-Lite": 0, "": 0, "Nano Bananas": 0,
+	}
+	for name, want := range cases {
+		if got := reportedMediaTool(name); got != want {
+			t.Errorf("%q: got %d want %d", name, got, want)
+		}
+	}
+}

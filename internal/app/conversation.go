@@ -453,7 +453,7 @@ func streamGenerateConv(prompt string, mc ModelConfig, conv *convState,
 		if pickedOK {
 			recordProxyResult(p.ID, true, "")
 		}
-		return &StreamResult{
+		result := &StreamResult{
 			Emitted:          tracker.emitted,
 			EmittedReasoning: rtracker.emitted,
 			Raw:              string(raw),
@@ -464,7 +464,9 @@ func streamGenerateConv(prompt string, mc ModelConfig, conv *convState,
 			AccountID:        conv.accountID,
 			TTFBMs:           ttfb,
 			TotalMs:          time.Since(t0).Milliseconds(),
-		}, nil
+		}
+		fetchUnrequestedMedia(mc, result, conv.cookie, conv.sapisid, xsrf, proxyURL, conv.authuser)
+		return result, nil
 	}
 	return &StreamResult{ProxyID: p.ID, ProxyName: p.Name, AccountID: conv.accountID}, lastErr
 }
@@ -555,6 +557,10 @@ func callGeminiConv(messages []map[string]interface{}, mc ModelConfig,
 	var toolCalls []ToolCall
 	if len(tools) > 0 {
 		text, toolCalls = parseToolCalls(text)
+	}
+	// 文本模型被上游切去生图 / 音乐（#105）：产物附在正文后面，续接历史也按这份正文记。
+	if len(res.Artifacts) > 0 {
+		text = appendArtifactMarkdown(text, res.Artifacts)
 	}
 	if text == "" && len(toolCalls) == 0 {
 		return "", nil, res, fmt.Errorf("upstream returned no content frame (raw %d bytes)", len(res.Raw))

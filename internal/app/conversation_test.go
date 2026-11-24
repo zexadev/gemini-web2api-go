@@ -495,3 +495,18 @@ func TestCallGeminiConvAllAccountsUnusable(t *testing.T) {
 		t.Fatalf("最多试 %d 个号，实际 %d", maxCookieTries, calls)
 	}
 }
+
+// 多轮路径里文本模型被切去生图：取回的图附在正文后面返回（#105）。
+func TestCallGeminiConvAppendsUnrequestedMedia(t *testing.T) {
+	resetConversationTestState(t)
+	stubConversationTestTurn(t, func(_ string, _ ModelConfig, st *convState) (*StreamResult, error) {
+		st.turn++
+		return &StreamResult{Raw: conversationTestRaw(t, "Here is your image."), UpstreamModel: "Nano Banana 2.1",
+			Artifacts: []MediaArtifact{{Mime: "image/png", Data: []byte("png")}}}, nil
+	})
+	text, _, _, err := callGeminiConv([]map[string]interface{}{{"role": "user", "content": "draw a cat"}},
+		Models["gemini-3.5-flash-lite"], nil, nil, nil, nil)
+	if err != nil || !strings.Contains(text, "Here is your image.") || !strings.Contains(text, "![image](data:image/png;base64,cG5n)") {
+		t.Fatalf("应返回正文加图片，得到 text=%q err=%v", text, err)
+	}
+}

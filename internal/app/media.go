@@ -883,3 +883,50 @@ func withAuthUserQuery(rawURL string, authuser int) string {
 	}
 	return rawURL + sep + "authuser=" + strconv.Itoa(authuser)
 }
+
+// reportedMediaTool 按上游回报的显示名判断它是不是切到了媒体后端，是就返回对应的工具位。
+//
+// 文本模型（比如 4 Hydrogen）收到画图类的请求时，Gemini 会自己切到生图后端，
+// 回报 "Nano Banana 2" / "Nano Banana 2.1"，图照样生成在会话里（#105）。这不是
+// 额度用完被降级，换号重发只会再生成一份。音乐同理（Lyria）。视频回报的是文本模型名，
+// 认不出来，不在这里处理。
+func reportedMediaTool(reported string) int {
+	n := foldModelName(reported)
+	switch {
+	case n == "nano banana" || strings.HasPrefix(n, "nano banana "):
+		return toolImage
+	case n == "lyria" || strings.HasPrefix(n, "lyria "):
+		return toolMusic
+	}
+	return 0
+}
+
+// fetchUnrequestedMedia 给文本模型的回复补取上游自己生成的媒体产物（#105）。
+// 请求的本来就是媒体模型时由生成路径自己取，这里不管。取不到只记 MediaErr，
+// 文本照常返回。
+func fetchUnrequestedMedia(mc ModelConfig, res *StreamResult, cookie, sapisid, xsrf, proxyURL string, authuser int) {
+	if mc.Tool != 0 || res == nil || cookie == "" || xsrf == "" {
+		return
+	}
+	tool := reportedMediaTool(res.UpstreamModel)
+	if tool == 0 {
+		return
+	}
+	mime := "image/png"
+	if tool == toolMusic {
+		mime = "audio/mpeg"
+	}
+	cid, rid, _, _ := parseConvIDs(res.Raw)
+	if cid == "" {
+		cid = extractConversationID(res.Raw)
+	}
+	logf("[media] 请求的是 %s，上游切到了 %s，取回它生成的产物", mc.Upstream, res.UpstreamModel)
+	arts, _, err := fetchMediaArtifacts(tool, res.Raw, cid, rid, cookie, sapisid, xsrf, proxyURL, mime, authuser)
+	if err != nil {
+		logf("[media] 取回产物失败: %v", err)
+		res.MediaErr = err
+		return
+	}
+	res.Artifacts = arts
+	logf("[media] 取回 %d 份产物", len(arts))
+}

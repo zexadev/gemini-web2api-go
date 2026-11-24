@@ -1021,6 +1021,7 @@ func streamGenerateOnce(prompt, latest string, mc ModelConfig, pending []pending
 				logf("[media] 取回 %d 份产物", len(arts))
 			}
 		}
+		fetchUnrequestedMedia(mc, result, cookieStr, sapisid, xsrfToken, proxyURL, authUser)
 		// #19 自动删会话：出完结果把 gemini.google.com 上留下的这条会话删掉，避免
 		// 用户账号里堆一堆。只登录态能删（要 XSRF），异步 best-effort，不影响响应。
 		//
