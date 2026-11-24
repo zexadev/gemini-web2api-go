@@ -139,6 +139,9 @@ func TestToolChoice(t *testing.T) {
 		{"required", "required", ""},
 		{map[string]interface{}{"type": "function",
 			"function": map[string]interface{}{"name": "get_weather"}}, "required", "get_weather"},
+		{map[string]interface{}{"type": "function", "name": "get_weather"}, "required", "get_weather"},
+		{map[string]interface{}{"type": "function", "name": ""}, "auto", ""},
+		{map[string]interface{}{"type": "web_search", "name": "get_weather"}, "auto", ""},
 		{"garbage", "auto", ""},
 	} {
 		m, n := parseToolChoice(c.in)
@@ -162,14 +165,23 @@ func TestToolChoice(t *testing.T) {
 	if !strings.Contains(p, "MUST call one of the tools") {
 		t.Errorf("tool_choice=required 缺强制指令: %s", p)
 	}
-	// 指定函数：只留该函数，且点名它
-	p = mustPrompt(t, msgs, tools, map[string]interface{}{"type": "function",
-		"function": map[string]interface{}{"name": "get_weather"}})
-	if !strings.Contains(p, `MUST call the tool "get_weather"`) {
-		t.Errorf("指定函数缺强制指令: %s", p)
-	}
-	if strings.Contains(p, "send_email") {
-		t.Errorf("指定函数时不该带上其它工具: %s", p)
+	// Chat 和 Responses 点名函数时，都只保留该函数并添加强制调用指令。
+	for _, c := range []struct {
+		name   string
+		choice map[string]interface{}
+	}{
+		{"chat", map[string]interface{}{"type": "function", "function": map[string]interface{}{"name": "get_weather"}}},
+		{"responses", map[string]interface{}{"type": "function", "name": "get_weather"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p := mustPrompt(t, msgs, tools, c.choice)
+			if !strings.Contains(p, `MUST call the tool "get_weather"`) {
+				t.Errorf("指定函数缺强制指令: %s", p)
+			}
+			if strings.Contains(p, "send_email") {
+				t.Errorf("指定函数时不该带上其它工具: %s", p)
+			}
+		})
 	}
 	// auto：保持原来的宽松措辞
 	if p := mustPrompt(t, msgs, tools, "auto"); !strings.Contains(p, "when needed") {
