@@ -433,3 +433,65 @@ func TestGeminiConversationFingerprintKeepsExplicitResultAssociation(t *testing.
 		t.Fatal("result text associated with a different explicit call must not hit")
 	}
 }
+
+// 新会话挑到的号取不到 XSRF：换下一个号重来，不能直接把错误回给客户端（#106）。
+func TestCallGeminiConvSwitchesAccountWhenXSRFFails(t *testing.T) {
+	resetConversationTestState(t)
+	rtMu.Lock()
+	rtVal.AnonFirst = false
+	rtMu.Unlock()
+	dead := addTestAccount(t, "convDead")
+	addTestAccount(t, "convAlive")
+	mc := Models["gemini-3.5-flash-lite"]
+	var tried []int64
+	stubConversationTestTurn(t, func(_ string, _ ModelConfig, st *convState) (*StreamResult, error) {
+		tried = append(tried, st.accountID)
+		if st.accountID == dead {
+			return &StreamResult{AccountID: dead}, &convAccountUnusableError{AccountID: dead, Err: errors.New("no SNlM0e in page")}
+		}
+		st.turn++
+		return &StreamResult{Raw: conversationTestRaw(t, "ok"), AccountID: st.accountID}, nil
+	})
+	msgs := []map[string]interface{}{{"role": "user", "content": "hi"}}
+	for i := 0; i < 3; i++ {
+		text, _, _, err := callGeminiConv(msgs, mc, nil, nil, nil, nil)
+		if err != nil || text != "ok" {
+			t.Fatalf("第 %d 次应换到好号成功，得到 text=%q err=%v（试过 %v）", i, text, err, tried)
+		}
+	}
+	seen := 0
+	for i, id := range tried {
+		if id == dead {
+			seen++
+			if i+1 >= len(tried) || tried[i+1] == dead {
+				t.Fatalf("坏号失败后同一请求不该再挑它：%v", tried)
+			}
+		}
+	}
+	if seen == 0 {
+		t.Skip("测试库里号太多，这几次没挑到坏号")
+	}
+}
+
+// 号全坏：报取 XSRF 失败，不能说成模型降级。
+func TestCallGeminiConvAllAccountsUnusable(t *testing.T) {
+	resetConversationTestState(t)
+	rtMu.Lock()
+	rtVal.AnonFirst = false
+	rtMu.Unlock()
+	addTestAccount(t, "convDeadOnly")
+	calls := 0
+	stubConversationTestTurn(t, func(_ string, _ ModelConfig, st *convState) (*StreamResult, error) {
+		calls++
+		return &StreamResult{AccountID: st.accountID}, &convAccountUnusableError{AccountID: st.accountID, Err: errors.New("no SNlM0e in page")}
+	})
+	_, _, _, err := callGeminiConv([]map[string]interface{}{{"role": "user", "content": "hi"}}, Models["gemini-3.5-flash-lite"], nil, nil, nil, nil)
+	var unusable *convAccountUnusableError
+	var mde *ModelDowngradedError
+	if !errors.As(err, &unusable) || errors.As(err, &mde) {
+		t.Fatalf("应报取 XSRF 失败，得到 %v", err)
+	}
+	if calls > maxCookieTries {
+		t.Fatalf("最多试 %d 个号，实际 %d", maxCookieTries, calls)
+	}
+}
