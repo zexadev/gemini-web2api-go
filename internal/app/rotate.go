@@ -422,8 +422,13 @@ func rotateDo(method, url string, headers map[string]string, body []byte, proxyU
 
 // rotateAllAccounts 给池子里每个启用的账号做一次保活，返回下次该等多久。
 //
-// 失败**不计入健康度**：保活打的是 accounts.google.com，跟对话能不能用是两码事，
-// 网络抖一下就把号标成坏的，会让它在挑号时沉底，反而伤可用性。
+// 保活失败本身**不计入健康度**：保活打的是 accounts.google.com，跟对话能不能用
+// 是两码事。Chrome 导出的号保活一直 401，cookie 却还能用两小时左右，直接按 401
+// 计数会把它们提前停掉。
+//
+// 但 401/403 说明凭据可能已经没了，这时打一次 /app 确认（checkAccountCookie，
+// 跟面板「检测」同一个判据）：没有 SNlM0e 才记失败，连续 3 次自动停用；页面正常
+// 就清零。之前保活 401 一概不管，死号一直显示健康、继续被挑中（#106）。
 func rotateAllAccounts() time.Duration {
 	next := defaultRotateInterval
 	for _, a := range accountList() {
@@ -433,6 +438,11 @@ func rotateAllAccounts() time.Duration {
 		iv, _, err := rotateAccount(a)
 		if err != nil {
 			logf("[rotate] 账号 #%d 保活失败: %v", a.ID, err)
+			if rotateErrIsAuth(err) {
+				if c := checkAccountCookie(a); !c.OK {
+					logf("[rotate] 账号 #%d 保活被拒后检测登录态：%s", a.ID, c.Detail)
+				}
+			}
 			continue
 		}
 		if iv > 0 {
@@ -440,4 +450,13 @@ func rotateAllAccounts() time.Duration {
 		}
 	}
 	return next
+}
+
+// rotateErrIsAuth 判断保活失败是不是凭据被拒（401/403），而不是网络错误或限流。
+func rotateErrIsAuth(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "HTTP 401") || strings.Contains(msg, "HTTP 403")
 }

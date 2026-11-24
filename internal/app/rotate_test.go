@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -152,5 +153,24 @@ func TestSIDCCBackoff(t *testing.T) {
 	noteSIDCCBackoff(id, -time.Second)
 	if sidccBackoffLeft(id) != 0 {
 		t.Fatal("backoff should end once the deadline passes")
+	}
+}
+
+// 只有凭据被拒（401/403）才值得去打 /app 确认；网络错误、限流不触发（#106）。
+func TestRotateErrIsAuth(t *testing.T) {
+	cases := map[string]bool{
+		"RotateCookies 1PSIDTS 返回 HTTP 401（Chrome 导出的 cookie 可能受设备绑定限制，建议用 Firefox 重新导出）: x": true,
+		"RotateCookies 1PSIDTS 返回 HTTP 403: x":    true,
+		"RotateCookies 1PSIDTS 返回 HTTP 429: x":    false,
+		"SIDCC 保活被限流，5m0s 后再试":                    false,
+		`Post "https://accounts.google.com": EOF`: false,
+	}
+	for msg, want := range cases {
+		if got := rotateErrIsAuth(errors.New(msg)); got != want {
+			t.Errorf("%q: got %v want %v", msg, got, want)
+		}
+	}
+	if rotateErrIsAuth(nil) {
+		t.Error("nil 不算")
 	}
 }
