@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Gemini Cookie Sync 设置</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="options">
+<h1>Gemini Cookie Sync</h1>
+<p class="hint">定时把这个浏览器里 gemini.google.com 的登录 cookie 推送到你自己部署的 gemini-web2api-go。cookie 只发往下面填的地址。</p>
+
+<label>服务器地址
+  <input id="server" type="url" placeholder="https://your-server:8080">
+</label>
+<p id="serverWarn" class="warn" hidden>不是 HTTPS：cookie 会明文经过网络。只建议在本机或内网这样用。</p>
+
+<label>管理 token（ADMIN_TOKEN，没设可留空）
+  <input id="token" type="password" autocomplete="off">
+</label>
+
+<label>同步间隔（分钟）
+  <input id="intervalMin" type="number" min="1" max="120">
+</label>
+
+<h2>账号</h2>
+<p class="hint">同一个浏览器登了多个 Google 号时，每个号一行。序号是浏览器里的登录顺序（地址栏 <code>/u/0/</code>、<code>/u/1/</code>）。名称只在新建账号时用作面板里的名字。</p>
+<table>
+  <thead><tr><th>名称</th><th>序号</th><th></th></tr></thead>
+  <tbody id="accounts"></tbody>
+</table>
+<button id="addAccount" type="button">添加一行</button>
+
+<div class="actions">
+  <button id="save" type="button" class="primary">保存</button>
+  <span id="status"></span>
+</div>
+
+<script src="options.js"></script>
+</body>
+</html>

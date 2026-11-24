@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "Gemini Web2API Cookie Sync",
+  "version": "1.0.0",
+  "description": "定时把浏览器里 gemini.google.com 的登录 cookie 推送到你自己部署的 gemini-web2api-go。",
+  "permissions": ["cookies", "alarms", "storage"],
+  "host_permissions": ["https://*.google.com/*"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "background": {
+    "service_worker": "background.js",
+    "scripts": ["background.js"]
+  },
+  "action": {
+    "default_title": "Gemini Cookie Sync",
+    "default_popup": "popup.html"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "gemini-web2api-sync@zexadev.github.io",
+      "strict_min_version": "128.0"
+    }
+  }
+}

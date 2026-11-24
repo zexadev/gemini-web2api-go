@@ -1,0 +1,19 @@
+:root { color-scheme: light dark; font: 14px/1.5 system-ui, sans-serif; }
+body.options { max-width: 640px; margin: 24px auto; padding: 0 16px; }
+body.popup { width: 320px; margin: 12px; }
+h1 { font-size: 20px; margin: 0 0 8px; }
+h2 { font-size: 16px; margin: 20px 0 4px; }
+label { display: block; margin: 12px 0; }
+label input { display: block; width: 100%; box-sizing: border-box; margin-top: 4px; padding: 6px; }
+table { width: 100%; border-collapse: collapse; }
+td { padding: 2px 4px 2px 0; }
+td input { width: 100%; box-sizing: border-box; padding: 4px; }
+td input.authuser { width: 64px; }
+button { padding: 6px 12px; cursor: pointer; }
+button.primary { font-weight: 600; }
+.actions { margin-top: 16px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.hint { color: GrayText; margin: 4px 0; }
+.warn { color: #c0392b; margin: 4px 0; }
+ul { padding-left: 18px; margin: 8px 0; }
+li.ok { color: #1e8449; }
+li.fail { color: #c0392b; }
