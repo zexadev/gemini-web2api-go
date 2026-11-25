@@ -29,14 +29,22 @@ var (
 )
 
 type xsrfEntry struct {
-	token   string
-	pushID  string // 上传文件用的 Push-ID 头
-	pctx    string // 上传文件用的 X-Client-Pctx 头
-	fetched time.Time
+	token      string
+	pushID     string // 上传文件用的 Push-ID 头
+	pctx       string // 上传文件用的 X-Client-Pctx 头
+	fetched    time.Time
+	cookie     string
+	authuser   int
+	proxyURL   string
+	refreshing bool
 }
 
-// 页面上的 token 没写明有效期，取个保守值定期重取。
-const xsrfTTL = 20 * time.Minute
+// 页面上的 token 没写明有效期，取个保守值定期重取；满 15 分钟后后台异步预刷新，
+// 避免请求热路径在 20 分钟整点被同步抓取 /app 卡顿 0.6-1.2 秒。
+const (
+	xsrfTTL          = 20 * time.Minute
+	xsrfRefreshAhead = 15 * time.Minute
+)
 
 var snlm0eRe = regexp.MustCompile(`"SNlM0e":"([^"]{10,200})"`)
 
@@ -83,6 +91,54 @@ func invalidateXSRF(cookie string) {
 	xsrfMu.Unlock()
 }
 
+var xsrfFetcher = fetchAppTokens
+
+func triggerXSRFRefreshLocked(key string, e xsrfEntry) {
+	if e.refreshing || e.cookie == "" {
+		return
+	}
+	e.refreshing = true
+	xsrfCache[key] = e
+	fetcher := xsrfFetcher
+	go func(k, ck string, au int, px string) {
+		fresh, err := fetcher(ck, au, px)
+		xsrfMu.Lock()
+		defer xsrfMu.Unlock()
+		if err != nil {
+			if cur, ok := xsrfCache[k]; ok {
+				cur.refreshing = false
+				xsrfCache[k] = cur
+			}
+			return
+		}
+		fresh.cookie, fresh.authuser, fresh.proxyURL = ck, au, px
+		xsrfCache[k] = fresh
+	}(key, e.cookie, e.authuser, e.proxyURL)
+}
+
+// refreshExpiringXSRF 由后台调度器定期调用，对临近过期的缓存条目提前异步刷新，
+// 并清理已停用或已删除账号的过期缓存。
+func refreshExpiringXSRF() {
+	active := map[string]bool{}
+	for _, a := range accountList() {
+		if a.Status == "enabled" && a.Cookie != "" {
+			active[xsrfKey(a.Cookie, a.AuthUser)] = true
+		}
+	}
+	xsrfMu.Lock()
+	defer xsrfMu.Unlock()
+	for k, e := range xsrfCache {
+		if len(active) > 0 && !active[k] {
+			delete(xsrfCache, k)
+			continue
+		}
+		age := time.Since(e.fetched)
+		if age >= xsrfRefreshAhead && age < xsrfTTL*2 {
+			triggerXSRFRefreshLocked(k, e)
+		}
+	}
+}
+
 // getXSRF 取该 cookie（第 authuser 个号）对应的 XSRF token；命中缓存且没过期就直接返回。
 // cookie 为空（匿名）时返回空串——匿名请求不需要这个字段。
 func getXSRF(cookie string, authuser int, proxyURL string) (string, error) {
@@ -93,8 +149,13 @@ func getXSRF(cookie string, authuser int, proxyURL string) (string, error) {
 
 	xsrfMu.Lock()
 	if e, ok := xsrfCache[key]; ok && time.Since(e.fetched) < xsrfTTL {
+		if time.Since(e.fetched) >= xsrfRefreshAhead {
+			e.cookie, e.authuser, e.proxyURL = cookie, authuser, proxyURL
+			triggerXSRFRefreshLocked(key, e)
+		}
+		tok := e.token
 		xsrfMu.Unlock()
-		return e.token, nil
+		return tok, nil
 	}
 	xsrfMu.Unlock()
 
@@ -102,6 +163,7 @@ func getXSRF(cookie string, authuser int, proxyURL string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	e.cookie, e.authuser, e.proxyURL = cookie, authuser, proxyURL
 	xsrfMu.Lock()
 	xsrfCache[key] = e
 	xsrfMu.Unlock()
@@ -114,8 +176,13 @@ func getUploadTokens(cookie string, authuser int, proxyURL string) (pushID, pctx
 
 	xsrfMu.Lock()
 	if e, ok := xsrfCache[key]; ok && time.Since(e.fetched) < xsrfTTL {
+		if time.Since(e.fetched) >= xsrfRefreshAhead {
+			e.cookie, e.authuser, e.proxyURL = cookie, authuser, proxyURL
+			triggerXSRFRefreshLocked(key, e)
+		}
+		pid, pc := e.pushID, e.pctx
 		xsrfMu.Unlock()
-		return e.pushID, e.pctx, nil
+		return pid, pc, nil
 	}
 	xsrfMu.Unlock()
 
@@ -123,6 +190,7 @@ func getUploadTokens(cookie string, authuser int, proxyURL string) (pushID, pctx
 	if err != nil {
 		return "", "", err
 	}
+	e.cookie, e.authuser, e.proxyURL = cookie, authuser, proxyURL
 	xsrfMu.Lock()
 	xsrfCache[key] = e
 	xsrfMu.Unlock()
