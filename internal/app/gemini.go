@@ -386,20 +386,150 @@ func releaseSlot(proxyID int64) {
 // deltaTracker 把上游的累积帧转成增量。
 //
 // 上游每帧带的是**到目前为止的全文**，不是新增部分，所以要跟已发出的做前缀
-// 比对。帧之间偶尔不满足前缀关系（模型改写、或 clean 掉的 artifact 落在边界
-// 上），这时宁可跳过也不能发——发了就等于把重复内容推给客户端，而已发出的
-// 内容收不回来。漏掉的部分由调用方在结束时用 remainingText 补齐。
+// 比对。为了避免 Gemini 网页端在吐 URL 途中自动包成 `[http://10.9](http://10.9)`
+// 并在下一帧改写成完整 `[http://10.95.x.x](http://10.95.x.x)` 导致前缀永久失配、
+// 吞掉后续整段正文：
+//  1. Push 时暂扣末尾尚不稳定的 URL / Markdown 自动链接片段，等后续字符落地再发；
+//  2. 若上游仍发生局部前缀改写，通过 resyncAfterRewrite 对齐并继续补发后续内容，
+//     而不是永久静音丢弃剩余全文。
 type deltaTracker struct{ emitted string }
+
+var (
+	trailingAutoLinkRe   = regexp.MustCompile(`\[https?://[^\s\]]+\]\(https?://[^\s)]+\)$`)
+	trailingOpenLinkRe   = regexp.MustCompile(`\[https?://[^\s\]]*(?:\]\([^)]*)?$`)
+	trailingBareURLRe    = regexp.MustCompile(`https?://[^\s\)\]\>` + "`" + `"'<>]+$`)
+)
+
+// trimUnstableTrailingLink 扣住帧尾尚未稳定的 URL / 自动链接片段。
+// 如果整段回复真的以 URL 结尾，流结束时 remainingOf 会把它完整补发出去。
+func trimUnstableTrailingLink(s string) string {
+	for _, re := range []*regexp.Regexp{trailingAutoLinkRe, trailingOpenLinkRe, trailingBareURLRe} {
+		if loc := re.FindStringIndex(s); loc != nil {
+			return s[:loc[0]]
+		}
+	}
+	return s
+}
+
+// commonPrefixUTF8 返回两个字符串的公共前缀字节长度（保证落在 UTF-8 rune 边界）。
+func commonPrefixUTF8(a, b string) int {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	i := 0
+	for i < n && a[i] == b[i] {
+		i++
+	}
+	// 退回到合法 UTF-8 起点（跳过续字节 10xxxxxx）
+	for i > 0 && (a[i]&0xC0) == 0x80 {
+		i--
+	}
+	return i
+}
+
+// resyncAfterRewrite 在上游对已发出文本末尾做了局部改写（如 URL 自动加链）导致
+// strings.HasPrefix(full, emitted) 失败时，计算安全的续发起点，避免吞掉后面整段正文。
+//
+// 仅当公共前缀覆盖了至少一半已发内容、且尾部偏离局限在 256 字节内时才触发；
+// 对完全不相关的两段文本（如乱序/串帧，lcp==0）仍返回 false 拒绝补发。
+func resyncAfterRewrite(full, emitted string) (string, bool) {
+	if emitted == "" {
+		return full, true
+	}
+	if strings.HasPrefix(full, emitted) {
+		return full[len(emitted):], true
+	}
+	if len(full) <= len(emitted) {
+		return "", false
+	}
+	lcp := commonPrefixUTF8(full, emitted)
+	tail := emitted[lcp:]
+	if lcp == 0 || len(tail) > 256 || lcp < len(emitted)/2 {
+		return "", false
+	}
+
+	windowEnd := lcp + 512
+	if windowEnd > len(full) {
+		windowEnd = len(full)
+	}
+	win := full[lcp:windowEnd]
+
+	// 1) 特判 Markdown 自动链接被拉长（如 "[http://10.9](http://10.9)" -> "[http://10.95...](http://10.95...)"）
+	if strings.Contains(tail, "](http") && strings.HasSuffix(tail, ")") {
+		if closeIdx := strings.IndexByte(win, ')'); closeIdx >= 0 {
+			pos := lcp + closeIdx + 1
+			if pos < len(full) {
+				return full[pos:], true
+			}
+			return "", true
+		}
+	}
+
+	// 2) 锚点匹配：用 emitted 尾部 16..6 字节在改写窗口内找回续接点
+	for anchorLen := 16; anchorLen >= 6; anchorLen -= 2 {
+		if len(emitted) < anchorLen {
+			continue
+		}
+		anchor := emitted[len(emitted)-anchorLen:]
+		// 跳过 UTF-8 续字节，保证锚点合法
+		for len(anchor) > 0 && (anchor[0]&0xC0) == 0x80 {
+			anchor = anchor[1:]
+		}
+		if len(anchor) < 4 {
+			continue
+		}
+		if idx := strings.Index(win, anchor); idx >= 0 {
+			pos := lcp + idx + len(anchor)
+			if pos < len(full) {
+				return full[pos:], true
+			}
+			return "", true
+		}
+	}
+
+	// 3) 兜底：跳过被改写的等价长度区段，对齐到下一个空白/换行/链接闭合符
+	pos := lcp + len(tail)
+	for pos < len(full) && (full[pos]&0xC0) == 0x80 {
+		pos++
+	}
+	limit := pos + 128
+	if limit > len(full) {
+		limit = len(full)
+	}
+	for p := pos; p < limit; p++ {
+		switch full[p] {
+		case ' ', '\n', '\r', '\t', ')', '`':
+			pos = p + 1
+			if pos < len(full) {
+				return full[pos:], true
+			}
+			return "", true
+		}
+	}
+	if pos < len(full) {
+		return full[pos:], true
+	}
+	return "", true
+}
 
 // Push 吃进一帧的累积全文，返回相对上一次的增量；没有新增或无法安全 diff 时返回 ""。
 func (d *deltaTracker) Push(fullText string) string {
 	cleaned := cleanGeminiText(fullText)
-	if len(cleaned) <= len(d.emitted) || !strings.HasPrefix(cleaned, d.emitted) {
+	safe := trimUnstableTrailingLink(cleaned)
+	if len(safe) <= len(d.emitted) {
 		return ""
 	}
-	delta := cleaned[len(d.emitted):]
-	d.emitted = cleaned
-	return delta
+	if strings.HasPrefix(safe, d.emitted) {
+		delta := safe[len(d.emitted):]
+		d.emitted = safe
+		return delta
+	}
+	if delta, ok := resyncAfterRewrite(safe, d.emitted); ok {
+		d.emitted = safe
+		return delta
+	}
+	return ""
 }
 
 // pinnedAccountError 表示 PinAccountID 指定的号用不了：Err 为 nil 是号被删 / 停用，

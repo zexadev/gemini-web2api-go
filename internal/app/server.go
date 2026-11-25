@@ -450,6 +450,8 @@ func sentText(res *StreamResult, gate *toolFenceGate) string {
 }
 
 // remainingOf 返回 full 里还没发出去的尾巴。emitted 为空时返回全文。
+// 若上游中途对末尾做过局部改写导致前缀略偏，通过 resyncAfterRewrite 找回续发点，
+// 不再静默丢弃剩余全文；完全不相关的两段文本仍返回 "" 防重复。
 func remainingOf(full, emitted string) string {
 	if emitted == "" {
 		return full
@@ -457,7 +459,9 @@ func remainingOf(full, emitted string) string {
 	if strings.HasPrefix(full, emitted) {
 		return full[len(emitted):]
 	}
-	// 前缀对不上（上游中途改写过），已发的收不回，不再补发以免重复。
+	if rest, ok := resyncAfterRewrite(full, emitted); ok {
+		return rest
+	}
 	return ""
 }
 

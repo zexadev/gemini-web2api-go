@@ -231,6 +231,43 @@ func TestDeltaTrackerAccumulates(t *testing.T) {
 	}
 }
 
+// 复现真实流式吞尾 Bug：Gemini 吐 URL 途中先自动加链成 `[http://10.9](http://10.9)`，
+// 下一帧补全成 `[http://10.95.43.43:8083/admin](http://10.95.43.43:8083/admin)` 并继续输出长文。
+func TestDeltaTrackerAutoLinkRewriteNoTruncation(t *testing.T) {
+	frames := []string{
+		"## 发现\n实测从 Carol 执行 `GET ",
+		"## 发现\n实测从 Carol 执行 `GET [http://10.9](http://10.9)",
+		"## 发现\n实测从 Carol 执行 `GET [http://10.95.43.43:8083/admin](http://10.95.43.43:8083/admin)` 可拿到明文 key。\n\n### 2. 第二条发现",
+		"## 发现\n实测从 Carol 执行 `GET [http://10.95.43.43:8083/admin](http://10.95.43.43:8083/admin)` 可拿到明文 key。\n\n### 2. 第二条发现\n完整正文结尾。",
+	}
+	d := &deltaTracker{}
+	var got string
+	for _, f := range frames {
+		got += d.Push(f)
+	}
+	finalText := cleanGeminiText(frames[len(frames)-1])
+	got += remainingOf(finalText, d.emitted)
+	if got != finalText {
+		t.Fatalf("URL 自动加链流式拼接不一致:\ngot:  %q\nwant: %q", got, finalText)
+	}
+
+	// 若整段回复真的以 URL 结尾，remainingOf 必须把暂扣的末尾 URL 完整补回
+	urlEnd := "访问地址：https://example.com/path"
+	d2 := &deltaTracker{}
+	out2 := d2.Push(urlEnd) + remainingOf(urlEnd, d2.emitted)
+	if out2 != urlEnd {
+		t.Fatalf("末尾 URL 不应丢失: got=%q want=%q", out2, urlEnd)
+	}
+
+	// 兜底重对齐：即便旧的半截链接已被发出，remainingOf 也必须补回后面剩余正文而不是全丢
+	emittedStale := "## 结论\n实测从 Carol 执行 `GET [http://10.9](http://10.9)"
+	fullFinal := "## 结论\n实测从 Carol 执行 `GET [http://10.95.43.43:8083/admin](http://10.95.43.43:8083/admin)` 暴露密钥。\n\n## 建议\n封掉外网 /admin。"
+	rest := remainingOf(fullFinal, emittedStale)
+	if !strings.Contains(rest, "## 建议") || !strings.Contains(rest, "封掉外网 /admin。") {
+		t.Fatalf("局部改写后 remainingOf 应恢复后续正文, got=%q", rest)
+	}
+}
+
 // 服务端会静默降级（匿名请求 3.1 Pro 实际给 3.5 Flash-Lite），只看请求名发现
 // 不了，所以要从响应帧里把它自报的模型名取出来单独记录。
 func TestExtractUpstreamModel(t *testing.T) {
