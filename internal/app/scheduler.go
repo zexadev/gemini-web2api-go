@@ -21,6 +21,7 @@ func startScheduler() {
 		daily := time.NewTicker(1 * time.Hour)
 		retention := time.NewTicker(6 * time.Hour)
 		proxyReload := time.NewTicker(60 * time.Second)
+		xsrfRefresh := time.NewTicker(2 * time.Minute)
 		// 会话保活：启动后先尽快刷一次 1PSIDTS（导入的票可能已经快到期），
 		// 之后按服务端在轮转页里指定的间隔走（实测 600 秒）。
 		rotate := time.NewTimer(firstRotateDelay)
@@ -28,6 +29,7 @@ func startScheduler() {
 		defer daily.Stop()
 		defer retention.Stop()
 		defer proxyReload.Stop()
+		defer xsrfRefresh.Stop()
 		defer rotate.Stop()
 
 		for {
@@ -40,6 +42,8 @@ func startScheduler() {
 				retentionSweep()
 			case <-proxyReload.C:
 				loadProxies()
+			case <-xsrfRefresh.C:
+				refreshExpiringXSRF()
 			case <-rotate.C:
 				rotate.Reset(rotateAllAccounts())
 			}
