@@ -174,7 +174,7 @@ Changed the code and want it in a container? Uncomment the two `build:` lines in
 The startup banner:
 
 ```
-gemini-web2api-go v4.32.0
+gemini-web2api-go v4.33.0
   Listening:   http://0.0.0.0:8083
   Base URL:    http://localhost:8083/v1
   API key:     sk-gemini-XX...XXXX  (mutable in admin UI)
@@ -332,6 +332,7 @@ URL's content) is not implemented yet.
 - **Requests** — request log (metadata only, no prompt/response content), status/model filters, pagination
 - **Proxy pool** — runtime CRUD, enable/disable, circuit breaker on repeated failures (each proxy is its own IP slot)
 - **Cookie pool** — import multiple signed-in Google accounts; requests rotate through them **least-recently-used first**. One-click "check" tells you whether an account is still signed in, and **dead accounts are flagged in red** so you know which to re-import; `__Secure-1PSIDTS` is rotated automatically plus a 10-minute keepalive; each account is pinned to its own exit; when several Google accounts are signed in to one browser, the "account index" picks which one to use. The list shows redacted summaries only (cookie count / key entries / last 4 of SAPISID / failure count)
+- **System logs** — recent service logs (in-memory ring buffer, never written to disk), filterable by level and copyable; API `GET /admin/api/logs?format=text&tail=100`
 - **Settings** — runtime config form (saved settings take effect immediately), API key rotation, read-only view of deploy-time config
 - **About** — current and latest version plus a manual update check; when a newer release exists it shows the release notes, the Docker upgrade command and per-platform binary download links (the binary is never replaced automatically; upgrading is still up to you)
 
@@ -526,7 +527,7 @@ A signed-in session unlocks 4 Hydrogen + reasoning chain, image/video input, **i
 1. Sign in to [gemini.google.com](https://gemini.google.com)
 2. Recommended: copy the whole string. DevTools (F12) → Network → any request to `gemini.google.com` → right-click "Copy as cURL", and take the full `Cookie:` line. You can also copy items one by one from Application → Cookies → `https://gemini.google.com`
 3. It must contain at least: `SID` / `HSID` / `SSID` / `APISID` / `SAPISID` / `__Secure-1PSID` / `__Secure-1PSIDTS` / **`OSID`**
-4. Add it in the panel under Cookie pool → Add account, or write it to `cookie.txt` and start with `--cookie-file cookie.txt` (imported into the pool at startup, managed from the panel afterwards):
+4. Paste it into the panel under Cookie pool → "+ Import Cookie". Besides a `k=v; …` string it accepts a whole "Copy as cURL" command (including the Windows cmd flavour), JSON arrays exported by Cookie-Editor / EditThisCookie, and a Playwright `storageState`; JSON input is filtered by domain to the cookies sent to gemini.google.com. Or write it to `cookie.txt` and start with `--cookie-file cookie.txt` (imported into the pool at startup, managed from the panel afterwards):
 ```
 SID=...; HSID=...; SSID=...; APISID=...; SAPISID=...; __Secure-1PSID=...; __Secure-1PSIDTS=...; OSID=...
 ```
@@ -536,6 +537,8 @@ The JSON form `{"cookie": "SID=...; ...", "sapisid": "..."}` is also accepted. R
 > **`OSID` is required** (since 2026-11). It is a cookie of the gemini.google.com host itself; without it, opening Gemini
 > redirects to the Google sign-in page (`ServiceLogin?...&osid=1`). The panel marks such accounts "Missing OSID" and the check reports it directly.
 > Exporting from a google.com page, or copying only the first seven items above, drops it. Export **on a gemini.google.com page**.
+
+**Automatic sync from a browser extension**: the repo's `extension/` directory is a browser extension (Firefox / Chrome / Edge) that pushes the browser's current gemini.google.com cookies to `POST /admin/api/cookies/sync` every few minutes, and again within 30 seconds whenever a key cookie changes, so you don't have to re-export by hand. The server matches the account by `SAPISID + __Secure-1PSID` plus the account index and updates it, or creates a new one; an account that was auto-disabled is re-enabled when fresh cookies arrive. Nothing syncs while the browser is closed. Installation and settings: [`extension/README.md`](extension/README.md). You can also call the endpoint yourself: body `{"cookie": "<string or JSON array>", "authuser": 0, "label": "optional"}` with `Authorization: Bearer <admin token>`.
 
 **The Cookie pool page is the only place cookies live.** Each request picks an enabled account least-recently-used first and advances the rotation. As soon as the pool holds an enabled account, `gemini-4-hydrogen` and the other login-only models appear in the model list.
 
@@ -712,6 +715,7 @@ docker-compose.yml         single container, pulls the ghcr image by default, sq
 | Panel diagnostics show **302 → `google.com/sorry/index`** | This exit IP is blocked by Google (after 80-180 requests, depending on connection strategy and exit quality) | Change exit / add proxies. **The block is hard, not probabilistic** (60 probes after a block, zero successes), so retrying in place is pointless |
 | Occasional empty responses, logged as an upstream refusal | Upstream transient refusal (`1155`). There is no predictable threshold — it correlates with neither rate, concurrency, nor cumulative count | Resend once and it usually works. **Lowering RPM does not help**: measured, it is unrelated to request rate |
 | Every request times out | This host can't reach `gemini.google.com` | Configure a proxy (panel or `--proxy`). Note that **`HTTPS_PROXY` is not read** |
+| With a proxy client in TUN mode, the browser reaches Gemini but this service times out | Go uses its own DNS resolver by default and bypasses the system resolver the proxy client hooks (#96) | Set `GODEBUG=netdns=cgo` before starting so it uses the system resolver, or configure a proxy in the panel |
 | Exits at startup with `unable to open database file (14)` | The container runs as nonroot (uid 65532) but the bind-mounted host directory is owned by root, so it can't be written | Use a named volume (the default in compose), or `sudo chown -R 65532:65532 ./data` |
 | `gemini-4-hydrogen` etc. error out immediately | Login-only models aren't exposed without a cookie, by design | Add an account on the Cookie pool page and they become available |
 | Every request returns 502 after attaching a cookie | The cookie expired, so the XSRF token can't be fetched | Re-export the cookie. Quick check: if `gemini-4-hydrogen` reports 3.5 Flash-Lite, it's expired |

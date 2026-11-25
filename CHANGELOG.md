@@ -2,6 +2,33 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 4.33.0
+
+### 新增
+
+- **浏览器扩展自动同步 cookie**（`extension/`，Firefox / Chrome / Edge）。每隔几分钟把浏览器里当前的 gemini.google.com
+  cookie 推到服务端，`__Secure-1PSIDTS` 等关键项一变化 30 秒内再推一次；同一浏览器登了多个号时按账号序号分别同步。
+  安装见 `extension/README.md`。
+- **`POST /admin/api/cookies/sync`（#99，感谢 @wizd）**：按 `SAPISID + __Secure-1PSID` 加账号序号找到账号更新，找不到就新建；
+  更新时清失败计数，被自动停用的号重新启用。
+- **导入 Cookie 改成粘贴框（#99）**：认 Cookie-Editor / EditThisCookie 导出的 JSON 数组、Playwright `storageState`
+  （按 domain 只留发往 gemini.google.com 的项）、`k=v` 整串和「复制为 cURL」整条命令（含 Windows 的 cmd 版），实时预览识别结果。
+- **面板「系统日志」页（#95，感谢 @Shakya47）**：内存环形缓冲里的最近日志，可按级别筛选、复制；接口 `GET /admin/api/logs`。
+
+### 修复
+
+- **多轮续接取 XSRF 失败时不换号（#106）**：失效账号每次都被选中、请求间歇性 502，失败也不记到账号上。现在记一次鉴权失败
+  （连续 3 次自动停用）并换下一个号。
+- **保活返回 401/403 时不计入账号健康（#106）**：现在保活被拒时检测一次登录态，确实失效的计入失败，面板上不再一直显示正常。
+- **文本模型被上游切去生图时判成降级（#105）**：`strict_model` 把 Nano Banana 出图当成降级重试，产生重复图片、最后返回 429。
+  现在回报生图 / 音乐后端时不算降级，图片照常附在回复里返回。
+- **端口被占时仍打印 Listening（#101）**：现在先绑定端口再打印，`Listening` 行可以当作就绪信号；端口显示实际绑定的端口。
+- **系统日志级别把字节数、账号编号当成状态码**（如「1500 字节」「账号 #401」被标成 ERROR），`tail` 超过容量时退回 100。
+
+### 文档
+
+- 故障排查补了一条：开着代理软件 TUN 模式时 Go 自带的 DNS 解析会绕开代理，设 `GODEBUG=netdns=cgo` 改走系统解析（#96）。
+
 ## 4.32.0
 
 ### 新增

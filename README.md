@@ -166,7 +166,7 @@ go build -o gemini-web2api-go .
 启动后会看到 banner：
 
 ```
-gemini-web2api-go v4.32.0
+gemini-web2api-go v4.33.0
   Listening:   http://0.0.0.0:8083
   Base URL:    http://localhost:8083/v1
   API key:     sk-gemini-XX...XXXX  (mutable in admin UI)
@@ -321,6 +321,7 @@ Claude Code / Cursor 这类 MCP 客户端直接调用。
 - **请求记录** — 明细列表（仅元数据，无 prompt/response 内容），状态/模型筛选 + 分页
 - **代理池** — 运行时增删改 + 启用/禁用 + 失败次数熔断（每代理是独立 IP slot）
 - **Cookie 池** — 导入多个 Google 登录态账号，请求按**最久未用优先**自动轮转。每个账号一键「检测」是否仍是登录态，**失效的账号标红提示重导**；自动换发 `__Secure-1PSIDTS` + 每 10 分钟保活；每个账号粘住自己的出口；浏览器里登了多个 Google 号时，用「账号序号」指定用哪一个。列表只显示脱敏摘要（cookie 数 / 关键项 / SAPISID 末 4 位 / 失败次数）
+- **系统日志** — 最近的服务日志（内存环形缓冲，不落盘），可按级别筛选、复制；接口 `GET /admin/api/logs?format=text&tail=100`
 - **设置** — 运行时配置表单（保存即生效）+ API Key 轮换 + 部署期配置只读展示
 - **关于** — 当前版本 / 最新版本 + 手动检查更新；有新版时列出更新说明、Docker 升级命令和各平台二进制下载链接（不会自动替换二进制，升级仍由你来做）
 
@@ -562,7 +563,9 @@ Cookie 池（按 URL、cookie 内容去重），之后一律从面板管理。�
 2. 推荐整串复制：DevTools (F12) → 网络 → 任一发往 `gemini.google.com` 的请求 → 右键「复制为 cURL」，
    取里面 `Cookie:` 那一整行。也可以 Application → Cookies → `https://gemini.google.com` 逐项抄
 3. 至少要有：`SID` / `HSID` / `SSID` / `APISID` / `SAPISID` / `__Secure-1PSID` / `__Secure-1PSIDTS` / **`OSID`**
-4. 粘进面板「Cookie 池 → 添加账号」；或写成 `cookie.txt` 后启动加
+4. 粘进面板「Cookie 池 → + 导入 Cookie」。除了 `k=v; …` 整串，也认「复制为 cURL」整条命令（含 Windows 的 cmd 版）、
+   Cookie-Editor / EditThisCookie 导出的 JSON 数组和 Playwright `storageState`，JSON 会按 domain 只留发往
+   gemini.google.com 的项。或者写成 `cookie.txt` 后启动加
    `--cookie-file cookie.txt`（启动时导入池子，之后从面板管理）：
 ```
 SID=...; HSID=...; SSID=...; APISID=...; SAPISID=...; __Secure-1PSID=...; __Secure-1PSIDTS=...; OSID=...
@@ -574,6 +577,12 @@ JSON 形式 `{"cookie": "SID=...; ...", "sapisid": "..."}` 也吃。带 `SAPISID
 > **`OSID` 必须有**（2026-11 起）。它是 gemini.google.com 自己域名下的 cookie，缺了打开 Gemini
 > 就被跳去 Google 登录页（`ServiceLogin?...&osid=1`），面板会标「缺 OSID」、检测会直接报缺 OSID。
 > 在 google.com 的页面上导出、或者只抄了上面前七项，都会漏掉它，要在 **gemini.google.com 的页面上**导出。
+
+**浏览器扩展自动同步**：仓库的 `extension/` 目录是一个浏览器扩展（Firefox / Chrome / Edge），每隔几分钟
+把浏览器里当前的 gemini.google.com cookie 推到 `POST /admin/api/cookies/sync`，关键项一变化 30 秒内再推一次，
+省掉手动重导。服务端按 `SAPISID + __Secure-1PSID` 加账号序号找到对应账号更新，找不到就新建；被自动停用的号同步到
+新 cookie 后重新启用。浏览器关着时不同步。安装和设置见 [`extension/README.md`](extension/README.md)。
+接口也可以自己调：body `{"cookie": "<整串或 JSON 数组>", "authuser": 0, "label": "可选"}`，带 `Authorization: Bearer <admin token>`。
 
 **cookie 只有「Cookie 池」这一个入口**：每个请求按最久未用优先挑一个 enabled 账号，
 挑中即推进轮转。池子里有 enabled 账号，`gemini-4-hydrogen` 等要登录的模型就会出现在模型列表里。
@@ -788,6 +797,7 @@ docker-compose.yml         单容器，默认拉 ghcr 镜像，sqlite 挂 volume
 | 面板诊断显示 **302 → `google.com/sorry/index`** | 这个出口 IP 被 Google 拦了（80-180 次请求后，取决于连接策略和出口质量） | 换出口/加代理。**是硬拦不是概率性**（被拦后 60 次探测零成功），原地重试没有意义 |
 | 偶发空响应、面板记为上游拒绝 | 上游瞬时拒绝（`1155`），没有可预测阈值，跟频率/并发/累积次数都无关 | 重发一次通常就好。**降 RPM 解决不了**，实测跟频率无关 |
 | 请求全部超时 | 本机到 `gemini.google.com` 不通 | 配代理（面板「代理池」或 `--proxy`）。注意**不读 `HTTPS_PROXY` 环境变量** |
+| 开着代理软件的 TUN 模式，浏览器能开 Gemini，本服务却超时或连不上 | Go 默认用自己的 DNS 解析，绕开了代理软件接管的系统解析（#96） | 启动前设环境变量 `GODEBUG=netdns=cgo`，改走系统解析器；或者直接在面板配代理 |
 | 启动即退出，报 `unable to open database file (14)` | 容器以 nonroot(uid 65532) 运行，而 bind mount 的宿主目录属主是 root，写不进去 | 改用具名卷（compose 默认已是），或 `sudo chown -R 65532:65532 ./data` |
 | 选 `gemini-4-hydrogen` 等直接报错 | 没配 cookie 时要登录的模型不暴露，这是故意的 | 在面板「Cookie 池」导入 cookie 后即可用 |
 | 挂了 cookie 后请求全部 502 | cookie 已失效，取不到 XSRF token | 重新导出 cookie。判据：请求 `gemini-4-hydrogen` 若回报 3.5 Flash-Lite 就是失效了 |

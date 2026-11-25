@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const Version = "4.32.0"
+const Version = "4.33.0"
 
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	body, _ := json.Marshal(data)
